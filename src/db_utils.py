@@ -1,6 +1,7 @@
 import psycopg2
 import pandas as pd
 from datetime import timedelta
+import pickle
 
 DB_PARAMS = {
     "dbname": "ticks",
@@ -230,3 +231,91 @@ def get_all_watchlists_with_symbols():
             symbols = [row[0] for row in cur.fetchall()]
             result.append({"name": name, "symbols": symbols})
         return result
+
+def create_forecast_util_table():
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS forecast_util (
+            symbol TEXT NOT NULL,
+            search_date DATE NOT NULL,
+            best_order TEXT NOT NULL,
+            best_aic FLOAT NOT NULL,
+            window_used INTEGER NOT NULL,
+            model_blob BYTEA,
+            PRIMARY KEY (symbol, search_date)
+        )
+        """)
+        conn.commit()
+
+def serialize_arima_model(model):
+    """Serialize ARIMA model to bytes using pickle."""
+    return pickle.dumps(model)
+
+def deserialize_arima_model(blob):
+    """Deserialize ARIMA model from bytes."""
+    return pickle.loads(blob)
+
+def get_arima_grid_cache(symbol, window_size, cache_days=30, with_model=False):
+    """
+    Returns dict with keys: best_order, best_aic, window_used, search_date, model_blob (if with_model=True)
+    or None if not found or window_used does not match.
+    """
+    import ast
+    from datetime import datetime, timedelta
+    today = datetime.now().date()
+    cache_valid_since = today - timedelta(days=cache_days)
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT best_order, best_aic, window_used, search_date, model_blob
+            FROM forecast_util
+            WHERE symbol=%s AND search_date >= %s
+            ORDER BY search_date DESC
+            LIMIT 1
+        """, (symbol, cache_valid_since))
+        row = cur.fetchone()
+        if row and row[2] == window_size:
+            result = {
+                "best_order": ast.literal_eval(row[0]) if isinstance(row[0], str) else row[0],
+                "best_aic": row[1],
+                "window_used": row[2],
+                "search_date": row[3]
+            }
+            if with_model:
+                result["model_blob"] = row[4]
+            return result
+    return None
+
+def set_arima_grid_cache(symbol, best_order, best_aic, window_used, model=None):
+    """
+    Save ARIMA grid search result for a symbol and window, including the model as a blob.
+    """
+    from datetime import datetime
+    today = datetime.now().date()
+    model_blob = serialize_arima_model(model) if model is not None else None
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO forecast_util (symbol, search_date, best_order, best_aic, window_used, model_blob)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (symbol, search_date) DO UPDATE
+            SET best_order=EXCLUDED.best_order,
+                best_aic=EXCLUDED.best_aic,
+                window_used=EXCLUDED.window_used,
+                model_blob=EXCLUDED.model_blob
+        """, (
+            symbol,
+            today,
+            str(best_order),
+            float(best_aic),
+            int(window_used),
+            model_blob
+        ))
+        conn.commit()
+
+def get_cached_arima_model(symbol, window_size, cache_days=30):
+    """
+    Returns the deserialized ARIMA model if found and valid, else None.
+    """
+    cached = get_arima_grid_cache(symbol, window_size, cache_days=cache_days, with_model=True)
+    if cached and cached.get("model_blob"):
+        return deserialize_arima_model(cached["model_blob"])
+    return None

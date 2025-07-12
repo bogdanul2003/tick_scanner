@@ -13,7 +13,8 @@ from db_utils import (
     add_symbol_to_watchlist,
     remove_symbol_from_watchlist,
     get_watchlist_symbols,
-    get_all_watchlists_with_symbols
+    get_all_watchlists_with_symbols,
+    create_forecast_util_table
 )
 from macd_utils import get_macd_for_date, macd_crossover_signal
 
@@ -212,8 +213,8 @@ async def get_macd_history(symbol: str, days: int = 60):
 @app.post("/macd/arima_positive_forecast", tags=["MACD"])
 async def get_arima_macd_positive_forecast_bulk(
     symbols: list[str] = Body(..., embed=True),
-    days_past: int = 30,
-    forecast_days: int = 3
+    days_past: int = 100,
+    forecast_days: int = 5
 ):
     """
     For a list of symbols, forecast if MACD will become positive in the next `forecast_days` days using ARIMA,
@@ -239,4 +240,5 @@ if __name__ == "__main__":
     # First ensure the table exists
     create_table()
     create_watchlist_tables()
+    create_forecast_util_table()
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
