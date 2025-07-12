@@ -182,24 +182,29 @@ def calculate_macd_and_signal_bulk(symbols: list, date: pd.Timestamp, cached_dat
     current_end = None
     for symbol, start, end in interval_info:
         if not current_partition:
+            print(f"Starting new partition for symbol {symbol} with interval ({start}, {end})")
             current_partition = [(symbol, start, end)]
             current_start = start
             current_end = end
         else:
             # If this interval is within 30 days of current partition's start/end, add to partition
             if abs((start - current_start).days) <= 30 and abs((end - current_end).days) <= 30:
+                print(f"Adding symbol {symbol} to current partition ({current_start}, {current_end}) with interval ({start}, {end}) < 30 days")
                 current_partition.append((symbol, start, end))
                 # Update partition bounds
                 current_start = min(current_start, start)
                 current_end = max(current_end, end)
             else:
+                print(f"Closing current partition ({current_start}, {current_end}) and starting new one for symbol {symbol} with interval ({start}, {end})")
                 partitions.append((current_partition, current_start, current_end))
                 current_partition = [(symbol, start, end)]
                 current_start = start
                 current_end = end
     if current_partition:
+        print(f"Closing final partition ({current_start}, {current_end}) with symbols: {[item[0] for item in current_partition]}")
         partitions.append((current_partition, current_start, current_end))
 
+    print(f"Total partitions created: {len(partitions)} partitions: {partitions}")
     results = {}
     for partition, partition_start, partition_end in partitions:
         partition_symbols = [item[0] for item in partition]
@@ -310,6 +315,7 @@ def macd_crossover_signal(symbol: str, days: int, threshold: float = 0.05, thres
     end_date = datetime.now().date() - timedelta(days=1)
     start_date = datetime.now().date() - timedelta(days=days)
     # Get MACD data for the range
+    get_macd_for_date([symbol], end_date)  # Ensure we have data for the start date
     macd_data = get_macd_for_range(symbol, start_date, end_date)
     if not macd_data or len(macd_data) < 2:
         return {
