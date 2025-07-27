@@ -334,6 +334,13 @@ function WatchlistBullishSignal({ watchlist, onClose }) {
     return "";
   };
 
+  // Blinking state for macd_just_became_positive
+  const [blinkOn, setBlinkOn] = React.useState(true);
+  React.useEffect(() => {
+    const interval = setInterval(() => setBlinkOn(b => !b), 500);
+    return () => clearInterval(interval);
+  }, []);
+
   return (
     <div style={{ border: "1px solid #ccc", margin: "10px 0", padding: 10, position: "relative" }}>
       <h4>Bullish MACD Signal for "{watchlist}"</h4>
@@ -358,7 +365,15 @@ function WatchlistBullishSignal({ watchlist, onClose }) {
               onMouseEnter={(e) => handleMouseEnter(symbol, e)}
               onMouseLeave={handleMouseLeave}
             >
-              {symbol}
+              <a
+                href={getChartUrl(symbol)}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: "inherit", textDecoration: "underline", fontWeight: "bold", marginRight: 2 }}
+                onClick={e => e.stopPropagation()}
+              >
+                {symbol}
+              </a>
               {signal && signal.bullish_macd_above_signal && (
                 <span
                   style={{
@@ -396,6 +411,20 @@ function WatchlistBullishSignal({ watchlist, onClose }) {
                     marginLeft: 6
                   }}
                   title="MACD or Signal Line is about to become negative"
+                />
+              )}
+              {signal && signal.macd_just_became_positive && (
+                <span
+                  style={{
+                    display: "inline-block",
+                    width: 12,
+                    height: 12,
+                    borderRadius: "50%",
+                    background: blinkOn ? "green" : "yellow",
+                    marginLeft: 6,
+                    boxShadow: blinkOn ? "0 0 8px 2px yellow" : "0 0 8px 2px green"
+                  }}
+                  title="MACD just became positive (recently crossed from negative)"
                 />
               )}
             </span>
@@ -475,7 +504,15 @@ function WatchlistBullishForecast({ watchlist, symbols, onClose }) {
         <div style={{ marginTop: 10 }}>
           {Object.entries(result).map(([symbol, forecast]) => (
             <div key={symbol} style={{ marginBottom: 8 }}>
-              <span style={{ fontWeight: "bold" }}>{symbol}: </span>
+              <a
+                href={getChartUrl(symbol)}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ fontWeight: "bold", textDecoration: "underline", color: "inherit", cursor: "pointer" }}
+              >
+                {symbol}
+              </a>
+              {": "}
               {forecast && forecast.will_become_positive !== undefined ? (
                 <span style={{ color: forecast.will_become_positive ? "green" : "gray" }}>
                   {forecast.will_become_positive ? "Will become positive" : "Not forecasted positive"}
@@ -686,6 +723,14 @@ function WatchlistSignalsPage({ watchlist, symbols, onBack }) {
       )}
     </div>
   );
+}
+
+// Utility to get the correct chart URL for a symbol
+function getChartUrl(symbol) {
+  if (symbol.includes(".")) {
+    return `https://finance.yahoo.com/chart/${symbol}`;
+  }
+  return `https://www.tradingview.com/chart/5hYl19L3/?symbol=${symbol}`;
 }
 
 export default function App() {

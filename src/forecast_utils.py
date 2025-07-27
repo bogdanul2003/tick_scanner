@@ -1,6 +1,6 @@
 import pandas as pd
 from datetime import datetime, timedelta
-from macd_utils import get_macd_for_date, get_macd_for_range
+from macd_utils import get_latest_market_date, get_macd_for_date, get_macd_for_range
 
 
 def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days: int = 3):
@@ -44,9 +44,10 @@ def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days
     # --- ARIMA grid search caching logic ---
     from db_utils import get_arima_grid_cache, set_arima_grid_cache, get_cached_arima_model
 
-    end_date = datetime.now().date() - timedelta(days=1)
+    end_date = get_latest_market_date()
+    print(f"Latest market date for {symbol}: {end_date}")
     start_date = end_date - timedelta(days=days_past-1)
-    get_macd_for_date([symbol], end_date)  # Ensure we have data for the start date
+    # get_macd_for_date([symbol], end_date)  # Ensure we have data for the start date
     macd_data = get_macd_for_range(symbol, start_date, end_date)
     macd_series = [d["macd"] for d in macd_data if "macd" in d and d["macd"] is not None]
     print(f"MACD data for {symbol} from {start_date} to {end_date} with length {len(macd_series)}")
@@ -64,20 +65,29 @@ def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days
     print(f"Using dynamic window size: {window_size} for symbol {symbol}")
 
     # Try to load ARIMA grid search from cache (forecast_util table)
-    cached = get_arima_grid_cache(symbol, window_size, cache_days=30, with_model=True)
+    cached = get_arima_grid_cache(symbol, window_size, cache_days=1, with_model=True)
 
     best_model = None
     if cached:
         best_order = tuple(cached["best_order"])
         best_aic = cached["best_aic"]
-        print(f"Loaded ARIMA grid search from cache for {symbol}: order={best_order}, aic={best_aic}, window={window_size}")
+        print(f"Loaded ARIMA grid search from cache for {symbol}: order={best_order}, aic={best_aic}, window={window_size}, date= {cached['search_date']}")
         # Try to load model from blob
         if cached.get("model_blob"):
             try:
-                best_model = get_cached_arima_model(symbol, window_size, cache_days=30)
+                best_model = get_cached_arima_model(symbol, window_size, cache_days=1)
                 print(f"Loaded ARIMA model from DB blob for {symbol}")
                 # If model loaded, append missing data since search_date
                 search_date = cached.get("search_date")
+                # Ensure search_date is not in the future compared to latest market date
+                if search_date:
+                    latest_market_date = get_latest_market_date()
+                    # Convert both to pd.Timestamp for comparison
+                    search_date_pd = pd.Timestamp(search_date)
+                    latest_market_date_pd = pd.Timestamp(latest_market_date)
+                    if search_date_pd > latest_market_date_pd:
+                        print(f"search_date {search_date} is after latest market date {latest_market_date}, skipping append/refit for {symbol}")
+                        search_date = get_latest_market_date()
                 if search_date:
                     # Find index of search_date in train_data
                     train_dates = pd.date_range(end=end_date, periods=window_size)
@@ -89,13 +99,50 @@ def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days
                         # Data after search_date
                         missing_data = train_data.iloc[idx+1:]
                         if not missing_data.empty:
-                            print(f"Appending {len(missing_data)} new data points to ARIMA model for {symbol}")
-                            best_model = best_model.append(missing_data, refit=False)
-                    except ValueError:
-                        # search_date not in train_dates, fallback to refit
-                        print(f"search_date {search_date} not in train_dates for {symbol}, refitting model.")
-                        from statsmodels.tsa.arima.model import ARIMA
-                        best_model = ARIMA(train_data, order=best_order).fit()
+                            print(f"Appending {len(missing_data)} new data points to ARIMA model for {symbol} dates: {missing_data}")
+                            
+                            # Fix: Safely handle different index types
+                            try:
+                                model_index = best_model.model.data.row_labels
+                                
+                                # Check if it's a DatetimeIndex first
+                                if isinstance(model_index, pd.DatetimeIndex):
+                                    model_index_freq = model_index.freq
+                                else:
+                                    # For RangeIndex and other types that don't have freq
+                                    model_index_freq = None
+                                    
+                                # Get the dates needed for the new data
+                                missing_dates = train_dates[idx+1:]
+                                
+                                # Create a new index with the proper frequency (or lack thereof)
+                                if model_index_freq is None:
+                                    # If model has no frequency, convert dates to a simple index without frequency
+                                    missing_dates_index = pd.DatetimeIndex(missing_dates.values, freq=None)
+                                else:
+                                    missing_dates_index = missing_dates
+                                
+                                # Create properly indexed Series
+                                missing_data_indexed = pd.Series(missing_data.values, index=missing_dates_index)
+                                
+                                best_model = best_model.append(missing_data_indexed, refit=False)
+                            except Exception as e:
+                                print(f"Failed to append new data to model for {symbol}: {e}")
+                                # Fallback to refit if append fails
+                                from statsmodels.tsa.arima.model import ARIMA
+                                best_model = ARIMA(train_data, order=best_order).fit()
+                    except ValueError as ve:
+                        import traceback
+                        
+                        # Check if search_date is a weekday (0=Monday,...,4=Friday)
+                        if hasattr(search_date_pd, "weekday") and search_date_pd.weekday() < 5:
+                            # search_date not in train_dates, fallback to refit only if missing date is not a weekend
+                            traceback.print_exc()
+                            print(f"search_date {search_date} not in train_dates for {symbol}, checking if refit needed. Exception: {ve}")
+                            from statsmodels.tsa.arima.model import ARIMA
+                            best_model = ARIMA(train_data, order=best_order).fit()
+                        else:
+                            print(f"search_date {search_date} is a weekend, skipping refit for {symbol}")
             except Exception as e:
                 print(f"Failed to load ARIMA model blob for {symbol}: {e}")
         if best_model is None:
