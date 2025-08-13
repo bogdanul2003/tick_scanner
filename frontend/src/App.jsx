@@ -231,6 +231,8 @@ function WatchlistBullishSignal({ watchlist, onClose }) {
   const [chartLoading, setChartLoading] = useState(false);
   // Add a ref to track if we've already made the API call
   const fetchedRef = React.useRef(false);
+  // Add download state
+  const [downloading, setDownloading] = useState(false);
 
   React.useEffect(() => {
     const fetchSignal = async () => {
@@ -334,17 +336,63 @@ function WatchlistBullishSignal({ watchlist, onClose }) {
     return "";
   };
 
-  // Blinking state for macd_just_became_positive
+  // Blinking state for macd_just_became_positive and ma20_just_became_above_ma50
   const [blinkOn, setBlinkOn] = React.useState(true);
   React.useEffect(() => {
     const interval = setInterval(() => setBlinkOn(b => !b), 500);
     return () => clearInterval(interval);
   }, []);
 
+  // Download CSV handler
+  const handleDownloadCSV = async () => {
+    setDownloading(true);
+    try {
+      const res = await fetch(
+        `${API_BASE}/watchlist/${encodeURIComponent(watchlist)}/bullish_companies_csv`,
+        { method: "POST" }
+      );
+      if (!res.ok) {
+        alert("Failed to download CSV");
+        setDownloading(false);
+        return;
+      }
+      const blob = await res.blob();
+      // Try to get filename from Content-Disposition header
+      let filename = "bullish_companies.csv";
+      const disposition = res.headers.get("Content-Disposition");
+      if (disposition) {
+        // Fix: Use a regex that matches filename= without quotes
+        const match = disposition.match(/filename=([^;]+)/i);
+        if (match && match[1]) {
+          filename = match[1].trim();
+          console.log("Downloading file:", filename);
+        }
+      }
+      console.log("Downloading file2:", filename);
+      // Create a link and trigger download
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.setAttribute("download", filename);
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+      }, 100);
+    } catch (e) {
+      alert("Error downloading CSV");
+    }
+    setDownloading(false);
+  };
+
   return (
     <div style={{ border: "1px solid #ccc", margin: "10px 0", padding: 10, position: "relative" }}>
       <h4>Bullish MACD Signal for "{watchlist}"</h4>
       <button onClick={onClose} style={{ marginBottom: 10 }}>Close</button>
+      <button onClick={handleDownloadCSV} style={{ marginLeft: 10, marginBottom: 10 }} disabled={downloading}>
+        {downloading ? "Downloading..." : "Download Bullish Companies CSV"}
+      </button>
       {loading && <div>Loading...</div>}
       {error && <div style={{ color: "red" }}>{error}</div>}
       {result && result.results && (
@@ -426,6 +474,39 @@ function WatchlistBullishSignal({ watchlist, onClose }) {
                   }}
                   title="MACD just became positive (recently crossed from negative)"
                 />
+              )}
+              {/* Blinking cross for ma20_just_became_above_ma50 */}
+              {signal && signal.ma20_just_became_above_ma50 && (
+                <span
+                  style={{
+                    display: "inline-block",
+                    width: 14,
+                    height: 14,
+                    marginLeft: 6,
+                    position: "relative"
+                  }}
+                  title={
+                    `MA20 just became above MA50 (bullish cross)` +
+                    (signal.ma20_just_became_above_ma50_date
+                      ? ` on ${signal.ma20_just_became_above_ma50_date}`
+                      : "")
+                  }
+                >
+                  <svg width="14" height="14" style={{ display: "block" }}>
+                    <line
+                      x1="2" y1="2" x2="12" y2="12"
+                      stroke={blinkOn ? "green" : "yellow"}
+                      strokeWidth="2"
+                      style={{ filter: blinkOn ? "drop-shadow(0 0 4px yellow)" : "drop-shadow(0 0 4px green)" }}
+                    />
+                    <line
+                      x1="12" y1="2" x2="2" y2="12"
+                      stroke={blinkOn ? "green" : "yellow"}
+                      strokeWidth="2"
+                      style={{ filter: blinkOn ? "drop-shadow(0 0 4px yellow)" : "drop-shadow(0 0 4px green)" }}
+                    />
+                  </svg>
+                </span>
               )}
             </span>
           ))}
@@ -525,6 +606,82 @@ function WatchlistBullishForecast({ watchlist, symbols, onClose }) {
                   [Forecast: {Array.isArray(forecast.forecasted_macd)
                     ? forecast.forecasted_macd.map(x => x && x.toFixed ? x.toFixed(3) : x).join(", ")
                     : Object.values(forecast.forecasted_macd).map(x => x && x.toFixed ? x.toFixed(3) : x).join(", ")}]
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WatchlistBullishMAForecast({ watchlist, symbols, onClose }) {
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const didRun = React.useRef(false);
+
+  React.useEffect(() => {
+    if (didRun.current) return;
+    didRun.current = true;
+    const fetchForecast = async () => {
+      setLoading(true);
+      setError("");
+      setResult(null);
+      try {
+        const res = await fetch("http://localhost:8000/ma/arima_ma20_above_ma50_forecast", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ symbols }),
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          setError(err.detail || "Error fetching MA forecast");
+        } else {
+          setResult(await res.json());
+        }
+      } catch (e) {
+        setError("Error fetching MA forecast");
+      }
+      setLoading(false);
+    };
+    fetchForecast();
+    // Only run once per mount
+    // eslint-disable-next-line
+  }, []);
+
+  return (
+    <div style={{ border: "1px solid #ccc", margin: "10px 0", padding: 10 }}>
+      <h4>Bullish MA20 MA50 Forecast for "{watchlist}"</h4>
+      <button onClick={onClose} style={{ marginBottom: 10 }}>Close</button>
+      {loading && <div>Loading...</div>}
+      {error && <div style={{ color: "red" }}>{error}</div>}
+      {result && (
+        <div style={{ marginTop: 10 }}>
+          {Object.entries(result).map(([symbol, forecast]) => (
+            <div key={symbol} style={{ marginBottom: 8 }}>
+              <a
+                href={getChartUrl(symbol)}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ fontWeight: "bold", textDecoration: "underline", color: "inherit", cursor: "pointer" }}
+              >
+                {symbol}
+              </a>
+              {": "}
+              {forecast && forecast.ma20_will_be_above_ma50 !== undefined ? (
+                <span style={{ color: forecast.ma20_will_be_above_ma50 ? "green" : "gray" }}>
+                  {forecast.ma20_will_be_above_ma50 ? "MA20 will cross above MA50" : "No bullish MA forecast"}
+                </span>
+              ) : (
+                <span style={{ color: "red" }}>Error</span>
+              )}
+              {forecast && forecast.forecasted_ma20 && forecast.forecasted_ma50 && (
+                <span style={{ marginLeft: 10, fontSize: "0.95em" }}>
+                  [MA20: {Object.values(forecast.forecasted_ma20).map(x => x && x.toFixed ? x.toFixed(3) : x).join(", ")}]
+                  <br />
+                  [MA50: {Object.values(forecast.forecasted_ma50).map(x => x && x.toFixed ? x.toFixed(3) : x).join(", ")}]
                 </span>
               )}
             </div>
@@ -701,6 +858,7 @@ function WatchlistsManager({ onSelectWatchlist }) {
 function WatchlistSignalsPage({ watchlist, symbols, onBack }) {
   const [showSignal, setShowSignal] = useState(true);
   const [showForecast, setShowForecast] = useState(false);
+  const [showMAForecast, setShowMAForecast] = useState(false);
 
   return (
     <div>
@@ -708,6 +866,7 @@ function WatchlistSignalsPage({ watchlist, symbols, onBack }) {
       <h2>Signals for "{watchlist}"</h2>
       <button onClick={() => setShowSignal(true)} disabled={showSignal}>Show Bullish Signal</button>
       <button onClick={() => setShowForecast(true)} style={{ marginLeft: 10 }} disabled={showForecast}>Show Bullish Forecast</button>
+      <button onClick={() => setShowMAForecast(true)} style={{ marginLeft: 10 }} disabled={showMAForecast}>Show MA20&gt;MA50 Forecast</button>
       {showSignal && (
         <WatchlistBullishSignal
           watchlist={watchlist}
@@ -719,6 +878,13 @@ function WatchlistSignalsPage({ watchlist, symbols, onBack }) {
           watchlist={watchlist}
           symbols={symbols}
           onClose={() => setShowForecast(false)}
+        />
+      )}
+      {showMAForecast && (
+        <WatchlistBullishMAForecast
+          watchlist={watchlist}
+          symbols={symbols}
+          onClose={() => setShowMAForecast(false)}
         />
       )}
     </div>
@@ -765,4 +931,5 @@ export default function App() {
     </div>
   );
 }
+
 

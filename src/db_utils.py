@@ -38,6 +38,8 @@ def create_table():
                 close FLOAT,
                 ema12 FLOAT,
                 ema26 FLOAT,
+                ma20 FLOAT,
+                ma50 FLOAT,
                 macd FLOAT,
                 signal_line FLOAT,
                 PRIMARY KEY (symbol, date)
@@ -52,7 +54,7 @@ def fetch_from_cache(symbol, date):
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT close, ema12, ema26, macd, signal_line
+                SELECT close, ema12, ema26, ma20, ma50, macd, signal_line
                 FROM stock_cache
                 WHERE symbol=%s AND date=%s
             """, (symbol, date))
@@ -65,10 +67,10 @@ def save_to_cache(symbol, date, row):
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO stock_cache (symbol, date, close, ema12, ema26, macd, signal_line)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO stock_cache (symbol, date, close, ema12, ema26, ma20, ma50, macd, signal_line)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (symbol, date) DO NOTHING
-            """, (symbol, date, row['Close'], row['EMA12'], row['EMA26'], row['MACD'], row['Signal_Line']))
+            """, (symbol, date, row['Close'], row['EMA12'], row['EMA26'], row.get('MA20'), row.get('MA50'), row['MACD'], row['Signal_Line']))
             conn.commit()
     finally:
         put_connection(conn)
@@ -79,8 +81,8 @@ def save_bulk_to_cache(symbol, df):
         with conn.cursor() as cur:
             for date, row in df.iterrows():
                 cur.execute("""
-                    INSERT INTO stock_cache (symbol, date, close, ema12, ema26, macd, signal_line)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO stock_cache (symbol, date, close, ema12, ema26, ma20, ma50, macd, signal_line)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (symbol, date) DO NOTHING
                 """, (
                     symbol,
@@ -88,6 +90,8 @@ def save_bulk_to_cache(symbol, df):
                     float(row['Close']) if pd.notnull(row['Close']) else None,
                     float(row['EMA12']) if pd.notnull(row['EMA12']) else None,
                     float(row['EMA26']) if pd.notnull(row['EMA26']) else None,
+                    float(row['MA20']) if 'MA20' in row and pd.notnull(row['MA20']) else None,
+                    float(row['MA50']) if 'MA50' in row and pd.notnull(row['MA50']) else None,
                     float(row['MACD']) if pd.notnull(row['MACD']) else None,
                     float(row['Signal_Line']) if pd.notnull(row['Signal_Line']) else None
                 ))
@@ -125,7 +129,7 @@ def load_cached_data(symbol):
     try:
         with conn.cursor() as cur:
             query = """
-                SELECT date, close, ema12, ema26, macd, signal_line
+                SELECT date, close, ema12, ema26, ma20, ma50, macd, signal_line
                 FROM stock_cache
                 WHERE symbol=%s 
                 ORDER BY date
@@ -133,11 +137,11 @@ def load_cached_data(symbol):
             cur.execute(query, (symbol,))
             rows = cur.fetchall()
             if rows:
-                cached_data = pd.DataFrame(rows, columns=['date', 'Close', 'EMA12', 'EMA26', 'MACD', 'Signal_Line'])
+                cached_data = pd.DataFrame(rows, columns=['date', 'Close', 'EMA12', 'EMA26', 'MA20', 'MA50', 'MACD', 'Signal_Line'])
                 cached_data['date'] = pd.to_datetime(cached_data['date'])
                 cached_data.set_index('date', inplace=True)
             else:
-                cached_data = pd.DataFrame(columns=['Close', 'EMA12', 'EMA26', 'MACD', 'Signal_Line'])
+                cached_data = pd.DataFrame(columns=['Close', 'EMA12', 'EMA26', 'MA20', 'MA50', 'MACD', 'Signal_Line'])
                 cached_data.index.name = 'date'
     finally:
         put_connection(conn)
@@ -166,18 +170,58 @@ def fetch_bulk_from_cache(symbols, start_date, end_date):
         with conn.cursor() as cur:
             for symbol in symbols:
                 cur.execute("""
-                    SELECT date, close, ema12, ema26, macd, signal_line
+                    SELECT date, close, ema12, ema26, ma20, ma50, macd, signal_line
                     FROM stock_cache
                     WHERE symbol=%s AND date BETWEEN %s AND %s
                     ORDER BY date
                 """, (symbol, start_date, end_date))
                 rows = cur.fetchall()
                 if rows:
-                    df = pd.DataFrame(rows, columns=['date', 'Close', 'EMA12', 'EMA26', 'MACD', 'Signal_Line'])
+                    df = pd.DataFrame(rows, columns=['date', 'Close', 'EMA12', 'EMA26', 'MA20', 'MA50', 'MACD', 'Signal_Line'])
                     df['date'] = pd.to_datetime(df['date'])
                     df.set_index('date', inplace=True)
                 else:
-                    df = pd.DataFrame(columns=['Close', 'EMA12', 'EMA26', 'MACD', 'Signal_Line'])
+                    df = pd.DataFrame(columns=['Close', 'EMA12', 'EMA26', 'MA20', 'MA50', 'MACD', 'Signal_Line'])
+                    df.index.name = 'date'
+                result[symbol] = df
+    finally:
+        put_connection(conn)
+    return result
+
+def fetch_latest_bulk_from_cache(symbols):
+    """
+    Fetch cached data for a list of symbols for the most recent date available in DB.
+    Returns a dict: {symbol: DataFrame}
+    """
+    result = {}
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            # Find the most recent date in stock_cache
+            cur.execute("SELECT MAX(date) FROM stock_cache")
+            latest_date_row = cur.fetchone()
+            latest_date = latest_date_row[0] if latest_date_row else None
+            if not latest_date:
+                # No data in cache
+                for symbol in symbols:
+                    df = pd.DataFrame(columns=['Close', 'EMA12', 'EMA26', 'MA20', 'MA50', 'MACD', 'Signal_Line'])
+                    df.index.name = 'date'
+                    result[symbol] = df
+                return result
+            for symbol in symbols:
+                cur.execute("""
+                    SELECT date, close, ema12, ema26, ma20, ma50, macd, signal_line
+                    FROM stock_cache
+                    WHERE symbol=%s AND date=%s
+                    ORDER BY date
+                """, (symbol, latest_date))
+                rows = cur.fetchall()
+                if rows:
+                    df = pd.DataFrame(rows, columns=['date', 'Close', 'EMA12', 'EMA26', 'MA20', 'MA50', 'MACD', 'Signal_Line'])
+                    df['date'] = pd.to_datetime(df['date'])
+                    df.set_index('date', inplace=True)
+                else:
+                    df = pd.DataFrame(columns=['Close', 'EMA12', 'EMA26', 'MA20', 'MA50', 'MACD', 'Signal_Line'])
                     df.index.name = 'date'
                 result[symbol] = df
     finally:
@@ -313,6 +357,15 @@ def create_forecast_util_table():
     conn = get_connection()
     try:
         with conn.cursor() as cur:
+            # Create enum type if not exists
+            cur.execute("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'model_type_enum') THEN
+                    CREATE TYPE model_type_enum AS ENUM ('MACD_MODEL', 'MA20_MODEL', 'MA50_MODEL');
+                END IF;
+            END$$;
+            """)
             cur.execute("""
             CREATE TABLE IF NOT EXISTS forecast_util (
                 symbol TEXT NOT NULL,
@@ -321,7 +374,8 @@ def create_forecast_util_table():
                 best_aic FLOAT NOT NULL,
                 window_used INTEGER NOT NULL,
                 model_blob BYTEA,
-                PRIMARY KEY (symbol, search_date)
+                model_type model_type_enum NOT NULL,
+                PRIMARY KEY (symbol, search_date, model_type)
             )
             """)
             conn.commit()
@@ -336,7 +390,7 @@ def deserialize_arima_model(blob):
     """Deserialize ARIMA model from bytes."""
     return pickle.loads(blob)
 
-def get_arima_grid_cache(symbol, window_size, cache_days=30, with_model=False):
+def get_arima_grid_cache(symbol, window_size, cache_days=30, with_model=False, model_type=None):
     """
     Returns dict with keys: best_order, best_aic, window_used, search_date, model_blob (if with_model=True)
     or None if not found or window_used does not match.
@@ -348,13 +402,20 @@ def get_arima_grid_cache(symbol, window_size, cache_days=30, with_model=False):
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("""
+            query = """
                 SELECT best_order, best_aic, window_used, search_date, model_blob
                 FROM forecast_util
                 WHERE symbol=%s AND search_date >= %s
+            """
+            params = [symbol, cache_valid_since]
+            if model_type is not None:
+                query += " AND model_type=%s"
+                params.append(model_type)
+            query += """
                 ORDER BY search_date DESC
                 LIMIT 1
-            """, (symbol, cache_valid_since))
+            """
+            cur.execute(query, tuple(params))
             row = cur.fetchone()
             if row and row[2] == window_size:
                 result = {
@@ -370,7 +431,7 @@ def get_arima_grid_cache(symbol, window_size, cache_days=30, with_model=False):
         put_connection(conn)
     return None
 
-def set_arima_grid_cache(symbol, best_order, best_aic, window_used, model=None):
+def set_arima_grid_cache(symbol, best_order, best_aic, window_used, model=None, model_type=None):
     """
     Save ARIMA grid search result for a symbol and window, including the model as a blob.
     """
@@ -381,30 +442,193 @@ def set_arima_grid_cache(symbol, best_order, best_aic, window_used, model=None):
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO forecast_util (symbol, search_date, best_order, best_aic, window_used, model_blob)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT (symbol, search_date) DO UPDATE
+                INSERT INTO forecast_util (symbol, search_date, best_order, best_aic, window_used, model_blob, model_type)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (symbol, search_date, model_type) DO UPDATE
                 SET best_order=EXCLUDED.best_order,
                     best_aic=EXCLUDED.best_aic,
                     window_used=EXCLUDED.window_used,
-                    model_blob=EXCLUDED.model_blob
+                    model_blob=EXCLUDED.model_blob,
+                    model_type=EXCLUDED.model_type
             """, (
                 symbol,
                 today,
                 str(best_order),
                 float(best_aic),
                 int(window_used),
-                model_blob
+                model_blob,
+                model_type
             ))
             conn.commit()
     finally:
         put_connection(conn)
 
-def get_cached_arima_model(symbol, window_size, cache_days=30):
+def get_cached_arima_model(symbol, window_size, cache_days=30, model_type=None):
     """
     Returns the deserialized ARIMA model if found and valid, else None.
     """
-    cached = get_arima_grid_cache(symbol, window_size, cache_days=cache_days, with_model=True)
+    cached = get_arima_grid_cache(symbol, window_size, cache_days=cache_days, with_model=True, model_type=model_type)
     if cached and cached.get("model_blob"):
         return deserialize_arima_model(cached["model_blob"])
     return None
+
+def create_symbol_picks_table():
+    """
+    Create the symbol_picks table to store filtered symbols for a watchlist.
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS symbol_picks (
+                watchlist_name TEXT NOT NULL,
+                filter_results JSONB NOT NULL,
+                applied_date DATE NOT NULL,
+                PRIMARY KEY (watchlist_name, applied_date)
+            )
+            """)
+            conn.commit()
+    finally:
+        put_connection(conn)
+
+def save_symbol_picks(watchlist_name, filter_results, applied_date):
+    """
+    Save or update filter results for a watchlist on a specific date.
+    filter_results should be a dict: {filter_name: [symbols]}
+    Overwrites the row if one already exists for the given watchlist_name and applied_date.
+    """
+    import json
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO symbol_picks (watchlist_name, filter_results, applied_date)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (watchlist_name, applied_date) DO UPDATE
+                SET filter_results = EXCLUDED.filter_results
+            """, (
+                watchlist_name,
+                json.dumps(filter_results),
+                applied_date
+            ))
+            conn.commit()
+    finally:
+        put_connection(conn)
+
+def get_symbol_picks(watchlist_name, applied_date):
+    """
+    Retrieve filter results for a watchlist and date.
+    Returns a dict {filter_name: [symbols]} or None if not found.
+    """
+    import json
+    conn = get_connection()
+    # print(f"Fetching symbol picks for {watchlist_name} on {applied_date}")
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT filter_results FROM symbol_picks
+                WHERE watchlist_name=%s AND applied_date=%s
+            """, (watchlist_name, applied_date))
+            row = cur.fetchone()
+            if row:
+                filter_results = row[0]
+                # If already a dict (psycopg2 with jsonb), return as is; else, parse as JSON string
+                if isinstance(filter_results, dict):
+                    return filter_results
+                return json.loads(filter_results)
+    finally:
+        put_connection(conn)
+    return None
+
+def create_symbol_properties_table():
+    """
+    Create the symbol_properties table with unique symbol and company_name columns.
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS symbol_properties (
+                symbol TEXT PRIMARY KEY,
+                company_name TEXT
+            )
+            """)
+            conn.commit()
+    finally:
+        put_connection(conn)
+
+def upsert_symbol_property(symbol, company_name):
+    """
+    Insert or update a symbol and its company name.
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO symbol_properties (symbol, company_name)
+                VALUES (%s, %s)
+                ON CONFLICT (symbol) DO UPDATE
+                SET company_name = EXCLUDED.company_name
+            """, (symbol, company_name))
+            conn.commit()
+    finally:
+        put_connection(conn)
+
+def get_company_name(symbol):
+    """
+    Get the company name for a given symbol.
+    Returns the company name string or None if not found.
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT company_name FROM symbol_properties WHERE symbol=%s
+            """, (symbol,))
+            row = cur.fetchone()
+            return row[0] if row else None
+    finally:
+        put_connection(conn)
+
+def get_all_symbol_properties():
+    """
+    Get all symbol/company_name pairs as a list of dicts.
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT symbol, company_name FROM symbol_properties ORDER BY symbol
+            """)
+            return [{"symbol": row[0], "company_name": row[1]} for row in cur.fetchall()]
+    finally:
+        put_connection(conn)
+
+def delete_symbol_property(symbol):
+    """
+    Delete a symbol from the symbol_properties table.
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                DELETE FROM symbol_properties WHERE symbol=%s
+            """, (symbol,))
+            conn.commit()
+    finally:
+        put_connection(conn)
+
+def get_company_names(symbols):
+    """
+    Given a list of symbols, return a dict {symbol: company_name} for those present in the table.
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT symbol, company_name FROM symbol_properties WHERE symbol = ANY(%s)",
+                (symbols,)
+            )
+            return {row[0]: row[1] for row in cur.fetchall()}
+    finally:
+        put_connection(conn)
