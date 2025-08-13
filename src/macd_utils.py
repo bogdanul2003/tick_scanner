@@ -1,3 +1,4 @@
+import multiprocessing
 import pandas as pd
 from datetime import datetime, time, timedelta
 from fastapi import HTTPException
@@ -69,18 +70,22 @@ def get_macd_for_range(symbol: str, start_date, end_date):
                 "date": date.date().isoformat(),
                 "close": row['Close'],
                 "macd": row['MACD'],
-                "signal_line": row['Signal_Line']
+                "signal_line": row['Signal_Line'],
+                "ma20": row.get('MA20'),
+                "ma50": row.get('MA50')
             })
         else:
             row = fetch_from_cache(symbol, date.date())
             if row:
-                close, ema12, ema26, macd, signal_line = row
+                close, ema12, ema26, ma20, ma50, macd, signal_line = row
                 results.append({
                     "symbol": symbol,
                     "date": date.date().isoformat(),
                     "close": close,
                     "macd": macd,
-                    "signal_line": signal_line
+                    "signal_line": signal_line,
+                    "ma20": ma20,
+                    "ma50": ma50
                 })
             else:
                 results.append({
@@ -136,28 +141,94 @@ def get_macd_for_range_bulk(symbols: list, start_date, end_date):
                     "date": date.date().isoformat(),
                     "close": row['Close'],
                     "macd": row['MACD'],
-                    "signal_line": row['Signal_Line']
+                    "signal_line": row['Signal_Line'],
+                    "ma20": row.get('MA20'),
+                    "ma50": row.get('MA50')
                 })
             else:
-                # print(f"Fetching missing data for {symbol} on {date.date()}")
                 row = fetch_from_cache(symbol, date.date())
                 if row:
-                    close, ema12, ema26, macd, signal_line = row
+                    # row: close, ema12, ema26, ma20, ma50, macd, signal_line
+                    close, ema12, ema26, ma20, ma50, macd, signal_line = row
                     symbol_results.append({
-                    "symbol": symbol,
-                    "date": date.date().isoformat(),
-                    "close": close,
-                    "macd": macd,
-                    "signal_line": signal_line
+                        "symbol": symbol,
+                        "date": date.date().isoformat(),
+                        "close": close,
+                        "macd": macd,
+                        "signal_line": signal_line,
+                        "ma20": ma20,
+                        "ma50": ma50
                     })
                 else:
                     symbol_results.append({
-                    "symbol": symbol,
-                    "date": date.date().isoformat(),
-                    "error": "No data"
+                        "symbol": symbol,
+                        "date": date.date().isoformat(),
+                        "error": "No data"
                     })
         results[symbol] = symbol_results
     return results
+
+def process_symbols(args):
+    symbols_chunk, closing_prices_bulk, cached_data_dict, missing_dates_dict, date = args
+    chunk_results = {}
+    for symbol in symbols_chunk:
+        # --- Robust extraction of 'Close' price for each symbol ---
+        symbol_data_list = closing_prices_bulk.get(symbol, [])
+        if not symbol_data_list:
+            chunk_results[symbol] = {"error": f"No data found for symbol: {symbol}"}
+            continue
+
+        # Convert list of dicts to DataFrame
+        symbol_data = pd.DataFrame(symbol_data_list)
+        symbol_data['date'] = pd.to_datetime(symbol_data['date'])
+        symbol_data.set_index('date', inplace=True)
+        symbol_data.index = symbol_data.index.normalize()
+        symbol_data = symbol_data.rename(columns={'close': 'Close'})
+        symbol_data = symbol_data.dropna(subset=['Close'])
+
+        # Merge with cached data if available
+        cached_data = cached_data_dict.get(symbol, pd.DataFrame())
+        if not cached_data.empty and cached_data.index.tz is not None:
+            cached_data.index = cached_data.index.tz_convert(None)
+            cached_data.index = cached_data.index.normalize()
+        if not cached_data.empty:
+            all_data = pd.concat([cached_data, symbol_data])
+            all_data = all_data[~all_data.index.duplicated(keep='last')].sort_index()
+        else:
+            all_data = symbol_data.copy()
+        all_data = all_data[['Close']]
+        all_data['EMA12'] = all_data['Close'].ewm(span=12, adjust=False).mean()
+        all_data['EMA26'] = all_data['Close'].ewm(span=26, adjust=False).mean()
+        # --- Add moving averages ---
+        all_data['MA20'] = all_data['Close'].rolling(window=20, min_periods=1).mean()
+        all_data['MA50'] = all_data['Close'].rolling(window=50, min_periods=1).mean()
+        all_data['MACD'] = all_data['EMA12'] - all_data['EMA26']
+        all_data['Signal_Line'] = all_data['MACD'].ewm(span=9, adjust=False).mean()
+
+        # Cache only the missing dates for this symbol
+        missing_dates_set = set(missing_dates_dict[symbol])
+        to_cache = all_data[all_data.index.map(lambda x: x.date() in missing_dates_set)]
+        if not to_cache.empty:
+            save_bulk_to_cache(symbol, to_cache)
+
+        # Prepare result for the requested date
+        date_data = all_data[all_data.index.map(lambda x: x.date() == date)]
+        if date_data.empty:
+            date_data = all_data.iloc[-1:]
+            actual_date = date_data.index[0].date()
+            note = f"Using latest available data from {actual_date.isoformat()}"
+        else:
+            actual_date = date
+            note = None
+        chunk_results[symbol] = {
+            "symbol": symbol,
+            "date": actual_date.isoformat(),
+            "close": float(date_data['Close'].iloc[0]),
+            "macd": float(date_data['MACD'].iloc[0]),
+            "signal_line": float(date_data['Signal_Line'].iloc[0]),
+            "note": note
+        }
+    return chunk_results
 
 def calculate_macd_and_signal_bulk(symbols: list, date: pd.Timestamp, cached_data_dict: dict, missing_dates_dict: dict):
     """
@@ -216,80 +287,37 @@ def calculate_macd_and_signal_bulk(symbols: list, date: pd.Timestamp, cached_dat
         # Add lookback buffer
         lookback_buffer = 10
         fetch_start = partition_start - timedelta(days=lookback_buffer)
-        fetch_end = partition_end + timedelta(days=1)
-        print(f"Fetching bulk data from {fetch_start} to {fetch_end} for symbols: {partition_symbols}")
+        fetch_end = partition_end
 
-        # Fetch bulk data using yfinance.Tickers
-        yf_tickers = yf.Tickers(" ".join(partition_symbols))
-        history = yf_tickers.history(start=fetch_start, end=fetch_end, interval="1d", group_by='ticker')
-        print("history columns:", history)
+        # Fetch bulk closing prices using get_closing_prices_bulk
+        closing_prices_bulk = get_closing_prices_bulk(partition_symbols, fetch_start, fetch_end)
+        # print("closing_prices_bulk:", closing_prices_bulk)
 
-        for symbol in partition_symbols:
-            # --- Robust extraction of 'Close' price for each symbol ---
-            symbol_data = None
-            if isinstance(history.columns, pd.MultiIndex):
-                try:
-                    symbol_data = history['Close'][symbol].to_frame('Close')
-                except Exception:
-                    try:
-                        symbol_data = history[symbol]['Close'].to_frame('Close')
-                    except Exception:
-                        results[symbol] = {"error": f"No data found for symbol: {symbol}"}
-                        continue
-            else:
-                if 'Close' in history.columns:
-                    symbol_data = history[['Close']]
-                else:
-                    results[symbol] = {"error": f"No data found for symbol: {symbol}"}
-                    continue
+        # Split partition_symbols into 4 chunks
+        num_chunks = 4
+        chunks = [partition_symbols[i::num_chunks] for i in range(num_chunks)]
 
-            # Remove timezone and normalize index
-            if symbol_data.index.tz is not None:
-                symbol_data.index = symbol_data.index.tz_convert(None)
-            symbol_data.index = symbol_data.index.normalize()
+        # Prepare arguments for each chunk
+        pool_args = [
+            (chunk, closing_prices_bulk, cached_data_dict, missing_dates_dict, date)
+            for chunk in chunks
+        ]
 
-            # Merge with cached data if available
-            cached_data = cached_data_dict.get(symbol, pd.DataFrame())
-            if not cached_data.empty and cached_data.index.tz is not None:
-                cached_data.index = cached_data.index.tz_convert(None)
-                cached_data.index = cached_data.index.normalize()
-            if not cached_data.empty:
-                all_data = pd.concat([cached_data, symbol_data])
-                all_data = all_data[~all_data.index.duplicated(keep='last')].sort_index()
-            else:
-                all_data = symbol_data.copy()
-            all_data = all_data[['Close']]
-            all_data['EMA12'] = all_data['Close'].ewm(span=12, adjust=False).mean()
-            all_data['EMA26'] = all_data['Close'].ewm(span=26, adjust=False).mean()
-            all_data['MACD'] = all_data['EMA12'] - all_data['EMA26']
-            all_data['Signal_Line'] = all_data['MACD'].ewm(span=9, adjust=False).mean()
+        with multiprocessing.Pool(processes=num_chunks) as pool:
+            chunk_results_list = pool.map(process_symbols, pool_args)
 
-            # Cache only the missing dates for this symbol
-            missing_dates_set = set(missing_dates_dict[symbol])
-            to_cache = all_data[all_data.index.map(lambda x: x.date() in missing_dates_set)]
-            if not to_cache.empty:
-                save_bulk_to_cache(symbol, to_cache)
-
-            # Prepare result for the requested date
-            date_data = all_data[all_data.index.map(lambda x: x.date() == date)]
-            if date_data.empty:
-                date_data = all_data.iloc[-1:]
-                actual_date = date_data.index[0].date()
-                note = f"Using latest available data from {actual_date.isoformat()}"
-            else:
-                actual_date = date
-                note = None
-            results[symbol] = {
-                "symbol": symbol,
-                "date": actual_date.isoformat(),
-                "close": float(date_data['Close'].iloc[0]),
-                "macd": float(date_data['MACD'].iloc[0]),
-                "signal_line": float(date_data['Signal_Line'].iloc[0]),
-                "note": note
-            }
+        # Merge results from all chunks
+        for chunk_results in chunk_results_list:
+            results.update(chunk_results)
     return results
 
-def macd_crossover_signal(symbols: list, days: int, threshold: float = 0.05, threshold_pos_neg: float = 0.08):
+def macd_crossover_signal(
+    symbols: list,
+    days: int,
+    threshold: float = 0.05,
+    threshold_pos_neg: float = 0.08,
+    with_details: bool = False
+):
     """
     Determines MACD crossover signals for a list of symbols.
     Returns a dict: {symbol: signal_result_dict}
@@ -387,22 +415,60 @@ def macd_crossover_signal(symbols: list, days: int, threshold: float = 0.05, thr
             if recent_positive_dates:
                 macd_just_became_positive = True
 
-            results[symbol] = {
+            # --- Add ma20_just_became_above_ma50 signal ---
+            # print(f"Checking MA20/MA50 crossover for {symbol} with data {macd_data}")
+            ma20_just_became_above_ma50 = False
+            ma20_just_became_above_ma50_date = None
+            lookback_days = 8
+            if len(macd_data) >= 2:
+                for i in range(1, min(lookback_days + 1, len(macd_data))):
+                    curr = macd_data[-i]
+                    prev = macd_data[-i-1] if (len(macd_data) > i) else None
+                    if prev and "ma20" in curr and "ma50" in curr and "ma20" in prev and "ma50" in prev:
+                        try:
+                            if prev["ma20"] is not None and prev["ma50"] is not None and curr["ma20"] is not None and curr["ma50"] is not None:
+                                if float(prev["ma20"]) <= float(prev["ma50"]) and float(curr["ma20"]) > float(curr["ma50"]):
+                                    ma20_just_became_above_ma50 = True
+                                    ma20_just_became_above_ma50_date = curr.get("date")
+                                    break
+                        except Exception:
+                            pass
+
+            # --- Add ma20_is_above_ma50 signal ---
+            ma20_is_above_ma50 = False
+            if "ma20" in last and "ma50" in last and last["ma20"] is not None and last["ma50"] is not None:
+                try:
+                    if float(last["ma20"]) > float(last["ma50"]):
+                        ma20_is_above_ma50 = True
+                except Exception:
+                    pass
+
+            result_dict = {
                 "about_to_cross": bool(about_to_cross),
                 "recent_crossover": recent_crossover,
                 "bullish_macd_above_signal": macd_above_signal,
                 "about_to_become_positive": about_to_become_positive,
                 "about_to_become_negative": about_to_become_negative,
                 "macd_just_became_positive": macd_just_became_positive,
-                "details": {
+                "ma20_just_became_above_ma50": ma20_just_became_above_ma50,
+                "ma20_just_became_above_ma50_date": ma20_just_became_above_ma50_date,
+                "ma20_is_above_ma50": ma20_is_above_ma50
+            }
+            if with_details:
+                result_dict["details"] = {
                     "last_macd": float(last["macd"]),
                     "last_signal": float(last["signal_line"]),
                     "prev_macd": float(prev["macd"]),
                     "prev_signal": float(prev["signal_line"]),
                     "crossover_dates": crossover_dates,
-                    "macd_just_became_positive_dates": recent_positive_dates
+                    "macd_just_became_positive_dates": recent_positive_dates,
+                    "last_ma20": last.get("ma20"),
+                    "last_ma50": last.get("ma50"),
+                    "prev_ma20": prev.get("ma20"),
+                    "prev_ma50": prev.get("ma50"),
+                    "ma20_just_became_above_ma50_date": ma20_just_became_above_ma50_date
                 }
-            }
+            results[symbol] = result_dict
         except Exception as e:
             print(f"Error processing symbol {symbol}: {e}")
             continue
@@ -412,6 +478,8 @@ def macd_crossover_signal(symbols: list, days: int, threshold: float = 0.05, thr
         results.keys(),
         key=lambda sym: (
             not results[sym].get("macd_just_became_positive", False),
+            not results[sym].get("ma20_just_became_above_ma50", False),
+            not results[sym].get("bullish_macd_above_signal", False),
             not results[sym].get("about_to_cross", False),
             not results[sym].get("about_to_become_positive", False)
         )
@@ -428,6 +496,7 @@ def get_closing_prices_bulk(symbols: list, start_date, end_date):
     import pandas as pd
 
     yf_tickers = yf.Tickers(" ".join(symbols))
+    print(f"Fetching bulk data from {start_date} to {end_date + timedelta(days=1)} for symbols: {symbols}")
     history = yf_tickers.history(start=start_date, end=end_date + timedelta(days=1), interval="1d", group_by='ticker')
     results = {}
 

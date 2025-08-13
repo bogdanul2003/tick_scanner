@@ -1,10 +1,12 @@
 from fastapi import FastAPI, HTTPException, Body, UploadFile, File
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware  # Add this import
 import pandas as pd
 from datetime import datetime, timedelta, time
 import yfinance as yf
 from db_utils import (
+    create_symbol_picks_table,
+    create_symbol_properties_table,
     create_table,
     create_watchlist_tables,
     create_watchlist,
@@ -16,7 +18,9 @@ from db_utils import (
     create_forecast_util_table
 )
 from macd_utils import get_latest_market_date, get_macd_for_date, macd_crossover_signal, get_closing_prices_bulk, get_closing_prices
+from picks import get_watchlist_bullish_signal, get_company_names_from_bullish_signal_result
 from concurrent.futures import ProcessPoolExecutor, as_completed
+import io
 
 app = FastAPI(title="Stock MACD API", description="API for retrieving MACD indicators for stocks")
 
@@ -181,20 +185,11 @@ async def api_watchlist_bullish_signal(
     For a given watchlist, check if there is a bullish MACD crossover signal for each symbol.
     """
     try:
-        symbols = get_watchlist_symbols(watchlist_name)
-        if not symbols:
-            raise HTTPException(status_code=404, detail=f"No symbols found in watchlist '{watchlist_name}'")
-        # Use bulk macd_crossover_signal
-        try:
-            results = macd_crossover_signal(symbols, days, threshold)
-        except Exception as e:
-            import traceback
-            print(f"Exception in watchlist_bullish_signal bulk: {e}")
-            traceback.print_exc()
-            results = {symbol: {"error": str(e)} for symbol in symbols}
-        return {"watchlist": watchlist_name, "results": results}
+        return get_watchlist_bullish_signal(watchlist_name, days, threshold)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/macd/{symbol}/history", tags=["MACD"])
 async def get_macd_history(symbol: str, days: int = 60):
@@ -224,6 +219,16 @@ def run_forecast(symbol, days_past, forecast_days):
     except Exception as e:
         import traceback
         print(f"Exception in get_arima_macd_positive_forecast for {symbol}: {e}")
+        traceback.print_exc()
+        return symbol.upper(), {"error": str(e)}
+    
+def run_ma_forecast(symbol, days_past, forecast_days):
+    from forecast_utils import arima_ma20_above_ma50_forecast
+    try:
+        return symbol.upper(), arima_ma20_above_ma50_forecast(symbol.upper(), days_past, forecast_days)
+    except Exception as e:
+        import traceback
+        print(f"Exception in arima_ma20_above_ma50_forecast for {symbol}: {e}")
         traceback.print_exc()
         return symbol.upper(), {"error": str(e)}
 
@@ -384,6 +389,75 @@ async def get_closing_prices_api(
             content={"message": f"An error occurred: {str(e)}"}
         )
 
+@app.post("/watchlist/{watchlist_name}/bullish_companies_csv", tags=["Watchlist"])
+async def api_watchlist_bullish_companies_csv(
+    watchlist_name: str,
+    days: int = Body(30, embed=True),
+    threshold: float = Body(0.05, embed=True)
+):
+    """
+    For a given watchlist, return a CSV file with columns Name and Symbol for all companies
+    that have both ma20_just_became_above_ma50 and bullish_macd_above_signal set to True.
+    The filename includes the current date and time and the watchlist name.
+    """
+    try:
+        # Get bullish signal result
+        result = get_watchlist_bullish_signal(watchlist_name, days, threshold)
+        # Get company names for filtered symbols
+        company_dict = get_company_names_from_bullish_signal_result(result)
+        # Prepare CSV
+        output = io.StringIO()
+        output.write("Name,Symbol\n")
+        for symbol, name in company_dict.items():
+            # Escape quotes and commas in name if needed
+            safe_name = '"' + name.replace('"', '""') + '"' if ',' in name or '"' in name else name
+            output.write(f"{safe_name},{symbol}\n")
+        output.seek(0)
+        # Generate filename with current date and time and watchlist name
+        from datetime import datetime
+        now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_watchlist = "".join(c if c.isalnum() or c in ('-', '_') else '_' for c in watchlist_name)
+        filename = f"{now_str}_{safe_watchlist}_bullish_companies.csv"
+        return StreamingResponse(
+            output,
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    except Exception as e:
+        import traceback
+        print(f"Exception in api_watchlist_bullish_companies_csv: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/ma/arima_ma20_above_ma50_forecast", tags=["MA"])
+async def get_arima_ma20_above_ma50_forecast_bulk(
+    symbols: list[str] = Body(..., embed=True),
+    days_past: int = 100,
+    forecast_days: int = 5
+):
+    """
+    For a list of symbols, forecast if MA20 will become higher than MA50 in the next `forecast_days` days using ARIMA,
+    based on the past `days_past` days of MA20/MA50 data. Returns only symbols where ma20_will_be_above_ma50 is True.
+    """
+    results = {}
+    with ProcessPoolExecutor(max_workers=4) as executor:
+        futures = [
+            executor.submit(run_ma_forecast, symbol, days_past, forecast_days)
+            for symbol in symbols
+        ]
+        for future in as_completed(futures):
+            symbol, result = future.result()
+            results[symbol] = result
+
+    print(f"Results for {len(results)} symbols: {results.keys()} results: {results}")
+    # Filter to only those where ma20_will_be_above_ma50_and_macd_above_signal is True
+    filtered_results = {
+        sym: results[sym]
+        for sym in results
+        if isinstance(results[sym], dict) and results[sym].get("ma20_will_be_above_ma50_and_macd_above_signal", False)
+    }
+    return filtered_results
+
 if __name__ == "__main__":
     import uvicorn
 
@@ -391,4 +465,6 @@ if __name__ == "__main__":
     create_table()
     create_watchlist_tables()
     create_forecast_util_table()
+    create_symbol_picks_table()
+    create_symbol_properties_table()
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
