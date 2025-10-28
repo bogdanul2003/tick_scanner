@@ -108,13 +108,40 @@ def get_company_names_for_symbols(symbols):
 
     return {sym: cached.get(sym, "") for sym in symbols}
 
-def get_company_names_from_bullish_signal_result(result):
+def get_company_names_and_prices_for_symbols(symbols):
     """
-    Given the result from get_watchlist_bullish_signal(), return a dict {symbol: company_name}
-    for all symbols in the result that have both ma20_just_became_above_ma50 and bullish_macd_above_signal set to True.
+    Given a list of symbols, returns a dict {symbol: {"company_name": ..., "close": ...}}
+    that contains both company names and latest closing prices.
     """
+    from db_utils import fetch_latest_bulk_from_cache
+    
+    company_names = get_company_names_for_symbols(symbols)
+    latest_cache = fetch_latest_bulk_from_cache(symbols)
+    result = {}
+    
+    for sym in symbols:
+        close = None
+        df = latest_cache.get(sym)
+        if df is not None and not df.empty:
+            # Get the closing price from the latest row
+            close = df.iloc[-1]["Close"]
+        result[sym] = {
+            "company_name": company_names.get(sym, ""),
+            "close": close
+        }
+    
+    return result
+
+def get_company_names_from_bullish_signal_result(watchlist_name, days=30, threshold=0.05):
+    """
+    Given the watchlist name and optional days/threshold, call get_watchlist_bullish_signal(),
+    and return a dict {symbol: {"company_name": ..., "close": ...}} for all symbols in the result that have both
+    ma20_just_became_above_ma50 and bullish_macd_above_signal set to True.
+    """
+    result = get_watchlist_bullish_signal(watchlist_name, days, threshold)
     filtered_symbols = [
         sym for sym, signals in result.get("results", {}).items()
         if signals.get("ma20_just_became_above_ma50") and signals.get("bullish_macd_above_signal")
     ]
-    return get_company_names_for_symbols(filtered_symbols)
+    
+    return get_company_names_and_prices_for_symbols(filtered_symbols)

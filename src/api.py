@@ -396,22 +396,27 @@ async def api_watchlist_bullish_companies_csv(
     threshold: float = Body(0.05, embed=True)
 ):
     """
-    For a given watchlist, return a CSV file with columns Name and Symbol for all companies
+    For a given watchlist, return a CSV file with columns Name, Symbol, Open Price, and Amount for all companies
     that have both ma20_just_became_above_ma50 and bullish_macd_above_signal set to True.
     The filename includes the current date and time and the watchlist name.
     """
     try:
-        # Get bullish signal result
-        result = get_watchlist_bullish_signal(watchlist_name, days, threshold)
-        # Get company names for filtered symbols
-        company_dict = get_company_names_from_bullish_signal_result(result)
+        # Get company names and closing prices for filtered symbols
+        company_dict = get_company_names_from_bullish_signal_result(watchlist_name, days, threshold)
         # Prepare CSV
         output = io.StringIO()
-        output.write("Name,Symbol\n")
-        for symbol, name in company_dict.items():
+        output.write("Name,Symbol,Open Price,Amount\n")
+        for symbol, info in company_dict.items():
+            name = info.get("company_name", "")
+            close = info.get("close", "")
+            # Format close to 2 decimals if it's a number
+            if isinstance(close, (float, int)):
+                close_str = f"{close:.2f}"
+            else:
+                close_str = close
             # Escape quotes and commas in name if needed
             safe_name = '"' + name.replace('"', '""') + '"' if ',' in name or '"' in name else name
-            output.write(f"{safe_name},{symbol}\n")
+            output.write(f"{safe_name},{symbol},{close_str},1\n")
         output.seek(0)
         # Generate filename with current date and time and watchlist name
         from datetime import datetime
