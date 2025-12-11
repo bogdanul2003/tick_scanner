@@ -262,26 +262,43 @@ async def get_arima_macd_positive_forecast_bulk(
         
         will_become_positive = result.get("will_become_positive", False)
         forecast_values = result.get("forecast_values", [])
-        
+        details = result.get("details")
+        last_macd = details.get("last_macd") if isinstance(details, dict) else None
+
         # Convert forecasted_macd from dict to list if needed
         if isinstance(result.get("forecasted_macd"), dict):
-            forecast_values = list(result["forecasted_macd"].values())
+            if not forecast_values:
+                forecast_values = list(result["forecasted_macd"].values())
+        
+        if last_macd is not None:
+            if not isinstance(forecast_values, list):
+                forecast_values = list(forecast_values)
+            forecast_values = [last_macd, *forecast_values]
+
+        
         
         # No forecast values case
         if not forecast_values:
             return (will_become_positive, False, False, float('-inf'), float('-inf'))
         
         # Check if values are increasing
-        is_increasing = all(forecast_values[i] < forecast_values[i+1] for i in range(len(forecast_values)-1))
+        # Filter out None values for comparison
+        valid_values = [v for v in forecast_values if v is not None]
+        if len(valid_values) < 2:
+            is_increasing = False
+        else:
+            is_increasing = all(valid_values[i] < valid_values[i+1] for i in range(len(valid_values)-1))
         
         # Check if first value is positive
-        first_value_positive = forecast_values[0] > 0
+        first_value_positive = False
+        if forecast_values and forecast_values[0] is not None:
+            first_value_positive = forecast_values[0] > 0
         
         # Find index of first positive value
         first_positive_index = float('inf')
         first_positive_value = float('inf')
         for i, value in enumerate(forecast_values):
-            if value > 0:
+            if value is not None and value > 0:
                 first_positive_index = i
                 first_positive_value = value
                 break
@@ -462,6 +479,45 @@ async def get_arima_ma20_above_ma50_forecast_bulk(
         if isinstance(results[sym], dict) and results[sym].get("ma20_will_be_above_ma50_and_macd_above_signal", False)
     }
     return filtered_results
+
+@app.post("/watchlist/{watchlist_name}/combined_forecast", tags=["Watchlist"])
+async def get_combined_forecast(watchlist_name: str):
+    """
+    For a given watchlist, return symbols that have both will_become_positive and ma20_will_be_above_ma50 set to True
+    in the stock_cache table for the current date.
+    """
+    try:
+        from db_utils import get_watchlist_symbols, get_connection, put_connection
+        from macd_utils import get_latest_market_date
+        
+        symbols = get_watchlist_symbols(watchlist_name)
+        if not symbols:
+            return {"symbols": []}
+        
+        current_date = get_latest_market_date()
+        
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT symbol 
+                    FROM stock_cache
+                    WHERE symbol = ANY(%s) 
+                    AND date = %s
+                    AND will_become_positive = TRUE
+                    AND ma20_will_be_above_ma50 = TRUE
+                """, (symbols, current_date))
+                matching_symbols = [row[0] for row in cur.fetchall()]
+        finally:
+            put_connection(conn)
+        
+        return {"symbols": matching_symbols, "date": current_date.isoformat()}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        print(f"Exception in get_combined_forecast: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

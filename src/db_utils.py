@@ -42,8 +42,26 @@ def create_table():
                 ma50 FLOAT,
                 macd FLOAT,
                 signal_line FLOAT,
+                will_become_positive BOOLEAN DEFAULT FALSE,
+                ma20_will_be_above_ma50 BOOLEAN DEFAULT FALSE,
                 PRIMARY KEY (symbol, date)
             )
+            """)
+            # Add columns if they don't exist (for existing tables)
+            cur.execute("""
+            DO $$ 
+            BEGIN
+                BEGIN
+                    ALTER TABLE stock_cache ADD COLUMN will_become_positive BOOLEAN DEFAULT FALSE;
+                EXCEPTION
+                    WHEN duplicate_column THEN NULL;
+                END;
+                BEGIN
+                    ALTER TABLE stock_cache ADD COLUMN ma20_will_be_above_ma50 BOOLEAN DEFAULT FALSE;
+                EXCEPTION
+                    WHEN duplicate_column THEN NULL;
+                END;
+            END $$;
             """)
             conn.commit()
     finally:
@@ -522,7 +540,7 @@ def get_symbol_picks(watchlist_name, applied_date):
     """
     import json
     conn = get_connection()
-    # print(f"Fetching symbol picks for {watchlist_name} on {applied_date}")
+    print(f"Fetching symbol picks for {watchlist_name} on {applied_date}")
     try:
         with conn.cursor() as cur:
             cur.execute("""
@@ -630,5 +648,73 @@ def get_company_names(symbols):
                 (symbols,)
             )
             return {row[0]: row[1] for row in cur.fetchall()}
+    finally:
+        put_connection(conn)
+
+def cache_macd_positive_forecast(symbol, forecast_date, will_become_positive):
+    """
+    Cache the will_become_positive result for a symbol and forecast_date in stock_cache table.
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO stock_cache (symbol, date, will_become_positive)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (symbol, date) DO UPDATE
+                SET will_become_positive = EXCLUDED.will_become_positive
+            """, (symbol, forecast_date, will_become_positive))
+            conn.commit()
+    finally:
+        put_connection(conn)
+
+def cache_ma20_above_ma50_forecast(symbol, forecast_date, ma20_will_be_above_ma50):
+    """
+    Cache the ma20_will_be_above_ma50 result for a symbol and forecast_date in stock_cache table.
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO stock_cache (symbol, date, ma20_will_be_above_ma50)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (symbol, date) DO UPDATE
+                SET ma20_will_be_above_ma50 = EXCLUDED.ma20_will_be_above_ma50
+            """, (symbol, forecast_date, ma20_will_be_above_ma50))
+            conn.commit()
+    finally:
+        put_connection(conn)
+
+def get_cached_macd_positive_forecast(symbol, forecast_date):
+    """
+    Get cached will_become_positive result for a symbol and forecast_date from stock_cache table.
+    Returns boolean or None if not found.
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT will_become_positive FROM stock_cache
+                WHERE symbol=%s AND date=%s
+            """, (symbol, forecast_date))
+            row = cur.fetchone()
+            return row[0] if row else None
+    finally:
+        put_connection(conn)
+
+def get_cached_ma20_above_ma50_forecast(symbol, forecast_date):
+    """
+    Get cached ma20_will_be_above_ma50 result for a symbol and forecast_date from stock_cache table.
+    Returns boolean or None if not found.
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT ma20_will_be_above_ma50 FROM stock_cache
+                WHERE symbol=%s AND date=%s
+            """, (symbol, forecast_date))
+            row = cur.fetchone()
+            return row[0] if row else None
     finally:
         put_connection(conn)
