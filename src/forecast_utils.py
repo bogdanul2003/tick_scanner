@@ -1,6 +1,22 @@
 import pandas as pd
 from datetime import datetime, timedelta
 from macd_utils import get_latest_market_date, get_macd_for_date, get_macd_for_range
+import math
+
+def sanitize_float(val):
+    if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+        return None
+    return val
+
+def sanitize_data(data):
+    if isinstance(data, dict):
+        return {k: sanitize_data(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [sanitize_data(v) for v in data]
+    elif isinstance(data, float):
+        return sanitize_float(data)
+    else:
+        return data
 
 
 def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days: int = 3):
@@ -207,7 +223,14 @@ def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days
 
     forecasted_macd = {date: value for date, value in zip(forecasted_dates, forecasted_macd_values)}
 
-    return {
+    # Cache the forecast result in stock_cache table using the last market date (end_date)
+    try:
+        from db_utils import cache_macd_positive_forecast
+        cache_macd_positive_forecast(symbol, end_date, will_become_positive)
+    except Exception as e:
+        print(f"Failed to cache will_become_positive for {symbol}: {e}")
+
+    return sanitize_data({
         "will_become_positive": will_become_positive,
         "forecasted_macd": forecasted_macd,
         "forecasted_dates": forecasted_dates,
@@ -217,7 +240,7 @@ def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days
             "window_used": window_size,
             "order_used": best_order
         }
-    }
+    })
 
 
 def arima_ma20_above_ma50_forecast(symbol: str, days_past: int = 60, forecast_days: int = 3):
@@ -404,10 +427,25 @@ def arima_ma20_above_ma50_forecast(symbol: str, days_past: int = 60, forecast_da
         float(current_macd) > float(current_signal_line)
     )
 
-    return {
+    # Cache the forecast result in stock_cache table using the last market date (end_date)
+    try:
+        from db_utils import cache_ma20_above_ma50_forecast
+        cache_ma20_above_ma50_forecast(symbol, end_date, ma20_will_be_above_ma50)
+    except Exception as e:
+        print(f"Failed to cache ma20_will_be_above_ma50 for {symbol}: {e}")
+
+    return sanitize_data({
         "ma20_will_be_above_ma50": ma20_will_be_above_ma50,
         "ma20_will_be_above_ma50_and_macd_above_signal": ma20_will_be_above_ma50_and_macd_above_signal,
         "forecasted_ma20": forecasted_ma20,
         "forecasted_ma50": forecasted_ma50,
-        "forecasted_dates": forecasted_dates
-    }
+        "forecasted_dates": forecasted_dates,
+        "details": {
+            "last_ma20": float(ma20_series[-1]),
+            "last_ma50": float(ma50_series[-1]),
+            "ma20_series": ma20_series,
+            "ma50_series": ma50_series,
+            "window_used": window_size,
+            "order_used": (best_order_ma20, best_order_ma50)
+        }
+    })

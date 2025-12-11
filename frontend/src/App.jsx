@@ -545,6 +545,21 @@ function WatchlistBullishForecast({ watchlist, symbols, onClose }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const didRun = React.useRef(false);
+  const formatDecimal = (value) => {
+    if (value === null || value === undefined) return "N/A";
+    const num = typeof value === "number" ? value : Number(value);
+    if (Number.isFinite(num)) {
+      return num.toFixed(3);
+    }
+    if (value && typeof value.toFixed === "function") {
+      try {
+        return value.toFixed(3);
+      } catch {
+        return String(value);
+      }
+    }
+    return String(value);
+  };
 
   React.useEffect(() => {
     if (didRun.current) return;
@@ -603,9 +618,21 @@ function WatchlistBullishForecast({ watchlist, symbols, onClose }) {
               )}
               {forecast && forecast.forecasted_macd && (
                 <span style={{ marginLeft: 10, fontSize: "0.95em" }}>
-                  [Forecast: {Array.isArray(forecast.forecasted_macd)
-                    ? forecast.forecasted_macd.map(x => x && x.toFixed ? x.toFixed(3) : x).join(", ")
-                    : Object.values(forecast.forecasted_macd).map(x => x && x.toFixed ? x.toFixed(3) : x).join(", ")}]
+                  {(() => {
+                    const lastMacd = forecast.details && Object.prototype.hasOwnProperty.call(forecast.details, "last_macd")
+                      ? forecast.details.last_macd
+                      : forecast.last_macd;
+                    const valuesArray = Array.isArray(forecast.forecasted_macd)
+                      ? forecast.forecasted_macd
+                      : Object.values(forecast.forecasted_macd);
+                    const formattedForecast = valuesArray.length
+                      ? valuesArray.map(val => formatDecimal(val)).join(", ")
+                      : "N/A";
+                    return `[` +
+                      `Last MACD: ${formatDecimal(lastMacd)}` +
+                      (valuesArray.length ? ` | Forecast: ${formattedForecast}` : "") +
+                      `]`;
+                  })()}
                 </span>
               )}
             </div>
@@ -686,6 +713,71 @@ function WatchlistBullishMAForecast({ watchlist, symbols, onClose }) {
               )}
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WatchlistCombinedForecast({ watchlist, onClose }) {
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const didRun = React.useRef(false);
+
+  React.useEffect(() => {
+    if (didRun.current) return;
+    didRun.current = true;
+
+    const fetchCombined = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/watchlist/${encodeURIComponent(watchlist)}/combined_forecast`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" }
+        });
+        if (!res.ok) {
+          const errorData = await res.json();
+          throw new Error(errorData.detail || "Failed to fetch combined forecast");
+        }
+        const data = await res.json();
+        setResult(data);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchCombined();
+  }, []);
+
+  return (
+    <div style={{ border: "1px solid #ccc", margin: "10px 0", padding: 10 }}>
+      <h4>Combined Forecast for "{watchlist}"</h4>
+      <button onClick={onClose} style={{ marginBottom: 10 }}>Close</button>
+      {loading && <div>Loading...</div>}
+      {error && <div style={{ color: "red" }}>{error}</div>}
+      {result && (
+        <div style={{ marginTop: 10 }}>
+          <p>Symbols with both MACD positive forecast AND MA20 above MA50 forecast (as of {result.date}):</p>
+          {result.symbols && result.symbols.length > 0 ? (
+            <div>
+              {result.symbols.map(symbol => (
+                <div key={symbol} style={{ marginBottom: 8 }}>
+                  <a
+                    href={getChartUrl(symbol)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ fontWeight: "bold", textDecoration: "underline", color: "green", cursor: "pointer" }}
+                  >
+                    {symbol}
+                  </a>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p style={{ color: "gray" }}>No symbols match both criteria.</p>
+          )}
         </div>
       )}
     </div>
@@ -859,6 +951,7 @@ function WatchlistSignalsPage({ watchlist, symbols, onBack }) {
   const [showSignal, setShowSignal] = useState(true);
   const [showForecast, setShowForecast] = useState(false);
   const [showMAForecast, setShowMAForecast] = useState(false);
+  const [showCombinedForecast, setShowCombinedForecast] = useState(false);
 
   return (
     <div>
@@ -867,6 +960,7 @@ function WatchlistSignalsPage({ watchlist, symbols, onBack }) {
       <button onClick={() => setShowSignal(true)} disabled={showSignal}>Show Bullish Signal</button>
       <button onClick={() => setShowForecast(true)} style={{ marginLeft: 10 }} disabled={showForecast}>Show Bullish Forecast</button>
       <button onClick={() => setShowMAForecast(true)} style={{ marginLeft: 10 }} disabled={showMAForecast}>Show MA20&gt;MA50 Forecast</button>
+      <button onClick={() => setShowCombinedForecast(true)} style={{ marginLeft: 10 }} disabled={showCombinedForecast}>Combined Forecast</button>
       {showSignal && (
         <WatchlistBullishSignal
           watchlist={watchlist}
@@ -885,6 +979,12 @@ function WatchlistSignalsPage({ watchlist, symbols, onBack }) {
           watchlist={watchlist}
           symbols={symbols}
           onClose={() => setShowMAForecast(false)}
+        />
+      )}
+      {showCombinedForecast && (
+        <WatchlistCombinedForecast
+          watchlist={watchlist}
+          onClose={() => setShowCombinedForecast(false)}
         />
       )}
     </div>
