@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Body, UploadFile, File
+from fastapi import FastAPI, HTTPException, Body, UploadFile, File, Form
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware  # Add this import
 import pandas as pd
@@ -97,8 +97,8 @@ async def api_create_watchlist(name: str = Body(..., embed=True)):
         raise HTTPException(status_code=400, detail="Watchlist already exists")
     return {"id": watchlist_id, "name": name}
 
-@app.delete("/watchlist", tags=["Watchlist"])
-async def api_delete_watchlist(name: str = Body(..., embed=True)):
+@app.delete("/watchlist/{name}", tags=["Watchlist"])
+async def api_delete_watchlist(name: str):
     """
     Delete a watchlist by name.
     """
@@ -191,6 +191,20 @@ async def api_watchlist_bullish_signal(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+import math
+
+def sanitize_float(value):
+    """Convert NaN/Infinity to None for JSON serialization."""
+    if value is None:
+        return None
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+        return None
+    return value
+
+def sanitize_record(record):
+    """Sanitize all float values in a dictionary."""
+    return {k: sanitize_float(v) if isinstance(v, (float, int, type(None))) else v for k, v in record.items()}
+
 @app.get("/macd/{symbol}/history", tags=["MACD"])
 async def get_macd_history(symbol: str, days: int = 60):
     """
@@ -202,7 +216,9 @@ async def get_macd_history(symbol: str, days: int = 60):
         start_date = end_date - timedelta(days=days-1)
         from macd_utils import get_macd_for_range
         result = get_macd_for_range(symbol, start_date, end_date)
-        return result
+        # Sanitize float values (NaN, Infinity) for JSON serialization
+        sanitized_result = [sanitize_record(r) for r in result]
+        return sanitized_result
     except Exception as e:
         import traceback
         print(f"Exception in get_macd_history: {e}")
@@ -320,7 +336,7 @@ async def get_arima_macd_positive_forecast_bulk(
 
 @app.post("/watchlist/upload", tags=["Watchlist"])
 async def api_upload_watchlist(
-    watchlist_name: str = Body(..., embed=True),
+    watchlist_name: str = Form(...),
     file: UploadFile = File(...)
 ):
     """
@@ -332,9 +348,9 @@ async def api_upload_watchlist(
         symbols = [line.strip().upper() for line in lines if line.strip()]
         if not symbols:
             raise HTTPException(status_code=400, detail="No symbols found in file")
-        watchlist_id = create_watchlist(watchlist_name)
-        if watchlist_id is None:
-            raise HTTPException(status_code=400, detail="Watchlist already exists")
+        # Start of modification: Allow existing watchlists
+        create_watchlist(watchlist_name)
+        # End of modification: If create_watchlist returns None, it means it exists, which is acceptable here.
         added = []
         errors = []
         for symbol in symbols:
@@ -516,6 +532,127 @@ async def get_combined_forecast(watchlist_name: str):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         print(f"Exception in get_combined_forecast: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/patterns/{symbol}", tags=["Patterns"])
+async def get_symbol_patterns(
+    symbol: str,
+    days: int = 120,
+    pattern_type: str = "all"
+):
+    """
+    Scan a symbol for chart patterns (Head and Shoulders, Inverse Head and Shoulders).
+    
+    Args:
+        symbol: Stock symbol to scan
+        days: Number of days of historical data to analyze (default 120)
+        pattern_type: 'all', 'head_and_shoulders', or 'inverse_head_and_shoulders'
+    
+    Returns:
+        List of detected patterns with details
+    """
+    try:
+        from pattern_utils import scan_symbol_for_patterns
+        
+        symbol = symbol.upper()
+        patterns = scan_symbol_for_patterns(symbol, days, pattern_type)
+        
+        return {
+            "symbol": symbol,
+            "days_analyzed": days,
+            "pattern_type": pattern_type,
+            "patterns_found": len(patterns),
+            "patterns": patterns
+        }
+    except Exception as e:
+        print(f"Exception in get_symbol_patterns: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/patterns/bulk", tags=["Patterns"])
+async def get_bulk_patterns(
+    symbols: list[str] = Body(..., embed=True),
+    days: int = 120,
+    pattern_type: str = "all"
+):
+    """
+    Scan multiple symbols for chart patterns.
+    
+    Args:
+        symbols: List of stock symbols to scan
+        days: Number of days of historical data to analyze (default 120)
+        pattern_type: 'all', 'head_and_shoulders', or 'inverse_head_and_shoulders'
+    
+    Returns:
+        Dictionary with symbols as keys and their detected patterns
+    """
+    try:
+        from pattern_utils import scan_symbol_for_patterns
+        
+        results = {}
+        for symbol in symbols:
+            symbol = symbol.upper()
+            try:
+                patterns = scan_symbol_for_patterns(symbol, days, pattern_type)
+                if patterns:
+                    results[symbol] = patterns
+            except Exception as e:
+                print(f"Error scanning {symbol}: {e}")
+                continue
+        
+        return {
+            "days_analyzed": days,
+            "pattern_type": pattern_type,
+            "symbols_with_patterns": len(results),
+            "results": results
+        }
+    except Exception as e:
+        print(f"Exception in get_bulk_patterns: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/watchlist/{watchlist_name}/patterns", tags=["Patterns"])
+async def get_watchlist_patterns(
+    watchlist_name: str,
+    days: int = Body(120, embed=True),
+    pattern_type: str = Body("all", embed=True)
+):
+    """
+    Scan all symbols in a watchlist for chart patterns.
+    
+    Args:
+        watchlist_name: Name of the watchlist to scan
+        days: Number of days of historical data to analyze (default 120)
+        pattern_type: 'all', 'head_and_shoulders', or 'inverse_head_and_shoulders'
+    
+    Returns:
+        Dictionary with symbols that have detected patterns
+    """
+    try:
+        from pattern_utils import scan_watchlist_for_patterns
+        
+        results = scan_watchlist_for_patterns(watchlist_name, days, pattern_type)
+        
+        # Count patterns by type
+        pattern_counts = {"head_and_shoulders": 0, "inverse_head_and_shoulders": 0}
+        for symbol_patterns in results.values():
+            for pattern in symbol_patterns:
+                if pattern["pattern_type"] in pattern_counts:
+                    pattern_counts[pattern["pattern_type"]] += 1
+        
+        return {
+            "watchlist": watchlist_name,
+            "days_analyzed": days,
+            "pattern_type_filter": pattern_type,
+            "symbols_with_patterns": len(results),
+            "pattern_counts": pattern_counts,
+            "results": results
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        print(f"Exception in get_watchlist_patterns: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 

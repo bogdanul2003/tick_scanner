@@ -784,6 +784,328 @@ function WatchlistCombinedForecast({ watchlist, onClose }) {
   );
 }
 
+// Pattern Chart Component - renders price data with pattern markers
+function PatternChart({ symbol, prices, dates, patterns }) {
+  const canvasRef = React.useRef(null);
+  
+  React.useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !prices || prices.length === 0) return;
+    
+    // Filter out null/undefined/NaN values
+    const validPrices = prices.filter(p => p != null && !isNaN(p));
+    if (validPrices.length === 0) return;
+    
+    const ctx = canvas.getContext("2d");
+    const width = canvas.width;
+    const height = canvas.height;
+    const padding = { top: 30, right: 20, bottom: 30, left: 60 };
+    
+    const chartWidth = width - padding.left - padding.right;
+    const chartHeight = height - padding.top - padding.bottom;
+    
+    // Clear canvas
+    ctx.clearRect(0, 0, width, height);
+    
+    // Find min and max values from valid prices
+    const minPrice = Math.min(...validPrices) * 0.98;
+    const maxPrice = Math.max(...validPrices) * 1.02;
+    const priceRange = maxPrice - minPrice || 1; // Avoid division by zero
+    
+    // Helper functions
+    const getX = (index) => padding.left + (index / (prices.length - 1)) * chartWidth;
+    const getY = (price) => padding.top + chartHeight - ((price - minPrice) / priceRange) * chartHeight;
+    
+    // Draw grid lines
+    ctx.strokeStyle = "#eee";
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 5; i++) {
+      const y = padding.top + (i / 5) * chartHeight;
+      ctx.beginPath();
+      ctx.moveTo(padding.left, y);
+      ctx.lineTo(width - padding.right, y);
+      ctx.stroke();
+      
+      // Price labels
+      const price = maxPrice - (i / 5) * priceRange;
+      ctx.fillStyle = "#666";
+      ctx.font = "10px Arial";
+      ctx.textAlign = "right";
+      ctx.fillText(price.toFixed(2), padding.left - 5, y + 3);
+    }
+    
+    // Draw price line - skip null values
+    ctx.beginPath();
+    ctx.strokeStyle = "#2196F3";
+    ctx.lineWidth = 2;
+    let started = false;
+    prices.forEach((price, i) => {
+      if (price == null || isNaN(price)) return;
+      const x = getX(i);
+      const y = getY(price);
+      if (!started) {
+        ctx.moveTo(x, y);
+        started = true;
+      } else {
+        ctx.lineTo(x, y);
+      }
+    });
+    ctx.stroke();
+    
+    // Draw patterns
+    if (patterns && patterns.length > 0) {
+      patterns.forEach(pattern => {
+        const isInverse = pattern.pattern_type === "inverse_head_and_shoulders";
+        const color = isInverse ? "#4CAF50" : "#f44336"; // Green for bullish, red for bearish
+        
+        // Draw neckline
+        ctx.beginPath();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 3]);
+        
+        const leftTroughX = getX(pattern.left_trough?.index || pattern.left_shoulder.index);
+        const rightTroughX = getX(pattern.right_trough?.index || pattern.right_shoulder.index);
+        const necklineY = getY(pattern.neckline_price);
+        
+        ctx.moveTo(leftTroughX, necklineY);
+        ctx.lineTo(rightTroughX, necklineY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        
+        // Draw markers for L, H, R
+        const markers = [
+          { label: "L", idx: pattern.left_shoulder.index, price: pattern.left_shoulder.price },
+          { label: "H", idx: pattern.head.index, price: pattern.head.price },
+          { label: "R", idx: pattern.right_shoulder.index, price: pattern.right_shoulder.price }
+        ];
+        
+        markers.forEach(marker => {
+          const x = getX(marker.idx);
+          const y = getY(marker.price);
+          
+          // Draw circle
+          ctx.beginPath();
+          ctx.arc(x, y, 12, 0, 2 * Math.PI);
+          ctx.fillStyle = color;
+          ctx.fill();
+          
+          // Draw label
+          ctx.fillStyle = "white";
+          ctx.font = "bold 12px Arial";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(marker.label, x, y);
+        });
+        
+        // Draw pattern type label
+        ctx.fillStyle = color;
+        ctx.font = "11px Arial";
+        ctx.textAlign = "left";
+        const labelY = isInverse ? padding.top + 15 : padding.top + 15;
+        ctx.fillText(
+          `${isInverse ? "Inverse H&S" : "H&S"} (${(pattern.confidence * 100).toFixed(0)}%)`,
+          padding.left + 5,
+          labelY
+        );
+      });
+    }
+    
+    // Draw symbol name
+    ctx.fillStyle = "#333";
+    ctx.font = "bold 14px Arial";
+    ctx.textAlign = "right";
+    ctx.fillText(symbol, width - padding.right, padding.top - 10);
+    
+  }, [symbol, prices, dates, patterns]);
+  
+  return (
+    <canvas 
+      ref={canvasRef} 
+      width={700} 
+      height={250}
+      style={{ border: '1px solid #ddd', borderRadius: 4, margin: 5, display: 'block' }}
+    />
+  );
+}
+
+function WatchlistPatterns({ watchlist, onClose }) {
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [priceData, setPriceData] = useState({});
+  const [days, setDays] = useState(120);
+  const [patternType, setPatternType] = useState("all");
+  const didRun = React.useRef(false);
+
+  const fetchPatterns = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch(`${API_BASE}/watchlist/${encodeURIComponent(watchlist)}/patterns`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ days, pattern_type: patternType })
+      });
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.detail || "Failed to fetch patterns");
+      }
+      const data = await res.json();
+      setResult(data);
+      
+      // Fetch price data for symbols with patterns
+      const symbolsWithPatterns = Object.keys(data.results || {});
+      const pricePromises = symbolsWithPatterns.map(async (symbol) => {
+        try {
+          const histRes = await fetch(`${API_BASE}/macd/${symbol}/history?days=${days}`);
+          if (histRes.ok) {
+            const histData = await histRes.json();
+            return { 
+              symbol, 
+              prices: histData.map(d => d.close),
+              dates: histData.map(d => d.date)
+            };
+          }
+        } catch (e) {
+          console.error(`Error fetching price data for ${symbol}:`, e);
+        }
+        return null;
+      });
+      
+      const priceResults = await Promise.all(pricePromises);
+      const priceMap = {};
+      priceResults.forEach(r => {
+        if (r && r.prices) {
+          // Filter out entries with null close prices
+          const validIndices = r.prices.map((p, i) => p != null && !isNaN(p) ? i : -1).filter(i => i >= 0);
+          if (validIndices.length > 0) {
+            priceMap[r.symbol] = { 
+              prices: validIndices.map(i => r.prices[i]),
+              dates: validIndices.map(i => r.dates[i])
+            };
+          }
+        }
+      });
+      setPriceData(priceMap);
+      
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  React.useEffect(() => {
+    if (didRun.current) return;
+    didRun.current = true;
+    fetchPatterns();
+  }, []);
+
+  const handleRefresh = () => {
+    didRun.current = false;
+    fetchPatterns();
+  };
+
+  return (
+    <div style={{ border: "1px solid #ccc", margin: "10px 0", padding: 10 }}>
+      <h4>Chart Patterns for "{watchlist}"</h4>
+      <div style={{ marginBottom: 10 }}>
+        <button onClick={onClose}>Close</button>
+        <label style={{ marginLeft: 15 }}>
+          Days: 
+          <select value={days} onChange={e => setDays(Number(e.target.value))} style={{ marginLeft: 5 }}>
+            <option value={60}>60</option>
+            <option value={90}>90</option>
+            <option value={120}>120</option>
+            <option value={180}>180</option>
+            <option value={250}>250</option>
+          </select>
+        </label>
+        <label style={{ marginLeft: 15 }}>
+          Pattern: 
+          <select value={patternType} onChange={e => setPatternType(e.target.value)} style={{ marginLeft: 5 }}>
+            <option value="all">All Patterns</option>
+            <option value="head_and_shoulders">Head & Shoulders</option>
+            <option value="inverse_head_and_shoulders">Inverse H&S</option>
+          </select>
+        </label>
+        <button onClick={handleRefresh} style={{ marginLeft: 10 }}>Refresh</button>
+      </div>
+      
+      {loading && <div>Loading patterns...</div>}
+      {error && <div style={{ color: "red" }}>{error}</div>}
+      
+      {result && (
+        <div>
+          <p>
+            Found <strong>{result.pattern_counts?.head_and_shoulders || 0}</strong> Head & Shoulders (bearish) and{" "}
+            <strong>{result.pattern_counts?.inverse_head_and_shoulders || 0}</strong> Inverse H&S (bullish) patterns
+            in <strong>{result.symbols_with_patterns}</strong> symbols.
+          </p>
+          
+          {result.results && Object.keys(result.results).length > 0 ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 15, marginTop: 10 }}>
+              {Object.entries(result.results).map(([symbol, patterns]) => (
+                <div key={symbol} style={{ 
+                  border: "1px solid #ddd", 
+                  borderRadius: 8, 
+                  padding: 15,
+                  backgroundColor: "#fafafa",
+                  width: "100%"
+                }}>
+                  <div style={{ marginBottom: 5 }}>
+                    <a
+                      href={getChartUrl(symbol)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ fontWeight: "bold", fontSize: "1.1em" }}
+                    >
+                      {symbol}
+                    </a>
+                    {patterns.map((p, i) => (
+                      <span 
+                        key={i}
+                        style={{ 
+                          marginLeft: 8, 
+                          padding: "2px 6px", 
+                          borderRadius: 4,
+                          fontSize: "0.8em",
+                          backgroundColor: p.pattern_type === "inverse_head_and_shoulders" ? "#e8f5e9" : "#ffebee",
+                          color: p.pattern_type === "inverse_head_and_shoulders" ? "#2e7d32" : "#c62828"
+                        }}
+                      >
+                        {p.pattern_type === "inverse_head_and_shoulders" ? "Bullish" : "Bearish"} ({(p.confidence * 100).toFixed(0)}%)
+                      </span>
+                    ))}
+                  </div>
+                  {priceData[symbol] && (
+                    <PatternChart 
+                      symbol={symbol}
+                      prices={priceData[symbol].prices}
+                      dates={priceData[symbol].dates}
+                      patterns={patterns}
+                    />
+                  )}
+                  <div style={{ fontSize: "0.8em", color: "#666", marginTop: 5 }}>
+                    {patterns.map((p, i) => (
+                      <div key={i}>
+                        {p.pattern_type === "inverse_head_and_shoulders" ? "↗ Inverse H&S" : "↘ H&S"}: {p.start_date} → {p.end_date}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p style={{ color: "gray" }}>No patterns found in this watchlist.</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function WatchlistsManager({ onSelectWatchlist }) {
   const [watchlists, setWatchlists] = useState([]);
   const [name, setName] = useState("");
@@ -792,6 +1114,7 @@ function WatchlistsManager({ onSelectWatchlist }) {
   const [removeSymbol, setRemoveSymbol] = useState("");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
+  const fileInputRef = React.useRef(null);
 
   const fetchWatchlists = async () => {
     setLoading(true);
@@ -898,6 +1221,40 @@ function WatchlistsManager({ onSelectWatchlist }) {
     setLoading(false);
   };
 
+  const handleFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setMessage("");
+    setLoading(true);
+
+    const formData = new FormData();
+    formData.append("watchlist_name", selected);
+    formData.append("file", file);
+
+    try {
+      const res = await fetch(`${API_BASE}/watchlist/upload`, {
+        method: "POST",
+        body: formData,
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setMessage(`Uploaded! Added: ${data.symbols_added.length} symbols.`);
+        if (data.errors && data.errors.length > 0) {
+           setMessage(prev => prev + ` Errors: ${data.errors.length}`);
+        }
+        await fetchWatchlists();
+      } else {
+        const err = await res.json();
+        setMessage("Error uploading file: " + (err.detail || ""));
+      }
+    } catch (e) {
+      setMessage("Error uploading file");
+    }
+    setLoading(false);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
   React.useEffect(() => { fetchWatchlists(); }, []);
 
   // Helper to get symbols for selected watchlist
@@ -940,6 +1297,20 @@ function WatchlistsManager({ onSelectWatchlist }) {
           <button onClick={addSymbols}>Add</button>
           <input value={removeSymbol} onChange={e => setRemoveSymbol(e.target.value)} placeholder="AAPL,MSFT" style={{ marginLeft: 10 }} />
           <button onClick={removeSymbols}>Remove</button>
+          
+          <input 
+            type="file" 
+            ref={fileInputRef} 
+            style={{ display: 'none' }} 
+            onChange={handleFileUpload}
+            accept=".txt,.csv" 
+          />
+          <button 
+            onClick={() => fileInputRef.current.click()} 
+            style={{ marginLeft: 10 }}
+          >
+            Upload File
+          </button>
         </div>
       )}
       {message && <div>{message}</div>}
@@ -952,6 +1323,7 @@ function WatchlistSignalsPage({ watchlist, symbols, onBack }) {
   const [showForecast, setShowForecast] = useState(false);
   const [showMAForecast, setShowMAForecast] = useState(false);
   const [showCombinedForecast, setShowCombinedForecast] = useState(false);
+  const [showPatterns, setShowPatterns] = useState(false);
 
   return (
     <div>
@@ -961,6 +1333,7 @@ function WatchlistSignalsPage({ watchlist, symbols, onBack }) {
       <button onClick={() => setShowForecast(true)} style={{ marginLeft: 10 }} disabled={showForecast}>Show Bullish Forecast</button>
       <button onClick={() => setShowMAForecast(true)} style={{ marginLeft: 10 }} disabled={showMAForecast}>Show MA20&gt;MA50 Forecast</button>
       <button onClick={() => setShowCombinedForecast(true)} style={{ marginLeft: 10 }} disabled={showCombinedForecast}>Combined Forecast</button>
+      <button onClick={() => setShowPatterns(true)} style={{ marginLeft: 10 }} disabled={showPatterns}>Chart Patterns</button>
       {showSignal && (
         <WatchlistBullishSignal
           watchlist={watchlist}
@@ -985,6 +1358,12 @@ function WatchlistSignalsPage({ watchlist, symbols, onBack }) {
         <WatchlistCombinedForecast
           watchlist={watchlist}
           onClose={() => setShowCombinedForecast(false)}
+        />
+      )}
+      {showPatterns && (
+        <WatchlistPatterns
+          watchlist={watchlist}
+          onClose={() => setShowPatterns(false)}
         />
       )}
     </div>
