@@ -1,0 +1,13 @@
+services:
+  db:
+    image: postgres:15
+    container_name: tick_scanner_db
+    restart: always
+    environment:
+      POSTGRES_DB: ticks
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
