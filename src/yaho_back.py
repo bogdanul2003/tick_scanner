@@ -51,32 +51,30 @@ else:
             
             # After fetching and processing data
             if not new_data.empty:
-                # Ensure we only use the 'Close' column from new_data for the merge
-                new_data_close = new_data[['Close']].copy()
-                # Make index tz-naive for new_data_close
-                if new_data_close.index.tz is not None:
-                    new_data_close.index = new_data_close.index.tz_convert(None)
+                # Ensure we only use the 'Open' and 'Close' columns from new_data for the merge
+                new_data_prices = new_data[['Open', 'Close']].copy()
+                # Make index tz-naive for new_data_prices
+                if new_data_prices.index.tz is not None:
+                    new_data_prices.index = new_data_prices.index.tz_convert(None)
                 # Make index tz-naive for cached_data
                 if not cached_data.empty and cached_data.index.tz is not None:
                     cached_data.index = cached_data.index.tz_convert(None)
 
                 # Normalize indices to midnight (00:00:00) for both DataFrames
-                new_data_close.index = new_data_close.index.normalize()
+                new_data_prices.index = new_data_prices.index.normalize()
                 if not cached_data.empty:
                     cached_data.index = cached_data.index.normalize()
-                
+
                 # Safely concatenate the DataFrames
                 if not cached_data.empty:
-                    all_data = pd.concat([cached_data, new_data_close])
+                    all_data = pd.concat([cached_data, new_data_prices])
                     all_data = all_data[~all_data.index.duplicated(keep='last')].sort_index()
                 else:
-                    all_data = new_data_close.copy()
-                
-                # Keep only the Close column (index is Date)
-                all_data = all_data[['Close']]
-                # Round Close to 4 decimals
-                # all_data['Close'] = all_data['Close']
-                
+                    all_data = new_data_prices.copy()
+
+                # Keep only the Open and Close columns (index is Date)
+                all_data = all_data[['Open', 'Close']]
+
                 print(f"Fetched {len(new_data)} new rows from Yahoo Finance")
                 print(f"Total rows after merge: {len(all_data)}")
                 print(all_data.to_string())
@@ -85,11 +83,11 @@ else:
                 all_data['EMA26'] = all_data['Close'].ewm(span=26, adjust=False).mean()
                 all_data['MACD'] = (all_data['EMA12'] - all_data['EMA26'])
                 all_data['Signal_Line'] = all_data['MACD'].ewm(span=9, adjust=False).mean()
-                
+
                 # Filter to only the rows we need to save (the missing dates)
                 missing_dates_set = set(missing_dates)
                 to_cache = all_data[all_data.index.map(lambda x: x.date() in missing_dates_set)]
-                
+
                 if not to_cache.empty:
                     save_bulk_to_cache(symbol, to_cache)
                     # Calculate how many calendar dates don't have market data
@@ -101,17 +99,17 @@ else:
                     print("No missing data to fetch")
             else:
                 print("No data returned from Yahoo Finance")
-    else:
-        print("All dates present in cache")
+        else:
+            print("All dates present in cache")
 
-# Load all cache_duration_in_days days from cache for use
-with get_connection() as conn, conn.cursor() as cur:
-    cur.execute("""
-        SELECT date, close, ema12, ema26, macd, signal_line
-        FROM stock_cache
-        WHERE symbol=%s AND date BETWEEN %s AND %s
-        ORDER BY date
-    """, (symbol, start_date, end_date))
-    rows = cur.fetchall()
-    for row in rows:
-        print(row)  # Print each row to console
+            # Load all cache_duration_in_days days from cache for use
+            with get_connection() as conn, conn.cursor() as cur:
+                cur.execute("""
+                SELECT date, open, close, ema12, ema26, macd, signal_line
+                FROM stock_cache
+                WHERE symbol=%s AND date BETWEEN %s AND %s
+                ORDER BY date
+                """, (symbol, start_date, end_date))
+                rows = cur.fetchall()
+                for row in rows:
+                    print(row)  # Print each row to console

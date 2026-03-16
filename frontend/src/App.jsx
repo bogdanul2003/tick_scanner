@@ -931,64 +931,26 @@ function PatternChart({ symbol, prices, dates, patterns }) {
 
 function WatchlistPatterns({ watchlist, onClose }) {
   const [result, setResult] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [priceData, setPriceData] = useState({});
-  const [days, setDays] = useState(120);
-  const [patternType, setPatternType] = useState("all");
-  const didRun = React.useRef(false);
+  const [message, setMessage] = useState("");
 
-  const fetchPatterns = async () => {
+  const generateCharts = async () => {
     setLoading(true);
     setError("");
+    setMessage("");
     try {
-      const res = await fetch(`${API_BASE}/watchlist/${encodeURIComponent(watchlist)}/patterns`, {
+      const res = await fetch(`${API_BASE}/watchlist/${encodeURIComponent(watchlist)}/generate_charts`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ days, pattern_type: patternType })
+        headers: { "Content-Type": "application/json" }
       });
       if (!res.ok) {
         const errorData = await res.json();
-        throw new Error(errorData.detail || "Failed to fetch patterns");
+        throw new Error(errorData.detail || "Failed to generate charts");
       }
       const data = await res.json();
       setResult(data);
-      
-      // Fetch price data for symbols with patterns
-      const symbolsWithPatterns = Object.keys(data.results || {});
-      const pricePromises = symbolsWithPatterns.map(async (symbol) => {
-        try {
-          const histRes = await fetch(`${API_BASE}/macd/${symbol}/history?days=${days}`);
-          if (histRes.ok) {
-            const histData = await histRes.json();
-            return { 
-              symbol, 
-              prices: histData.map(d => d.close),
-              dates: histData.map(d => d.date)
-            };
-          }
-        } catch (e) {
-          console.error(`Error fetching price data for ${symbol}:`, e);
-        }
-        return null;
-      });
-      
-      const priceResults = await Promise.all(pricePromises);
-      const priceMap = {};
-      priceResults.forEach(r => {
-        if (r && r.prices) {
-          // Filter out entries with null close prices
-          const validIndices = r.prices.map((p, i) => p != null && !isNaN(p) ? i : -1).filter(i => i >= 0);
-          if (validIndices.length > 0) {
-            priceMap[r.symbol] = { 
-              prices: validIndices.map(i => r.prices[i]),
-              dates: validIndices.map(i => r.dates[i])
-            };
-          }
-        }
-      });
-      setPriceData(priceMap);
-      
+      setMessage("Charts generated successfully! They have been saved to the 'generated_charts' folder.");
     } catch (err) {
       setError(err.message);
     } finally {
@@ -996,110 +958,25 @@ function WatchlistPatterns({ watchlist, onClose }) {
     }
   };
 
-  React.useEffect(() => {
-    if (didRun.current) return;
-    didRun.current = true;
-    fetchPatterns();
-  }, []);
-
-  const handleRefresh = () => {
-    didRun.current = false;
-    fetchPatterns();
-  };
-
   return (
     <div style={{ border: "1px solid #ccc", margin: "10px 0", padding: 10 }}>
-      <h4>Chart Patterns for "{watchlist}"</h4>
+      <h4>Generate Charts for "{watchlist}"</h4>
       <div style={{ marginBottom: 10 }}>
         <button onClick={onClose}>Close</button>
-        <label style={{ marginLeft: 15 }}>
-          Days: 
-          <select value={days} onChange={e => setDays(Number(e.target.value))} style={{ marginLeft: 5 }}>
-            <option value={60}>60</option>
-            <option value={90}>90</option>
-            <option value={120}>120</option>
-            <option value={180}>180</option>
-            <option value={250}>250</option>
-          </select>
-        </label>
-        <label style={{ marginLeft: 15 }}>
-          Pattern: 
-          <select value={patternType} onChange={e => setPatternType(e.target.value)} style={{ marginLeft: 5 }}>
-            <option value="all">All Patterns</option>
-            <option value="head_and_shoulders">Head & Shoulders</option>
-            <option value="inverse_head_and_shoulders">Inverse H&S</option>
-          </select>
-        </label>
-        <button onClick={handleRefresh} style={{ marginLeft: 10 }}>Refresh</button>
+        <button onClick={generateCharts} style={{ marginLeft: 10 }} disabled={loading}>
+          {loading ? "Generating..." : "Generate Charts"}
+        </button>
       </div>
       
-      {loading && <div>Loading patterns...</div>}
-      {error && <div style={{ color: "red" }}>{error}</div>}
+      {loading && <div>Generating charts for all symbols in watchlist...</div>}
+      {error && <div style={{ color: "red" }}>Error: {error}</div>}
+      {message && <div style={{ color: "green" }}>{message}</div>}
       
       {result && (
-        <div>
-          <p>
-            Found <strong>{result.pattern_counts?.head_and_shoulders || 0}</strong> Head & Shoulders (bearish) and{" "}
-            <strong>{result.pattern_counts?.inverse_head_and_shoulders || 0}</strong> Inverse H&S (bullish) patterns
-            in <strong>{result.symbols_with_patterns}</strong> symbols.
-          </p>
-          
-          {result.results && Object.keys(result.results).length > 0 ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 15, marginTop: 10 }}>
-              {Object.entries(result.results).map(([symbol, patterns]) => (
-                <div key={symbol} style={{ 
-                  border: "1px solid #ddd", 
-                  borderRadius: 8, 
-                  padding: 15,
-                  backgroundColor: "#fafafa",
-                  width: "100%"
-                }}>
-                  <div style={{ marginBottom: 5 }}>
-                    <a
-                      href={getChartUrl(symbol)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={{ fontWeight: "bold", fontSize: "1.1em" }}
-                    >
-                      {symbol}
-                    </a>
-                    {patterns.map((p, i) => (
-                      <span 
-                        key={i}
-                        style={{ 
-                          marginLeft: 8, 
-                          padding: "2px 6px", 
-                          borderRadius: 4,
-                          fontSize: "0.8em",
-                          backgroundColor: p.pattern_type === "inverse_head_and_shoulders" ? "#e8f5e9" : "#ffebee",
-                          color: p.pattern_type === "inverse_head_and_shoulders" ? "#2e7d32" : "#c62828"
-                        }}
-                      >
-                        {p.pattern_type === "inverse_head_and_shoulders" ? "Bullish" : "Bearish"} ({(p.confidence * 100).toFixed(0)}%)
-                      </span>
-                    ))}
-                  </div>
-                  {priceData[symbol] && (
-                    <PatternChart 
-                      symbol={symbol}
-                      prices={priceData[symbol].prices}
-                      dates={priceData[symbol].dates}
-                      patterns={patterns}
-                    />
-                  )}
-                  <div style={{ fontSize: "0.8em", color: "#666", marginTop: 5 }}>
-                    {patterns.map((p, i) => (
-                      <div key={i}>
-                        {p.pattern_type === "inverse_head_and_shoulders" ? "↗ Inverse H&S" : "↘ H&S"}: {p.start_date} → {p.end_date}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p style={{ color: "gray" }}>No patterns found in this watchlist.</p>
-          )}
+        <div style={{ marginTop: 10, padding: 10, backgroundColor: "#f0f0f0", borderRadius: 4 }}>
+          <p><strong>Status:</strong> {result.status}</p>
+          <p><strong>Watchlist:</strong> {result.watchlist}</p>
+          <p><strong>Message:</strong> {result.message}</p>
         </div>
       )}
     </div>

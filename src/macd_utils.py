@@ -68,6 +68,9 @@ def get_macd_for_range(symbol: str, start_date, end_date):
             results.append({
                 "symbol": symbol,
                 "date": date.date().isoformat(),
+                "open": row.get('Open'),
+                "high": row.get('High'),
+                "low": row.get('Low'),
                 "close": row['Close'],
                 "macd": row['MACD'],
                 "signal_line": row['Signal_Line'],
@@ -77,10 +80,13 @@ def get_macd_for_range(symbol: str, start_date, end_date):
         else:
             row = fetch_from_cache(symbol, date.date())
             if row:
-                close, ema12, ema26, ma20, ma50, macd, signal_line = row
+                open_price, high, low, close, ema12, ema26, ma20, ma50, macd, signal_line = row
                 results.append({
                     "symbol": symbol,
                     "date": date.date().isoformat(),
+                    "open": open_price,
+                    "high": high,
+                    "low": low,
                     "close": close,
                     "macd": macd,
                     "signal_line": signal_line,
@@ -139,6 +145,9 @@ def get_macd_for_range_bulk(symbols: list, start_date, end_date):
                 symbol_results.append({
                     "symbol": symbol,
                     "date": date.date().isoformat(),
+                    "open": row.get('Open'),
+                    "high": row.get('High'),
+                    "low": row.get('Low'),
                     "close": row['Close'],
                     "macd": row['MACD'],
                     "signal_line": row['Signal_Line'],
@@ -148,11 +157,14 @@ def get_macd_for_range_bulk(symbols: list, start_date, end_date):
             else:
                 row = fetch_from_cache(symbol, date.date())
                 if row:
-                    # row: close, ema12, ema26, ma20, ma50, macd, signal_line
-                    close, ema12, ema26, ma20, ma50, macd, signal_line = row
+                    # row: open, high, low, close, ema12, ema26, ma20, ma50, macd, signal_line
+                    open_price, high, low, close, ema12, ema26, ma20, ma50, macd, signal_line = row
                     symbol_results.append({
                         "symbol": symbol,
                         "date": date.date().isoformat(),
+                        "open": open_price,
+                        "high": high,
+                        "low": low,
                         "close": close,
                         "macd": macd,
                         "signal_line": signal_line,
@@ -172,7 +184,7 @@ def process_symbols(args):
     symbols_chunk, closing_prices_bulk, cached_data_dict, missing_dates_dict, date = args
     chunk_results = {}
     for symbol in symbols_chunk:
-        # --- Robust extraction of 'Close' price for each symbol ---
+        # --- Robust extraction of price data for each symbol ---
         symbol_data_list = closing_prices_bulk.get(symbol, [])
         if not symbol_data_list:
             chunk_results[symbol] = {"error": f"No data found for symbol: {symbol}"}
@@ -183,7 +195,7 @@ def process_symbols(args):
         symbol_data['date'] = pd.to_datetime(symbol_data['date'])
         symbol_data.set_index('date', inplace=True)
         symbol_data.index = symbol_data.index.normalize()
-        symbol_data = symbol_data.rename(columns={'close': 'Close'})
+        symbol_data = symbol_data.rename(columns={'close': 'Close', 'open': 'Open', 'high': 'High', 'low': 'Low'})
         symbol_data = symbol_data.dropna(subset=['Close'])
 
         # Merge with cached data if available
@@ -196,14 +208,23 @@ def process_symbols(args):
             all_data = all_data[~all_data.index.duplicated(keep='last')].sort_index()
         else:
             all_data = symbol_data.copy()
-        all_data = all_data[['Close']]
-        all_data['EMA12'] = all_data['Close'].ewm(span=12, adjust=False).mean()
-        all_data['EMA26'] = all_data['Close'].ewm(span=26, adjust=False).mean()
+        
+        # Ensure we have required columns
+        available_cols = ['Open', 'High', 'Low', 'Close']
+        cols_to_keep = [col for col in available_cols if col in all_data.columns]
+        all_data_for_indicators = all_data[cols_to_keep].copy()
+        
+        all_data_for_indicators['EMA12'] = all_data_for_indicators['Close'].ewm(span=12, adjust=False).mean()
+        all_data_for_indicators['EMA26'] = all_data_for_indicators['Close'].ewm(span=26, adjust=False).mean()
         # --- Add moving averages ---
-        all_data['MA20'] = all_data['Close'].rolling(window=20, min_periods=1).mean()
-        all_data['MA50'] = all_data['Close'].rolling(window=50, min_periods=1).mean()
-        all_data['MACD'] = all_data['EMA12'] - all_data['EMA26']
-        all_data['Signal_Line'] = all_data['MACD'].ewm(span=9, adjust=False).mean()
+        all_data_for_indicators['MA20'] = all_data_for_indicators['Close'].rolling(window=20, min_periods=1).mean()
+        all_data_for_indicators['MA50'] = all_data_for_indicators['Close'].rolling(window=50, min_periods=1).mean()
+        all_data_for_indicators['MACD'] = all_data_for_indicators['EMA12'] - all_data_for_indicators['EMA26']
+        all_data_for_indicators['Signal_Line'] = all_data_for_indicators['MACD'].ewm(span=9, adjust=False).mean()
+
+        # Update all_data with calculated indicators
+        for col in ['EMA12', 'EMA26', 'MA20', 'MA50', 'MACD', 'Signal_Line']:
+            all_data[col] = all_data_for_indicators[col]
 
         # Cache only the missing dates for this symbol
         missing_dates_set = set(missing_dates_dict[symbol])
@@ -223,6 +244,9 @@ def process_symbols(args):
         chunk_results[symbol] = {
             "symbol": symbol,
             "date": actual_date.isoformat(),
+            "open": float(date_data['Open'].iloc[0]) if 'Open' in date_data.columns and not pd.isna(date_data['Open'].iloc[0]) else None,
+            "high": float(date_data['High'].iloc[0]) if 'High' in date_data.columns and not pd.isna(date_data['High'].iloc[0]) else None,
+            "low": float(date_data['Low'].iloc[0]) if 'Low' in date_data.columns and not pd.isna(date_data['Low'].iloc[0]) else None,
             "close": float(date_data['Close'].iloc[0]),
             "macd": float(date_data['MACD'].iloc[0]),
             "signal_line": float(date_data['Signal_Line'].iloc[0]),
@@ -490,7 +514,7 @@ def macd_crossover_signal(
 def get_closing_prices_bulk(symbols: list, start_date, end_date):
     """
     Fetches closing prices for a list of symbols between start_date and end_date (inclusive).
-    Returns a dict: {symbol: [{date: ..., close: ...}, ...]}
+    Returns a dict: {symbol: [{date: ..., open: ..., high: ..., low: ..., close: ...}, ...]}
     """
     import yfinance as yf
     import pandas as pd
@@ -504,16 +528,18 @@ def get_closing_prices_bulk(symbols: list, start_date, end_date):
         symbol_data = None
         if isinstance(history.columns, pd.MultiIndex):
             try:
-                symbol_data = history['Close'][symbol].to_frame('Close')
+                # Select Open, High, Low, and Close columns for the symbol
+                symbol_data = history.xs(symbol, level=1 if history.columns.names[0] == 'Price' else 0, axis=1)[['Open', 'High', 'Low', 'Close']]
             except Exception:
                 try:
-                    symbol_data = history[symbol]['Close'].to_frame('Close')
+                    symbol_data = history[symbol][['Open', 'High', 'Low', 'Close']]
                 except Exception:
                     results[symbol] = []
                     continue
         else:
             if 'Close' in history.columns:
-                symbol_data = history[['Close']]
+                cols = [c for c in ['Open', 'High', 'Low', 'Close'] if c in history.columns]
+                symbol_data = history[cols]
             else:
                 results[symbol] = []
                 continue
@@ -528,6 +554,9 @@ def get_closing_prices_bulk(symbols: list, start_date, end_date):
         for idx, row in symbol_data.iterrows():
             symbol_results.append({
                 "date": idx.date().isoformat(),
+                "open": float(row['Open']) if 'Open' in row and not pd.isna(row['Open']) else None,
+                "high": float(row['High']) if 'High' in row and not pd.isna(row['High']) else None,
+                "low": float(row['Low']) if 'Low' in row and not pd.isna(row['Low']) else None,
                 "close": float(row['Close']) if not pd.isna(row['Close']) else None
             })
         results[symbol] = symbol_results
@@ -537,7 +566,7 @@ def get_closing_prices_bulk(symbols: list, start_date, end_date):
 def get_closing_prices(symbol: str, start_date, end_date):
     """
     Fetches closing prices for a single symbol between start_date and end_date (inclusive).
-    Returns a list: [{date: ..., close: ...}, ...]
+    Returns a list: [{date: ..., open: ..., high: ..., low: ..., close: ...}, ...]
     """
     import yfinance as yf
     import pandas as pd
@@ -557,6 +586,9 @@ def get_closing_prices(symbol: str, start_date, end_date):
     for idx, row in history.iterrows():
         results.append({
             "date": idx.date().isoformat(),
+            "open": float(row['Open']) if 'Open' in row and not pd.isna(row['Open']) else None,
+            "high": float(row['High']) if 'High' in row and not pd.isna(row['High']) else None,
+            "low": float(row['Low']) if 'Low' in row and not pd.isna(row['Low']) else None,
             "close": float(row['Close']) if not pd.isna(row['Close']) else None
         })
 
