@@ -1,0 +1,16 @@
+# Database data
+src/pgdata/
+
+# Model inputs and outputs
+chart_scan/pics/
+chart_scan/runs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# macOS
+.DS_Store

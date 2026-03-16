@@ -656,6 +656,30 @@ async def get_watchlist_patterns(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/watchlist/{watchlist_name}/generate_charts", tags=["Charts"])
+async def api_generate_watchlist_charts(watchlist_name: str):
+    """
+    Generate and save candle charts for all companies in a given watchlist.
+    Charts are saved in the 'generated_charts' folder at the project root.
+    """
+    try:
+        from charts_generator import generate_charts_for_watchlist
+        
+        # This function handles its own errors and printing
+        generate_charts_for_watchlist(watchlist_name)
+        
+        return {
+            "message": f"Chart generation triggered for watchlist '{watchlist_name}'",
+            "watchlist": watchlist_name,
+            "status": "success"
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        print(f"Exception in api_generate_watchlist_charts: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     import uvicorn
 
