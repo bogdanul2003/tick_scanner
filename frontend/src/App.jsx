@@ -939,6 +939,7 @@ function WatchlistPatterns({ watchlist, onClose }) {
     setLoading(true);
     setError("");
     setMessage("");
+    setResult(null);
     try {
       const res = await fetch(`${API_BASE}/watchlist/${encodeURIComponent(watchlist)}/generate_charts`, {
         method: "POST",
@@ -950,7 +951,7 @@ function WatchlistPatterns({ watchlist, onClose }) {
       }
       const data = await res.json();
       setResult(data);
-      setMessage("Charts generated successfully! They have been saved to the 'generated_charts' folder.");
+      setMessage(`Found ${data.count} charts matching the pattern filter!`);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -960,23 +961,77 @@ function WatchlistPatterns({ watchlist, onClose }) {
 
   return (
     <div style={{ border: "1px solid #ccc", margin: "10px 0", padding: 10 }}>
-      <h4>Generate Charts for "{watchlist}"</h4>
+      <h4>Generate Charts & Scan for "{watchlist}"</h4>
       <div style={{ marginBottom: 10 }}>
         <button onClick={onClose}>Close</button>
         <button onClick={generateCharts} style={{ marginLeft: 10 }} disabled={loading}>
-          {loading ? "Generating..." : "Generate Charts"}
+          {loading ? "Generating & Scanning..." : "Generate Charts"}
         </button>
       </div>
       
-      {loading && <div>Generating charts for all symbols in watchlist...</div>}
+      {loading && <div>Generating charts and running neural pattern detection...</div>}
       {error && <div style={{ color: "red" }}>Error: {error}</div>}
-      {message && <div style={{ color: "green" }}>{message}</div>}
+      {message && <div style={{ color: "green", fontWeight: "bold" }}>{message}</div>}
       
-      {result && (
-        <div style={{ marginTop: 10, padding: 10, backgroundColor: "#f0f0f0", borderRadius: 4 }}>
-          <p><strong>Status:</strong> {result.status}</p>
-          <p><strong>Watchlist:</strong> {result.watchlist}</p>
-          <p><strong>Message:</strong> {result.message}</p>
+      {result && result.images && result.images.length > 0 && (
+        <div style={{ marginTop: 20 }}>
+          {result.bullish && result.bullish.length > 0 && (
+            <div style={{ marginBottom: 30 }}>
+              <h3 style={{ color: "#2c3e50", borderBottom: "2px solid #27ae60", paddingBottom: "5px" }}>
+                Bullish Signals ({result.bullish.length})
+              </h3>
+              <div style={{ 
+                display: "grid", 
+                gridTemplateColumns: "repeat(auto-fill, minmax(350px, 1fr))", 
+                gap: "15px" 
+              }}>
+                {result.bullish.map((url, idx) => (
+                  <div key={`bullish-${idx}`} style={{ border: "1px solid #ddd", padding: "5px", borderRadius: "4px" }}>
+                    <img 
+                      src={`${API_BASE}${url}`} 
+                      alt={`Bullish Pattern ${idx}`} 
+                      style={{ width: "100%", height: "auto", display: "block" }} 
+                    />
+                    <div style={{ fontSize: "12px", marginTop: "5px", color: "#666" }}>
+                      {url.split('/').pop()}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {result.bearish && result.bearish.length > 0 && (
+            <div style={{ marginBottom: 30 }}>
+              <h3 style={{ color: "#2c3e50", borderBottom: "2px solid #c0392b", paddingBottom: "5px" }}>
+                Bearish Signals ({result.bearish.length})
+              </h3>
+              <div style={{ 
+                display: "grid", 
+                gridTemplateColumns: "repeat(auto-fill, minmax(350px, 1fr))", 
+                gap: "15px" 
+              }}>
+                {result.bearish.map((url, idx) => (
+                  <div key={`bearish-${idx}`} style={{ border: "1px solid #ddd", padding: "5px", borderRadius: "4px" }}>
+                    <img 
+                      src={`${API_BASE}${url}`} 
+                      alt={`Bearish Pattern ${idx}`} 
+                      style={{ width: "100%", height: "auto", display: "block" }} 
+                    />
+                    <div style={{ fontSize: "12px", marginTop: "5px", color: "#666" }}>
+                      {url.split('/').pop()}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {result && result.images && result.images.length === 0 && !loading && (
+        <div style={{ marginTop: 10, color: "#666" }}>
+          No patterns matching the filter (x &gt; 550) were found.
         </div>
       )}
     </div>

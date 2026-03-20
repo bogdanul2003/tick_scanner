@@ -3,82 +3,88 @@ import glob
 import os
 import argparse
 from ultralytics import YOLO
+import cv2
 
-# Parse command line arguments
-parser = argparse.ArgumentParser(description="Run YOLO inference on images")
-parser.add_argument("--show-boxes", action="store_true", help="Print detected boxes for each image")
-parser.add_argument("--find-x", type=int, default=510, help="Find images with boxes extending past this x coordinate")
-args = parser.parse_args()
+def run_detection(input_dir, output_dir, find_x=510, show_boxes=False):
+    # Load the CoreML package
+    # Path is relative to the root if called from src/api.py, 
+    # but let's make it more robust.
+    model_path = os.path.join(os.path.dirname(__file__), "model.mlpackage")
+    coreml_model = YOLO(model_path)
 
-# Load the newly created CoreML package
-coreml_model = YOLO("./model.mlpackage")
+    # Get list of images
+    image_files = glob.glob(os.path.join(input_dir, "*.png")) + \
+                  glob.glob(os.path.join(input_dir, "*.jpg")) + \
+                  glob.glob(os.path.join(input_dir, "*.jpeg"))
 
-# Get list of images
-image_files = glob.glob("pics/*.png") + glob.glob("pics/*.jpg") + glob.glob("pics/*.jpeg")
+    if not image_files:
+        print(f"No images found in {input_dir}")
+        return []
 
-if not image_files:
-    print("No images found in pics/ folder")
-    exit()
+    # Warmup run
+    print("Warming up model...")
+    coreml_model.predict(source=image_files[0], verbose=False, conf=0.3)
 
-# Warmup run (to load shaders/allocate memory)
-print("Warming up...")
-coreml_model.predict(source=image_files[0], verbose=False)
-
-# Run prediction - it will automatically use the M4's hardware accelerators
-print(f"Processing {len(image_files)} images...")
-total_start = time.time()
-images_with_x_past_threshold = []
-
-# Define custom save folder for filtered images
-results_folder = "runs/detect/filtered_results"
-os.makedirs(results_folder, exist_ok=True)
-
-for img_path in image_files:
-    start_time = time.time()
-    # Don't use save=True globally
-    results = coreml_model.predict(source=img_path, save=False, verbose=False)
+    print(f"Processing {len(image_files)} images from {input_dir}...")
+    os.makedirs(output_dir, exist_ok=True)
     
-    # Check if any box extends past find_x
-    has_box_past_threshold = False
-    
-    if results[0].boxes is not None:
-        for box in results[0].boxes:
-            x1, y1, x2, y2 = box.xyxy.tolist()[0]
+    total_start = time.time()
+    images_with_x_past_threshold = []
+
+    for img_path in image_files:
+        start_time = time.time()
+        results = coreml_model.predict(source=img_path, save=False, verbose=False, conf=0.3)
+        
+        has_box_past_threshold = False
+        rightmost_pattern = None
+        max_x2 = -1
+
+        if results[0].boxes is not None:
+            for box in results[0].boxes:
+                x1, y1, x2, y2 = box.xyxy.tolist()[0]
+                
+                # Update rightmost pattern if this box is further right
+                if x2 > max_x2:
+                    max_x2 = x2
+                    class_id = int(box.cls.item())
+                    rightmost_pattern = coreml_model.names[class_id]
+
+                if x2 > find_x:
+                    has_box_past_threshold = True
+
+        if has_box_past_threshold:
+            filename = os.path.basename(img_path)
+            images_with_x_past_threshold.append({
+                "filename": filename,
+                "rightmost_pattern": rightmost_pattern
+            })
             
-            # Check if x2 is past the threshold
-            if x2 > args.find_x:
-                has_box_past_threshold = True
-                break
+            # Save the annotated image
+            annotated_img = results[0].plot()
+            save_path = os.path.join(output_dir, filename)
+            cv2.imwrite(save_path, annotated_img)
+            print(f"  [MATCH] Saved to {save_path} (Rightmost: {rightmost_pattern})")
+        
+        if show_boxes and results[0].boxes is not None:
+            print(f"\nDetections in {os.path.basename(img_path)}:")
+            for box in results[0].boxes:
+                class_id = int(box.cls.item())
+                class_name = coreml_model.names[class_id]
+                print(f"  {class_name}: {box.xyxy.tolist()} | Confidence: {box.conf.item():.4f}")
+        
+        end_time = time.time()
+        # print(f"{os.path.basename(img_path)}: {end_time - start_time:.4f} seconds")
 
-    # If threshold is exceeded, save the annotated image
-    if has_box_past_threshold:
-        images_with_x_past_threshold.append(os.path.basename(img_path))
-        # Save to the specific filtered_results folder
-        # We manually save the plotted image
-        annotated_img = results[0].plot() # returns a numpy array
-        import cv2
-        save_path = os.path.join(results_folder, os.path.basename(img_path))
-        cv2.imwrite(save_path, annotated_img)
-        print(f"  [MATCH] Saved to {save_path}")
-    
-    # Print detected boxes if flag is set
-    if args.show_boxes and results[0].boxes is not None:
-        print(f"\nDetections in {os.path.basename(img_path)}:")
-        for box in results[0].boxes:
-            class_id = int(box.cls.item())
-            class_name = coreml_model.names[class_id]
-            print(f"  {class_name}: {box.xyxy.tolist()} | Confidence: {box.conf.item():.4f}")
-    
-    end_time = time.time()
-    print(f"{os.path.basename(img_path)}: {end_time - start_time:.4f} seconds")
+    total_end = time.time()
+    print(f"Detection completed in {total_end - total_start:.4f} seconds. Found {len(images_with_x_past_threshold)} matches.")
+    return images_with_x_past_threshold
 
-total_end = time.time()
-print(f"Total time: {total_end - total_start:.4f} seconds")
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run YOLO inference on images")
+    parser.add_argument("--input-dir", type=str, default="pics", help="Folder containing input images")
+    parser.add_argument("--output-dir", type=str, default="runs/detect/filtered_results", help="Folder to save filtered images")
+    parser.add_argument("--show-boxes", action="store_true", help="Print detected boxes for each image")
+    parser.add_argument("--find-x", type=int, default=510, help="Find images with boxes extending past this x coordinate")
+    args = parser.parse_args()
 
-# Print images with boxes extending past threshold
-print(f"\nImages with boxes extending past x={args.find_x}:")
-if images_with_x_past_threshold:
-    for img_name in images_with_x_past_threshold:
-        print(f"  {img_name}")
-else:
-    print("  None found")
+    run_detection(args.input_dir, args.output_dir, args.find_x, args.show_boxes)
