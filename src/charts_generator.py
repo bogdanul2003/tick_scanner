@@ -67,6 +67,10 @@ def generate_charts_for_watchlist(watchlist_name):
             continue
 
         for interval in intervals:
+            # Create interval-specific subfolder
+            interval_dir = os.path.join(output_dir, interval['label'])
+            os.makedirs(interval_dir, exist_ok=True)
+
             # Filter data for the specific interval
             start_date = pd.Timestamp.now() - pd.DateOffset(months=interval['months'])
             data = full_data[full_data.index >= start_date].copy()
@@ -88,7 +92,7 @@ def generate_charts_for_watchlist(watchlist_name):
 
             # File path including the interval label
             filename = f"{symbol}_{interval['label']}_{today_str}.png"
-            filepath = os.path.join(output_dir, filename)
+            filepath = os.path.join(interval_dir, filename)
 
             # --- 5. GENERATE AND SAVE ---
             try:

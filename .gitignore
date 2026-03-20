@@ -4,6 +4,7 @@ src/pgdata/
 # Model inputs and outputs
 chart_scan/pics/
 chart_scan/runs/
+generated_charts/
 
 # Python
 __pycache__/

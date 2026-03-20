@@ -22,7 +22,18 @@ from picks import get_watchlist_bullish_signal, get_company_names_from_bullish_s
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import io
 
+from fastapi.staticfiles import StaticFiles
+import os
+import sys
+
+# Add chart_scan to path so we can import detector_neural
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", "chart_scan"))
+
 app = FastAPI(title="Stock MACD API", description="API for retrieving MACD indicators for stocks")
+
+# Mount static files to serve generated charts
+# Root is ../generated_charts relative to api.py
+app.mount("/charts", StaticFiles(directory="../generated_charts"), name="charts")
 
 # Add CORS middleware to allow requests from the frontend
 app.add_middleware(
@@ -659,23 +670,89 @@ async def get_watchlist_patterns(
 @app.post("/watchlist/{watchlist_name}/generate_charts", tags=["Charts"])
 async def api_generate_watchlist_charts(watchlist_name: str):
     """
-    Generate and save candle charts for all companies in a given watchlist.
-    Charts are saved in the 'generated_charts' folder at the project root.
+    Generate candle charts and run pattern detection for all companies in a watchlist.
+    Returns the relative URLs of the images that passed the pattern filter.
     """
     try:
+        import json
         from charts_generator import generate_charts_for_watchlist
+        from detector_neural import run_detection
         
-        # This function handles its own errors and printing
+        # 0. Define paths
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        safe_watchlist = "".join(c if c.isalnum() or c in ('-', '_') else '_' for c in watchlist_name)
+        base_dir = os.path.join("..", "generated_charts", safe_watchlist, today_str)
+        results_cache_path = os.path.join(base_dir, "results.json")
+        
+        # 1. Check if we already have results for today
+        if os.path.exists(results_cache_path):
+            print(f"Loading cached results for '{watchlist_name}' from {results_cache_path}")
+            try:
+                with open(results_cache_path, "r") as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"Error loading cache: {e}. Re-generating...")
+
+        # 2. Generate the charts
         generate_charts_for_watchlist(watchlist_name)
         
-        return {
-            "message": f"Chart generation triggered for watchlist '{watchlist_name}'",
+        # 3. Run Neural Detection for 3m (find_x=550) and 6m (find_x=555)
+        detections_3m = run_detection(
+            os.path.join(base_dir, "3m"), 
+            os.path.join(base_dir, "3m", "filtered"), 
+            find_x=550
+        )
+        detections_6m = run_detection(
+            os.path.join(base_dir, "6m"), 
+            os.path.join(base_dir, "6m", "filtered"), 
+            find_x=555
+        )
+        
+        # 4. Build URLs and categorize
+        bullish_images = []
+        bearish_images = []
+        
+        # Helper to process detections
+        def process_detections(detections, interval_label):
+            for d in detections:
+                fname = d["filename"]
+                pattern = d["rightmost_pattern"]
+                url = f"/charts/{safe_watchlist}/{today_str}/{interval_label}/filtered/{fname}"
+                
+                is_bullish = False
+                if pattern:
+                    p_lower = pattern.lower()
+                    if "bottom" in p_lower:
+                        is_bullish = True
+                
+                if is_bullish:
+                    bullish_images.append(url)
+                else:
+                    bearish_images.append(url)
+
+        process_detections(detections_3m, "3m")
+        process_detections(detections_6m, "6m")
+        
+        final_result = {
+            "message": f"Charts generated and scanned for '{watchlist_name}'",
             "watchlist": watchlist_name,
+            "count": len(bullish_images) + len(bearish_images),
+            "bullish": bullish_images,
+            "bearish": bearish_images,
+            "images": bullish_images + bearish_images, # Bullish first
             "status": "success"
         }
+        
+        # 5. Save to cache
+        os.makedirs(base_dir, exist_ok=True)
+        with open(results_cache_path, "w") as f:
+            json.dump(final_result, f)
+            
+        return final_result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
+        import traceback
         print(f"Exception in api_generate_watchlist_charts: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
