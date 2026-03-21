@@ -934,6 +934,30 @@ function WatchlistPatterns({ watchlist, onClose }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [availableDates, setAvailableDates] = useState([]);
+  const [selectedDate, setSelectedDate] = useState("");
+  const [loadingDates, setLoadingDates] = useState(false);
+
+  React.useEffect(() => {
+    const fetchDates = async () => {
+      setLoadingDates(true);
+      try {
+        const res = await fetch(`${API_BASE}/watchlist/${encodeURIComponent(watchlist)}/available_dates`);
+        if (res.ok) {
+          const data = await res.json();
+          setAvailableDates(data.dates || []);
+          if (data.dates && data.dates.length > 0) {
+            setSelectedDate(data.dates[0]);
+          }
+        }
+      } catch (err) {
+        console.error("Error fetching available dates:", err);
+      } finally {
+        setLoadingDates(false);
+      }
+    };
+    fetchDates();
+  }, [watchlist]);
 
   const generateCharts = async () => {
     setLoading(true);
@@ -943,7 +967,8 @@ function WatchlistPatterns({ watchlist, onClose }) {
     try {
       const res = await fetch(`${API_BASE}/watchlist/${encodeURIComponent(watchlist)}/generate_charts`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" }
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ selected_date: selectedDate })
       });
       if (!res.ok) {
         const errorData = await res.json();
@@ -962,9 +987,29 @@ function WatchlistPatterns({ watchlist, onClose }) {
   return (
     <div style={{ border: "1px solid #ccc", margin: "10px 0", padding: 10 }}>
       <h4>Generate Charts & Scan for "{watchlist}"</h4>
-      <div style={{ marginBottom: 10 }}>
+      <div style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: "10px" }}>
         <button onClick={onClose}>Close</button>
-        <button onClick={generateCharts} style={{ marginLeft: 10 }} disabled={loading}>
+        
+        <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+          <label htmlFor="date-select">Select Date:</label>
+          {loadingDates ? (
+            <span>Loading dates...</span>
+          ) : (
+            <select 
+              id="date-select" 
+              value={selectedDate} 
+              onChange={(e) => setSelectedDate(e.target.value)}
+              disabled={loading || availableDates.length === 0}
+            >
+              {availableDates.length === 0 && <option value="">No dates available</option>}
+              {availableDates.map(date => (
+                <option key={date} value={date}>{date}</option>
+              ))}
+            </select>
+          )}
+        </div>
+
+        <button onClick={generateCharts} disabled={loading || !selectedDate}>
           {loading ? "Generating & Scanning..." : "Generate Charts"}
         </button>
       </div>

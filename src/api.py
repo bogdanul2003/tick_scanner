@@ -15,8 +15,11 @@ from db_utils import (
     remove_symbol_from_watchlist,
     get_watchlist_symbols,
     get_all_watchlists_with_symbols,
-    create_forecast_util_table
+    create_forecast_util_table,
+    get_available_dates_for_watchlist
 )
+from typing import List, Optional
+from pydantic import BaseModel
 from macd_utils import get_latest_market_date, get_macd_for_date, macd_crossover_signal, get_closing_prices_bulk, get_closing_prices
 from picks import get_watchlist_bullish_signal, get_company_names_from_bullish_signal_result
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -667,8 +670,28 @@ async def get_watchlist_patterns(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+class ChartGenerationRequest(BaseModel):
+    selected_date: Optional[str] = None
+
+@app.get("/watchlist/{watchlist_name}/available_dates", tags=["Charts"])
+async def api_get_available_dates(watchlist_name: str):
+    """
+    Get dates where data is available for a significant number of symbols in the watchlist.
+    """
+    try:
+        from db_utils import get_available_dates_for_watchlist
+        dates = get_available_dates_for_watchlist(watchlist_name)
+        return {"dates": dates}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        print(f"Exception in api_get_available_dates: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/watchlist/{watchlist_name}/generate_charts", tags=["Charts"])
-async def api_generate_watchlist_charts(watchlist_name: str):
+async def api_generate_watchlist_charts(watchlist_name: str, payload: ChartGenerationRequest = None):
     """
     Generate candle charts and run pattern detection for all companies in a watchlist.
     Returns the relative URLs of the images that passed the pattern filter.
@@ -679,14 +702,20 @@ async def api_generate_watchlist_charts(watchlist_name: str):
         from detector_neural import run_detection
         
         # 0. Define paths
-        today_str = datetime.now().strftime('%Y-%m-%d')
+        selected_date = payload.selected_date if payload and payload.selected_date else None
+        
+        if selected_date:
+            today_str = selected_date
+        else:
+            today_str = datetime.now().strftime('%Y-%m-%d')
+
         safe_watchlist = "".join(c if c.isalnum() or c in ('-', '_') else '_' for c in watchlist_name)
         base_dir = os.path.join("..", "generated_charts", safe_watchlist, today_str)
         results_cache_path = os.path.join(base_dir, "results.json")
         
-        # 1. Check if we already have results for today
+        # 1. Check if we already have results for this date
         if os.path.exists(results_cache_path):
-            print(f"Loading cached results for '{watchlist_name}' from {results_cache_path}")
+            print(f"Loading cached results for '{watchlist_name}' on {today_str} from {results_cache_path}")
             try:
                 with open(results_cache_path, "r") as f:
                     return json.load(f)
@@ -694,7 +723,7 @@ async def api_generate_watchlist_charts(watchlist_name: str):
                 print(f"Error loading cache: {e}. Re-generating...")
 
         # 2. Generate the charts
-        generate_charts_for_watchlist(watchlist_name)
+        generate_charts_for_watchlist(watchlist_name, selected_date=selected_date)
         
         # 3. Run Neural Detection for 3m (find_x=550) and 6m (find_x=555)
         detections_3m = run_detection(
@@ -734,8 +763,9 @@ async def api_generate_watchlist_charts(watchlist_name: str):
         process_detections(detections_6m, "6m")
         
         final_result = {
-            "message": f"Charts generated and scanned for '{watchlist_name}'",
+            "message": f"Charts generated and scanned for '{watchlist_name}' on {today_str}",
             "watchlist": watchlist_name,
+            "date": today_str,
             "count": len(bullish_images) + len(bearish_images),
             "bullish": bullish_images,
             "bearish": bearish_images,
