@@ -9,9 +9,15 @@ import mplfinance as mpf
 import pandas as pd
 from db_utils import get_watchlist_symbols, load_cached_data
 
-def generate_charts_for_watchlist(watchlist_name):
+def generate_charts_for_watchlist(watchlist_name, selected_date=None):
     # --- 1. SETUP FOLDERS ---
-    today_str = datetime.now().strftime('%Y-%m-%d')
+    if selected_date:
+        today_dt = pd.to_datetime(selected_date)
+        today_str = today_dt.strftime('%Y-%m-%d')
+    else:
+        today_dt = pd.Timestamp.now()
+        today_str = datetime.now().strftime('%Y-%m-%d')
+
     # Safe-format watchlist name for folder (replace spaces/special chars)
     safe_watchlist_name = "".join(c if c.isalnum() or c in ('-', '_') else '_' for c in watchlist_name)
     
@@ -30,7 +36,7 @@ def generate_charts_for_watchlist(watchlist_name):
         print(f"No symbols found in watchlist '{watchlist_name}'")
         return
 
-    print(f"Generating charts for {len(symbols)} symbols in watchlist '{watchlist_name}'...")
+    print(f"Generating charts for {len(symbols)} symbols in watchlist '{watchlist_name}' for {today_str}...")
 
     # --- 3. DEFINE THE PLOT STYLE & SIZE ---
     my_colors = mpf.make_marketcolors(
@@ -72,11 +78,11 @@ def generate_charts_for_watchlist(watchlist_name):
             os.makedirs(interval_dir, exist_ok=True)
 
             # Filter data for the specific interval
-            start_date = pd.Timestamp.now() - pd.DateOffset(months=interval['months'])
-            data = full_data[full_data.index >= start_date].copy()
+            start_date = today_dt - pd.DateOffset(months=interval['months'])
+            data = full_data[(full_data.index >= start_date) & (full_data.index <= today_dt)].copy()
 
             if data.empty:
-                print(f"  No data found in the last {interval['label']} for {symbol}, skipping.")
+                print(f"  No data found between {start_date.date()} and {today_dt.date()} for {symbol}, skipping.")
                 continue
 
             # Ensure index is DatetimeIndex

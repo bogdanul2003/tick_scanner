@@ -362,6 +362,31 @@ def remove_symbol_from_watchlist(watchlist_name, symbol):
     finally:
         put_connection(conn)
 
+def get_available_dates_for_watchlist(watchlist_name):
+    """
+    Get dates where at least 50% of the symbols in the watchlist have data in stock_cache.
+    Returns the most recent 50 available dates.
+    """
+    symbols = get_watchlist_symbols(watchlist_name)
+    if not symbols:
+        return []
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            # Threshold: at least 1/2 of symbols must have data for a date to be "available"
+            threshold = max(1, len(symbols) // 2)
+            cur.execute("""
+                SELECT date FROM stock_cache
+                WHERE symbol = ANY(%s)
+                GROUP BY date
+                HAVING count(*) >= %s
+                ORDER BY date DESC
+                LIMIT 50
+            """, (symbols, threshold))
+            return [row[0].strftime('%Y-%m-%d') for row in cur.fetchall()]
+    finally:
+        put_connection(conn)
+
 def get_watchlist_symbols(watchlist_name):
     conn = get_connection()
     try:
