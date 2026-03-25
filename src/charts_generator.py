@@ -147,14 +147,27 @@ def draw_boxes_on_image(filepath, detections, show_volume=False):
         # Draw rectangle
         cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
         
-        # Draw label
+        # Calculate text size
         label = f"{name} {conf:.2f}"
-        # Draw a small background for the text to make it readable
         (label_w, label_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-        # Position background inside the box (under y1)
-        cv2.rectangle(img, (x1, y1), (x1 + label_w + 5, y1 + label_h + 10), color, -1)
-        # Position text inside the box
-        cv2.putText(img, label, (x1 + 2, y1 + label_h + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
+        
+        # Calculate background rectangle coordinates for right-aligned text inside the box
+        # We want the text to end near x2 (right edge of box)
+        bg_x2 = x2 - 2
+        bg_x1 = bg_x2 - label_w - 4 # 4px padding
+        
+        bg_y1 = y1 + 2 # Just below the top edge
+        bg_y2 = bg_y1 + label_h + 6 # Height + padding
+        
+        # Draw background rectangle
+        cv2.rectangle(img, (bg_x1, bg_y1), (bg_x2, bg_y2), color, -1)
+        
+        # Draw text
+        # Text position is bottom-left origin
+        text_x = bg_x1 + 2
+        text_y = bg_y2 - 4
+        
+        cv2.putText(img, label, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
         
     cv2.imwrite(filepath, img)
 

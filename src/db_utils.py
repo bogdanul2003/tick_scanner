@@ -48,6 +48,7 @@ def create_table():
                 signal_line FLOAT,
                 will_become_positive BOOLEAN DEFAULT FALSE,
                 ma20_will_be_above_ma50 BOOLEAN DEFAULT FALSE,
+                patterns JSONB,
                 PRIMARY KEY (symbol, date)
             )
             """)
@@ -85,6 +86,11 @@ def create_table():
                 EXCEPTION
                     WHEN duplicate_column THEN NULL;
                 END;
+                BEGIN
+                    ALTER TABLE stock_cache ADD COLUMN patterns JSONB;
+                EXCEPTION
+                    WHEN duplicate_column THEN NULL;
+                END;
             END $$;
             """)
             conn.commit()
@@ -96,7 +102,7 @@ def fetch_from_cache(symbol, date):
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT open, high, low, close, volume, ema12, ema26, ma20, ma50, macd, signal_line
+                SELECT open, high, low, close, volume, ema12, ema26, ma20, ma50, macd, signal_line, patterns
                 FROM stock_cache
                 WHERE symbol=%s AND date=%s
             """, (symbol, date))
@@ -104,14 +110,35 @@ def fetch_from_cache(symbol, date):
     finally:
         put_connection(conn)
 
-def save_to_cache(symbol, date, row):
+def save_patterns_to_cache(symbol, date, patterns):
+    """
+    Update the patterns column for a specific symbol and date.
+    patterns should be a list of dicts (JSON serializable).
+    """
+    import json
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO stock_cache (symbol, date, open, high, low, close, volume, ema12, ema26, ma20, ma50, macd, signal_line)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (symbol, date) DO NOTHING
+                INSERT INTO stock_cache (symbol, date, patterns)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (symbol, date) DO UPDATE
+                SET patterns = EXCLUDED.patterns
+            """, (symbol, date, json.dumps(patterns)))
+            conn.commit()
+    finally:
+        put_connection(conn)
+
+def save_to_cache(symbol, date, row, patterns=None):
+    import json
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO stock_cache (symbol, date, open, high, low, close, volume, ema12, ema26, ma20, ma50, macd, signal_line, patterns)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (symbol, date) DO UPDATE SET
+                    patterns = EXCLUDED.patterns
             """, (
                 symbol, 
                 date, 
@@ -125,7 +152,8 @@ def save_to_cache(symbol, date, row):
                 row.get('MA20'), 
                 row.get('MA50'), 
                 row['MACD'], 
-                row['Signal_Line']
+                row['Signal_Line'],
+                json.dumps(patterns) if patterns else None
             ))
             conn.commit()
     finally:
@@ -137,8 +165,8 @@ def save_bulk_to_cache(symbol, df):
         with conn.cursor() as cur:
             for date, row in df.iterrows():
                 cur.execute("""
-                    INSERT INTO stock_cache (symbol, date, open, high, low, close, volume, ema12, ema26, ma20, ma50, macd, signal_line)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO stock_cache (symbol, date, open, high, low, close, volume, ema12, ema26, ma20, ma50, macd, signal_line, patterns)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (symbol, date) DO UPDATE SET
                         open = EXCLUDED.open,
                         high = EXCLUDED.high,
@@ -164,7 +192,8 @@ def save_bulk_to_cache(symbol, df):
                     float(row['MA20']) if 'MA20' in row and pd.notnull(row['MA20']) else None,
                     float(row['MA50']) if 'MA50' in row and pd.notnull(row['MA50']) else None,
                     float(row['MACD']) if pd.notnull(row['MACD']) else None,
-                    float(row['Signal_Line']) if pd.notnull(row['Signal_Line']) else None
+                    float(row['Signal_Line']) if pd.notnull(row['Signal_Line']) else None,
+                    None # Patterns typically not provided in bulk price upload
                 ))
             conn.commit()
     finally:
@@ -239,7 +268,7 @@ def load_cached_data(symbol):
     try:
         with conn.cursor() as cur:
             query = """
-                SELECT date, open, high, low, close, volume, ema12, ema26, ma20, ma50, macd, signal_line
+                SELECT date, open, high, low, close, volume, ema12, ema26, ma20, ma50, macd, signal_line, patterns
                 FROM stock_cache
                 WHERE symbol=%s 
                 ORDER BY date
@@ -247,11 +276,11 @@ def load_cached_data(symbol):
             cur.execute(query, (symbol,))
             rows = cur.fetchall()
             if rows:
-                cached_data = pd.DataFrame(rows, columns=['date', 'Open', 'High', 'Low', 'Close', 'Volume', 'EMA12', 'EMA26', 'MA20', 'MA50', 'MACD', 'Signal_Line'])
+                cached_data = pd.DataFrame(rows, columns=['date', 'Open', 'High', 'Low', 'Close', 'Volume', 'EMA12', 'EMA26', 'MA20', 'MA50', 'MACD', 'Signal_Line', 'Patterns'])
                 cached_data['date'] = pd.to_datetime(cached_data['date'])
                 cached_data.set_index('date', inplace=True)
             else:
-                cached_data = pd.DataFrame(columns=['Open', 'High', 'Low', 'Close', 'Volume', 'EMA12', 'EMA26', 'MA20', 'MA50', 'MACD', 'Signal_Line'])
+                cached_data = pd.DataFrame(columns=['Open', 'High', 'Low', 'Close', 'Volume', 'EMA12', 'EMA26', 'MA20', 'MA50', 'MACD', 'Signal_Line', 'Patterns'])
                 cached_data.index.name = 'date'
     finally:
         put_connection(conn)
@@ -280,18 +309,18 @@ def fetch_bulk_from_cache(symbols, start_date, end_date):
         with conn.cursor() as cur:
             for symbol in symbols:
                 cur.execute("""
-                    SELECT date, open, high, low, close, volume, ema12, ema26, ma20, ma50, macd, signal_line
+                    SELECT date, open, high, low, close, volume, ema12, ema26, ma20, ma50, macd, signal_line, patterns
                     FROM stock_cache
                     WHERE symbol=%s AND date BETWEEN %s AND %s
                     ORDER BY date
                 """, (symbol, start_date, end_date))
                 rows = cur.fetchall()
                 if rows:
-                    df = pd.DataFrame(rows, columns=['date', 'Open', 'High', 'Low', 'Close', 'Volume', 'EMA12', 'EMA26', 'MA20', 'MA50', 'MACD', 'Signal_Line'])
+                    df = pd.DataFrame(rows, columns=['date', 'Open', 'High', 'Low', 'Close', 'Volume', 'EMA12', 'EMA26', 'MA20', 'MA50', 'MACD', 'Signal_Line', 'Patterns'])
                     df['date'] = pd.to_datetime(df['date'])
                     df.set_index('date', inplace=True)
                 else:
-                    df = pd.DataFrame(columns=['Open', 'High', 'Low', 'Close', 'Volume', 'EMA12', 'EMA26', 'MA20', 'MA50', 'MACD', 'Signal_Line'])
+                    df = pd.DataFrame(columns=['Open', 'High', 'Low', 'Close', 'Volume', 'EMA12', 'EMA26', 'MA20', 'MA50', 'MACD', 'Signal_Line', 'Patterns'])
                     df.index.name = 'date'
                 result[symbol] = df
     finally:
@@ -320,18 +349,18 @@ def fetch_latest_bulk_from_cache(symbols):
                 return result
             for symbol in symbols:
                 cur.execute("""
-                    SELECT date, open, high, low, close, volume, ema12, ema26, ma20, ma50, macd, signal_line
+                    SELECT date, open, high, low, close, volume, ema12, ema26, ma20, ma50, macd, signal_line, patterns
                     FROM stock_cache
                     WHERE symbol=%s AND date=%s
                     ORDER BY date
                 """, (symbol, latest_date))
                 rows = cur.fetchall()
                 if rows:
-                    df = pd.DataFrame(rows, columns=['date', 'Open', 'High', 'Low', 'Close', 'Volume', 'EMA12', 'EMA26', 'MA20', 'MA50', 'MACD', 'Signal_Line'])
+                    df = pd.DataFrame(rows, columns=['date', 'Open', 'High', 'Low', 'Close', 'Volume', 'EMA12', 'EMA26', 'MA20', 'MA50', 'MACD', 'Signal_Line', 'Patterns'])
                     df['date'] = pd.to_datetime(df['date'])
                     df.set_index('date', inplace=True)
                 else:
-                    df = pd.DataFrame(columns=['Open', 'High', 'Low', 'Close', 'Volume', 'EMA12', 'EMA26', 'MA20', 'MA50', 'MACD', 'Signal_Line'])
+                    df = pd.DataFrame(columns=['Open', 'High', 'Low', 'Close', 'Volume', 'EMA12', 'EMA26', 'MA20', 'MA50', 'MACD', 'Signal_Line', 'Patterns'])
                     df.index.name = 'date'
                 result[symbol] = df
     finally:

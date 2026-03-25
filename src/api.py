@@ -777,8 +777,49 @@ async def api_generate_watchlist_charts(watchlist_name: str, payload: ChartGener
 
         upgrade_to_volume_charts(detections_3m, "3m", 3)
         upgrade_to_volume_charts(detections_6m, "6m", 6)
+
+        # 5. Save the two rightmost patterns to DB for each symbol
+        from db_utils import save_patterns_to_cache
+        from datetime import datetime
         
-        # 5. Build URLs and categorize
+        target_date = datetime.strptime(today_str, '%Y-%m-%d').date()
+        
+        # Combine detections from both intervals
+        all_symbol_detections = {}
+        for d in detections_3m + detections_6m:
+            fname = d["filename"]
+            symbol = fname.split('_')[0]
+            if symbol not in all_symbol_detections:
+                all_symbol_detections[symbol] = []
+            
+            # Add boxes if they exist
+            if "boxes" in d:
+                for b in d["boxes"]:
+                    # Avoid duplicates (sometimes same pattern in both 3m and 6m)
+                    # We'll use a simple name + box coordinate comparison
+                    exists = False
+                    for existing in all_symbol_detections[symbol]:
+                        if existing["name"] == b["name"] and existing["box"] == b["box"]:
+                            exists = True
+                            break
+                    if not exists:
+                        all_symbol_detections[symbol].append(b)
+
+        for symbol, boxes in all_symbol_detections.items():
+            if not boxes:
+                continue
+            
+            # Sort by x2 coordinate descending (rightmost first)
+            # box format: [x1, y1, x2, y2]
+            sorted_boxes = sorted(boxes, key=lambda x: x["box"][2], reverse=True)
+            
+            # Take the top 2 rightmost
+            rightmost_two = sorted_boxes[:2]
+            
+            print(f"Saving {len(rightmost_two)} patterns to DB for {symbol} on {today_str}")
+            save_patterns_to_cache(symbol, target_date, rightmost_two)
+        
+        # 6. Build URLs and categorize
         bullish_images = []
         bearish_images = []
         
