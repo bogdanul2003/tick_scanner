@@ -184,6 +184,20 @@ def create_app() -> FastAPI:
         from services.chart_service import chart_service
         return chart_service.generate_and_scan_watchlist(watchlist_name, selected_date)
     
+    @app.post("/watchlist/{watchlist_name}/bulk_generate_charts", tags=["Charts"])
+    async def bulk_generate_charts(
+        watchlist_name: str, 
+        num_days: int = Body(..., embed=True, description="Number of days to generate going back from today")
+    ):
+        """
+        Generate charts for multiple days without displaying them.
+        
+        This endpoint generates and scans charts for the specified number of days,
+        going back from the most recent available date. Useful for batch pre-processing.
+        """
+        from services.chart_service import chart_service
+        return chart_service.bulk_generate_charts(watchlist_name, num_days)
+    
     @app.get("/watchlist/{watchlist_name}/available_dates", tags=["Charts"])
     async def available_dates_alias(watchlist_name: str):
         """Alias for /charts/watchlist/{watchlist_name}/available_dates."""

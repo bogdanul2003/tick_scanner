@@ -192,6 +192,78 @@ class ChartService:
             "images": bullish_images + bearish_images,
             "status": "success"
         }
+    
+    def bulk_generate_charts(
+        self,
+        watchlist_name: str,
+        num_days: int
+    ) -> Dict[str, Any]:
+        """
+        Generate charts for multiple days (going back from today).
+        
+        This method generates and scans charts for each day without 
+        returning image URLs - useful for batch pre-processing.
+        
+        Args:
+            watchlist_name: Name of the watchlist
+            num_days: Number of days to generate (going back from today)
+            
+        Returns:
+            Summary dictionary with generation results
+        """
+        from db_utils import get_available_dates_for_watchlist
+        from datetime import timedelta
+        
+        # Get available market dates for this watchlist
+        available_dates = get_available_dates_for_watchlist(watchlist_name)
+        
+        if not available_dates:
+            return {
+                "status": "error",
+                "message": f"No available dates for watchlist '{watchlist_name}'",
+                "processed": 0,
+                "results": []
+            }
+        
+        # Take the most recent num_days dates
+        dates_to_process = available_dates[:num_days]
+        
+        results = []
+        processed = 0
+        errors = 0
+        
+        logger.info(f"Bulk generating charts for {watchlist_name}: {len(dates_to_process)} days")
+        
+        for date_str in dates_to_process:
+            try:
+                logger.info(f"Processing {watchlist_name} for date {date_str}")
+                result = self.generate_and_scan_watchlist(watchlist_name, date_str)
+                results.append({
+                    "date": date_str,
+                    "status": "success",
+                    "count": result.get("count", 0),
+                    "bullish_count": len(result.get("bullish", [])),
+                    "bearish_count": len(result.get("bearish", []))
+                })
+                processed += 1
+            except Exception as e:
+                logger.error(f"Error processing {date_str}: {e}")
+                results.append({
+                    "date": date_str,
+                    "status": "error",
+                    "error": str(e)
+                })
+                errors += 1
+        
+        return {
+            "status": "success" if errors == 0 else "partial",
+            "message": f"Processed {processed} days for '{watchlist_name}' ({errors} errors)",
+            "watchlist": watchlist_name,
+            "processed": processed,
+            "errors": errors,
+            "total_requested": num_days,
+            "results": results
+        }
 
 
 # Default service instance

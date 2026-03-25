@@ -937,6 +937,9 @@ function WatchlistPatterns({ watchlist, onClose }) {
   const [availableDates, setAvailableDates] = useState([]);
   const [selectedDate, setSelectedDate] = useState("");
   const [loadingDates, setLoadingDates] = useState(false);
+  const [bulkDays, setBulkDays] = useState(5);
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const [bulkMessage, setBulkMessage] = useState("");
 
   React.useEffect(() => {
     const fetchDates = async () => {
@@ -984,6 +987,29 @@ function WatchlistPatterns({ watchlist, onClose }) {
     }
   };
 
+  const bulkGenerateCharts = async () => {
+    setBulkLoading(true);
+    setBulkMessage("");
+    setError("");
+    try {
+      const res = await fetch(`${API_BASE}/watchlist/${encodeURIComponent(watchlist)}/bulk_generate_charts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ num_days: bulkDays })
+      });
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.detail || "Failed to bulk generate charts");
+      }
+      const data = await res.json();
+      setBulkMessage(`Bulk generation complete: ${data.processed} days processed (${data.errors} errors)`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBulkLoading(false);
+    }
+  };
+
   return (
     <div style={{ border: "1px solid #ccc", margin: "10px 0", padding: 10 }}>
       <h4>Generate Charts & Scan for "{watchlist}"</h4>
@@ -1014,7 +1040,28 @@ function WatchlistPatterns({ watchlist, onClose }) {
         </button>
       </div>
       
+      <div style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: "10px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+          <label htmlFor="bulk-days">Days to generate:</label>
+          <input
+            id="bulk-days"
+            type="number"
+            min="1"
+            max="365"
+            value={bulkDays}
+            onChange={(e) => setBulkDays(Math.max(1, parseInt(e.target.value) || 1))}
+            style={{ width: "60px" }}
+            disabled={bulkLoading}
+          />
+        </div>
+        <button onClick={bulkGenerateCharts} disabled={bulkLoading || loading}>
+          {bulkLoading ? "Bulk Generating..." : "Bulk Generate (No Display)"}
+        </button>
+        {bulkMessage && <span style={{ color: "blue", marginLeft: "10px" }}>{bulkMessage}</span>}
+      </div>
+      
       {loading && <div>Generating charts and running neural pattern detection...</div>}
+      {bulkLoading && <div>Bulk generating charts for {bulkDays} days. This may take a few minutes...</div>}
       {error && <div style={{ color: "red" }}>Error: {error}</div>}
       {message && <div style={{ color: "green", fontWeight: "bold" }}>{message}</div>}
       
