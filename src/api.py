@@ -10,6 +10,7 @@ This is the main FastAPI application entry point. The API provides endpoints for
 
 The application uses a modular router-based architecture for better maintainability.
 """
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -51,6 +52,32 @@ from db_utils import (
 )
 
 
+# Initialize database tables
+def init_database():
+    """Initialize all required database tables."""
+    logger.info("Initializing database tables...")
+    create_table()
+    create_watchlist_tables()
+    create_forecast_util_table()
+    create_symbol_picks_table()
+    create_symbol_properties_table()
+    logger.info("Database initialization complete")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan event handler."""
+    # Startup
+    logger.info("Starting Tick Scanner API...")
+    init_database()
+    logger.info(f"API running on {settings.api_host}:{settings.api_port}")
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down Tick Scanner API...")
+
+
 def create_app() -> FastAPI:
     """
     Application factory function.
@@ -67,6 +94,7 @@ def create_app() -> FastAPI:
         version="2.0.0",
         docs_url="/docs",
         redoc_url="/redoc",
+        lifespan=lifespan,
     )
     
     # Configure CORS
@@ -195,34 +223,8 @@ def create_app() -> FastAPI:
     return app
 
 
-# Initialize database tables on startup
-def init_database():
-    """Initialize all required database tables."""
-    logger.info("Initializing database tables...")
-    create_table()
-    create_watchlist_tables()
-    create_forecast_util_table()
-    create_symbol_picks_table()
-    create_symbol_properties_table()
-    logger.info("Database initialization complete")
-
-
 # Create the application instance
 app = create_app()
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Application startup event handler."""
-    logger.info("Starting Tick Scanner API...")
-    init_database()
-    logger.info(f"API running on {settings.api_host}:{settings.api_port}")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Application shutdown event handler."""
-    logger.info("Shutting down Tick Scanner API...")
 
 
 @app.get("/health", tags=["System"])
@@ -245,8 +247,6 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
-    
-    init_database()
     
     uvicorn.run(
         "api:app",
