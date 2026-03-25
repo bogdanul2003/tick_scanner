@@ -72,6 +72,7 @@ def get_macd_for_range(symbol: str, start_date, end_date):
                 "high": row.get('High'),
                 "low": row.get('Low'),
                 "close": row['Close'],
+                "volume": row.get('Volume'),
                 "macd": row['MACD'],
                 "signal_line": row['Signal_Line'],
                 "ma20": row.get('MA20'),
@@ -80,7 +81,7 @@ def get_macd_for_range(symbol: str, start_date, end_date):
         else:
             row = fetch_from_cache(symbol, date.date())
             if row:
-                open_price, high, low, close, ema12, ema26, ma20, ma50, macd, signal_line = row
+                open_price, high, low, close, volume, ema12, ema26, ma20, ma50, macd, signal_line = row
                 results.append({
                     "symbol": symbol,
                     "date": date.date().isoformat(),
@@ -88,6 +89,7 @@ def get_macd_for_range(symbol: str, start_date, end_date):
                     "high": high,
                     "low": low,
                     "close": close,
+                    "volume": volume,
                     "macd": macd,
                     "signal_line": signal_line,
                     "ma20": ma20,
@@ -149,6 +151,7 @@ def get_macd_for_range_bulk(symbols: list, start_date, end_date):
                     "high": row.get('High'),
                     "low": row.get('Low'),
                     "close": row['Close'],
+                    "volume": row.get('Volume'),
                     "macd": row['MACD'],
                     "signal_line": row['Signal_Line'],
                     "ma20": row.get('MA20'),
@@ -157,8 +160,8 @@ def get_macd_for_range_bulk(symbols: list, start_date, end_date):
             else:
                 row = fetch_from_cache(symbol, date.date())
                 if row:
-                    # row: open, high, low, close, ema12, ema26, ma20, ma50, macd, signal_line
-                    open_price, high, low, close, ema12, ema26, ma20, ma50, macd, signal_line = row
+                    # row: open, high, low, close, volume, ema12, ema26, ma20, ma50, macd, signal_line
+                    open_price, high, low, close, volume, ema12, ema26, ma20, ma50, macd, signal_line = row
                     symbol_results.append({
                         "symbol": symbol,
                         "date": date.date().isoformat(),
@@ -166,6 +169,7 @@ def get_macd_for_range_bulk(symbols: list, start_date, end_date):
                         "high": high,
                         "low": low,
                         "close": close,
+                        "volume": volume,
                         "macd": macd,
                         "signal_line": signal_line,
                         "ma20": ma20,
@@ -195,7 +199,7 @@ def process_symbols(args):
         symbol_data['date'] = pd.to_datetime(symbol_data['date'])
         symbol_data.set_index('date', inplace=True)
         symbol_data.index = symbol_data.index.normalize()
-        symbol_data = symbol_data.rename(columns={'close': 'Close', 'open': 'Open', 'high': 'High', 'low': 'Low'})
+        symbol_data = symbol_data.rename(columns={'close': 'Close', 'open': 'Open', 'high': 'High', 'low': 'Low', 'volume': 'Volume'})
         symbol_data = symbol_data.dropna(subset=['Close'])
 
         # Merge with cached data if available
@@ -203,17 +207,24 @@ def process_symbols(args):
         if not cached_data.empty and cached_data.index.tz is not None:
             cached_data.index = cached_data.index.tz_convert(None)
             cached_data.index = cached_data.index.normalize()
-        if not cached_data.empty:
-            all_data = pd.concat([cached_data, symbol_data])
+
+        # Safely concatenate the DataFrames, avoiding FutureWarning for empty entries
+        to_concat = [df for df in [cached_data, symbol_data] if not df.empty]
+        if len(to_concat) > 1:
+            all_data = pd.concat(to_concat)
             all_data = all_data[~all_data.index.duplicated(keep='last')].sort_index()
+        elif len(to_concat) == 1:
+            all_data = to_concat[0].copy()
         else:
-            all_data = symbol_data.copy()
-        
+            all_data = pd.DataFrame()
+
+        if all_data.empty:
+            continue
+
         # Ensure we have required columns
-        available_cols = ['Open', 'High', 'Low', 'Close']
+        available_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
         cols_to_keep = [col for col in available_cols if col in all_data.columns]
         all_data_for_indicators = all_data[cols_to_keep].copy()
-        
         all_data_for_indicators['EMA12'] = all_data_for_indicators['Close'].ewm(span=12, adjust=False).mean()
         all_data_for_indicators['EMA26'] = all_data_for_indicators['Close'].ewm(span=26, adjust=False).mean()
         # --- Add moving averages ---
@@ -528,17 +539,17 @@ def get_closing_prices_bulk(symbols: list, start_date, end_date):
         symbol_data = None
         if isinstance(history.columns, pd.MultiIndex):
             try:
-                # Select Open, High, Low, and Close columns for the symbol
-                symbol_data = history.xs(symbol, level=1 if history.columns.names[0] == 'Price' else 0, axis=1)[['Open', 'High', 'Low', 'Close']]
+                # Select Open, High, Low, Close, and Volume columns for the symbol
+                symbol_data = history.xs(symbol, level=1 if history.columns.names[0] == 'Price' else 0, axis=1)[['Open', 'High', 'Low', 'Close', 'Volume']]
             except Exception:
                 try:
-                    symbol_data = history[symbol][['Open', 'High', 'Low', 'Close']]
+                    symbol_data = history[symbol][['Open', 'High', 'Low', 'Close', 'Volume']]
                 except Exception:
                     results[symbol] = []
                     continue
         else:
             if 'Close' in history.columns:
-                cols = [c for c in ['Open', 'High', 'Low', 'Close'] if c in history.columns]
+                cols = [c for c in ['Open', 'High', 'Low', 'Close', 'Volume'] if c in history.columns]
                 symbol_data = history[cols]
             else:
                 results[symbol] = []
@@ -557,7 +568,8 @@ def get_closing_prices_bulk(symbols: list, start_date, end_date):
                 "open": float(row['Open']) if 'Open' in row and not pd.isna(row['Open']) else None,
                 "high": float(row['High']) if 'High' in row and not pd.isna(row['High']) else None,
                 "low": float(row['Low']) if 'Low' in row and not pd.isna(row['Low']) else None,
-                "close": float(row['Close']) if not pd.isna(row['Close']) else None
+                "close": float(row['Close']) if not pd.isna(row['Close']) else None,
+                "volume": int(row['Volume']) if 'Volume' in row and not pd.isna(row['Volume']) else None
             })
         results[symbol] = symbol_results
 
@@ -593,6 +605,45 @@ def get_closing_prices(symbol: str, start_date, end_date):
         })
 
     return results
+
+def refresh_watchlist_data(watchlist_name, days_back=365):
+    """
+    Identifies symbols in a watchlist with missing/null OHLCV data and refetches from yfinance.
+    """
+    from db_utils import get_watchlist_symbols, get_missing_ohlcv_dates, load_cached_data
+    
+    symbols = get_watchlist_symbols(watchlist_name)
+    if not symbols:
+        return {"message": f"No symbols found in watchlist '{watchlist_name}'", "refetched": []}
+    
+    # 1. Identify missing data/dates
+    missing_dates_dict = get_missing_ohlcv_dates(symbols, days_back=days_back)
+    if not missing_dates_dict:
+        return {"message": f"No missing data found for symbols in '{watchlist_name}'", "refetched": []}
+    
+    refetched_symbols = list(missing_dates_dict.keys())
+    print(f"Refetching data for {len(refetched_symbols)} symbols in watchlist '{watchlist_name}'")
+    
+    # 2. Get existing cached data (needed for MACD calculation)
+    cached_data_dict = {}
+    for symbol in refetched_symbols:
+        cached_data_dict[symbol] = load_cached_data(symbol)
+    
+    # 3. Use bulk calculation logic to fetch and update
+    from datetime import datetime
+    today = pd.Timestamp(datetime.now().date())
+    
+    calculate_macd_and_signal_bulk(
+        refetched_symbols,
+        today,
+        cached_data_dict,
+        missing_dates_dict
+    )
+    
+    return {
+        "message": f"Successfully refetched data for {len(refetched_symbols)} symbols.",
+        "refetched": refetched_symbols
+    }
 
 def get_latest_market_date():
     """

@@ -65,12 +65,19 @@ else:
                 if not cached_data.empty:
                     cached_data.index = cached_data.index.normalize()
 
-                # Safely concatenate the DataFrames
-                if not cached_data.empty:
-                    all_data = pd.concat([cached_data, new_data_prices])
+                # Safely concatenate the DataFrames, avoiding FutureWarning for empty entries
+                to_concat = [df for df in [cached_data, new_data_prices] if not df.empty]
+                if len(to_concat) > 1:
+                    all_data = pd.concat(to_concat)
                     all_data = all_data[~all_data.index.duplicated(keep='last')].sort_index()
+                elif len(to_concat) == 1:
+                    all_data = to_concat[0].copy()
                 else:
-                    all_data = new_data_prices.copy()
+                    all_data = pd.DataFrame()
+
+                if all_data.empty:
+                    print(f"No data after merge for symbol: {symbol}")
+                    continue
 
                 # Keep only the Open and Close columns (index is Date)
                 all_data = all_data[['Open', 'Close']]

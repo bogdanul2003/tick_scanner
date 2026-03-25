@@ -54,9 +54,23 @@ def run_detection(input_dir, output_dir, find_x=510, show_boxes=False):
 
         if has_box_past_threshold:
             filename = os.path.basename(img_path)
+            
+            # Extract all boxes for this image to return them
+            detected_boxes = []
+            if results[0].boxes is not None:
+                for box in results[0].boxes:
+                    coords = box.xyxy.tolist()[0] # [x1, y1, x2, y2]
+                    detected_boxes.append({
+                        "box": coords,
+                        "conf": float(box.conf.item()),
+                        "class": int(box.cls.item()),
+                        "name": coreml_model.names[int(box.cls.item())]
+                    })
+
             images_with_x_past_threshold.append({
                 "filename": filename,
-                "rightmost_pattern": rightmost_pattern
+                "rightmost_pattern": rightmost_pattern,
+                "boxes": detected_boxes
             })
             
             # Save the annotated image

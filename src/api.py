@@ -159,6 +159,23 @@ async def api_remove_symbol_from_watchlist(watchlist_name: str, symbols: list[st
         raise HTTPException(status_code=404, detail=errors)
     return {"watchlist": watchlist_name, "symbols_removed": removed, "errors": errors}
 
+@app.post("/watchlist/{watchlist_name}/refresh", tags=["Watchlist"])
+async def api_refresh_watchlist(watchlist_name: str, days_back: int = 365):
+    """
+    Refresh missing/null OHLCV data for all symbols in a watchlist.
+    """
+    try:
+        from macd_utils import refresh_watchlist_data
+        result = refresh_watchlist_data(watchlist_name, days_back=days_back)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        import traceback
+        print(f"Exception in api_refresh_watchlist: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/watchlist/{watchlist_name}/symbols", tags=["Watchlist"])
 async def api_get_watchlist_symbols(watchlist_name: str):
     """
@@ -722,8 +739,8 @@ async def api_generate_watchlist_charts(watchlist_name: str, payload: ChartGener
             except Exception as e:
                 print(f"Error loading cache: {e}. Re-generating...")
 
-        # 2. Generate the charts
-        generate_charts_for_watchlist(watchlist_name, selected_date=selected_date)
+        # 2. Generate the charts (WITHOUT volume for detection)
+        generate_charts_for_watchlist(watchlist_name, selected_date=selected_date, show_volume=False)
         
         # 3. Run Neural Detection for 3m (find_x=550) and 6m (find_x=555)
         detections_3m = run_detection(
@@ -734,10 +751,34 @@ async def api_generate_watchlist_charts(watchlist_name: str, payload: ChartGener
         detections_6m = run_detection(
             os.path.join(base_dir, "6m"), 
             os.path.join(base_dir, "6m", "filtered"), 
-            find_x=555
+            find_x=565
         )
+
+        # 4. Re-generate filtered charts WITH volume
+        from charts_generator import generate_symbol_chart
         
-        # 4. Build URLs and categorize
+        def upgrade_to_volume_charts(detections, interval_label, months):
+            for d in detections:
+                fname = d["filename"]
+                boxes = d.get("boxes", [])
+                # Filename format: SYMBOL_INTERVAL_DATE.png
+                symbol = fname.split('_')[0]
+                save_path = os.path.join(base_dir, interval_label, "filtered", fname)
+                print(f"Upgrading {fname} to include volume bars and bounding boxes...")
+                generate_symbol_chart(
+                    symbol=symbol,
+                    interval_label=interval_label,
+                    months=months,
+                    end_date_str=today_str,
+                    output_path=save_path,
+                    show_volume=True,
+                    detections=boxes
+                )
+
+        upgrade_to_volume_charts(detections_3m, "3m", 3)
+        upgrade_to_volume_charts(detections_6m, "6m", 6)
+        
+        # 5. Build URLs and categorize
         bullish_images = []
         bearish_images = []
         

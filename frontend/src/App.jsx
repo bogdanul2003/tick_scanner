@@ -1262,6 +1262,26 @@ function WatchlistsManager({ onSelectWatchlist }) {
                 </span>
                 <button style={{ marginLeft: 8 }} onClick={() => deleteWatchlist(wl.name)}>Delete</button>
                 <button style={{ marginLeft: 4 }} onClick={() => onSelectWatchlist(wl.name, wl.symbols || [])}>View Signals</button>
+                <button 
+                  style={{ marginLeft: 4 }} 
+                  onClick={async () => {
+                    setMessage(`Refreshing data for ${wl.name}...`);
+                    setLoading(true);
+                    try {
+                      const res = await fetch(`${API_BASE}/watchlist/${encodeURIComponent(wl.name)}/refresh`, {
+                        method: "POST"
+                      });
+                      const data = await res.json();
+                      setMessage(data.message);
+                    } catch (e) {
+                      setMessage("Error refreshing data");
+                    }
+                    setLoading(false);
+                  }}
+                  disabled={loading}
+                >
+                  Refresh Data
+                </button>
               </li>
             ))
           )}
