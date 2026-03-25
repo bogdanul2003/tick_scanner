@@ -1,6 +1,8 @@
 import os
 import argparse
 from datetime import datetime
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from functools import partial
 import matplotlib
 # Set the backend to Agg (non-interactive) before importing mplfinance/pyplot
 # This prevents the Python icon from popping up in the macOS Dock
@@ -10,7 +12,86 @@ import pandas as pd
 import cv2
 from db_utils import get_watchlist_symbols, load_cached_data
 
-def generate_charts_for_watchlist(watchlist_name, selected_date=None, show_volume=False):
+
+def _get_chart_style():
+    """Create and return the chart style (must be created in each process)."""
+    my_colors = mpf.make_marketcolors(
+        up='green', 
+        down='red', 
+        edge='inherit', 
+        wick='black',    
+        volume='inherit'
+    )
+    return mpf.make_mpf_style(
+        base_mpf_style='yahoo', 
+        marketcolors=my_colors, 
+        gridstyle=''           
+    )
+
+
+def _process_symbol(symbol, today_dt, today_str, output_dir, intervals, show_volume):
+    """
+    Process a single symbol - generate charts for all intervals.
+    This function runs in a worker process.
+    """
+    from db_utils import load_cached_data  # Re-import in worker process
+    
+    results = []
+    fig_size = (4.35, 5.65)
+    my_style = _get_chart_style()
+    
+    # Get data from DB
+    full_data = load_cached_data(symbol)
+    
+    if full_data.empty:
+        return [(symbol, None, f"No data found in DB for {symbol}")]
+
+    for interval in intervals:
+        # Create interval-specific subfolder
+        interval_dir = os.path.join(output_dir, interval['label'])
+        os.makedirs(interval_dir, exist_ok=True)
+
+        # Filter data for the specific interval
+        start_date = today_dt - pd.DateOffset(months=interval['months'])
+        data = full_data[(full_data.index >= start_date) & (full_data.index <= today_dt)].copy()
+
+        if data.empty:
+            results.append((symbol, interval['label'], f"No data between {start_date.date()} and {today_dt.date()}"))
+            continue
+
+        # Ensure index is DatetimeIndex
+        if not isinstance(data.index, pd.DatetimeIndex):
+            data.index = pd.to_datetime(data.index)
+
+        # Map DB column names to what mplfinance expects
+        if 'High' not in data.columns: data['High'] = data['Close']
+        if 'Low' not in data.columns: data['Low'] = data['Close']
+        if 'Volume' not in data.columns: data['Volume'] = 0
+
+        # File path including the interval label
+        filename = f"{symbol}_{interval['label']}_{today_str}.png"
+        filepath = os.path.join(interval_dir, filename)
+
+        # Generate and save
+        try:
+            generate_single_chart_file(data, filepath, my_style, fig_size, show_volume=show_volume)
+            results.append((symbol, interval['label'], filepath))
+        except Exception as e:
+            results.append((symbol, interval['label'], f"Error: {e}"))
+    
+    return results
+
+
+def generate_charts_for_watchlist(watchlist_name, selected_date=None, show_volume=False, max_workers=4):
+    """
+    Generate charts for all symbols in a watchlist.
+    
+    Args:
+        watchlist_name: Name of the watchlist
+        selected_date: Optional date string (YYYY-MM-DD)
+        show_volume: Whether to include volume bars
+        max_workers: Number of parallel workers (default 4)
+    """
     # --- 1. SETUP FOLDERS ---
     if selected_date:
         today_dt = pd.to_datetime(selected_date)
@@ -37,73 +118,57 @@ def generate_charts_for_watchlist(watchlist_name, selected_date=None, show_volum
         print(f"No symbols found in watchlist '{watchlist_name}'")
         return
 
-    print(f"Generating charts for {len(symbols)} symbols in watchlist '{watchlist_name}' for {today_str} (Volume: {show_volume})...")
+    print(f"Generating charts for {len(symbols)} symbols in watchlist '{watchlist_name}' for {today_str} (Volume: {show_volume}, Workers: {max_workers})...")
 
-    # --- 3. DEFINE THE PLOT STYLE & SIZE ---
-    my_colors = mpf.make_marketcolors(
-        up='green', 
-        down='red', 
-        edge='inherit', 
-        wick='black',    
-        volume='inherit'
-    )
-
-    my_style = mpf.make_mpf_style(
-        base_mpf_style='yahoo', 
-        marketcolors=my_colors, 
-        gridstyle=''           
-    )
-
-    # Target pixels: 683x768. At 144 DPI: 683/144 = 4.743, 768/144 = 5.333
-    fig_size = (4.35, 5.65) 
-
-    # --- 4. PROCESS EACH SYMBOL ---
+    # --- 3. DEFINE INTERVALS ---
     intervals = [
         {'months': 6, 'label': '6m'},
         {'months': 3, 'label': '3m'}
     ]
 
-    for symbol in symbols:
-        print(f"Processing {symbol}...")
+    # --- 4. PARALLEL PROCESSING ---
+    import time
+    start_time = time.time()
+    
+    # Create output directories upfront
+    for interval in intervals:
+        os.makedirs(os.path.join(output_dir, interval['label']), exist_ok=True)
+    
+    completed = 0
+    failed = 0
+    
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        futures = {
+            executor.submit(
+                _process_symbol, 
+                symbol, 
+                today_dt, 
+                today_str, 
+                output_dir, 
+                intervals, 
+                show_volume
+            ): symbol for symbol in symbols
+        }
         
-        # Get data from DB
-        full_data = load_cached_data(symbol)
-        
-        if full_data.empty:
-            print(f"  No data found in DB for {symbol}, skipping.")
-            continue
-
-        for interval in intervals:
-            # Create interval-specific subfolder
-            interval_dir = os.path.join(output_dir, interval['label'])
-            os.makedirs(interval_dir, exist_ok=True)
-
-            # Filter data for the specific interval
-            start_date = today_dt - pd.DateOffset(months=interval['months'])
-            data = full_data[(full_data.index >= start_date) & (full_data.index <= today_dt)].copy()
-
-            if data.empty:
-                print(f"  No data found between {start_date.date()} and {today_dt.date()} for {symbol}, skipping.")
-                continue
-
-            # Ensure index is DatetimeIndex
-            if not isinstance(data.index, pd.DatetimeIndex):
-                data.index = pd.to_datetime(data.index)
-
-            # Map DB column names to what mplfinance expects
-            required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
-            if not all(col in data.columns for col in required_cols):
-                # If High/Low are missing, fill them with Close
-                if 'High' not in data.columns: data['High'] = data['Close']
-                if 'Low' not in data.columns: data['Low'] = data['Close']
-                if 'Volume' not in data.columns: data['Volume'] = 0
-
-            # File path including the interval label
-            filename = f"{symbol}_{interval['label']}_{today_str}.png"
-            filepath = os.path.join(interval_dir, filename)
-
-            # --- 5. GENERATE AND SAVE ---
-            generate_single_chart_file(data, filepath, my_style, fig_size, show_volume=show_volume)
+        # Process results as they complete
+        for future in as_completed(futures):
+            symbol = futures[future]
+            try:
+                results = future.result()
+                for sym, interval, result in results:
+                    if result and not result.startswith("No data") and not result.startswith("Error"):
+                        print(f"  Saved chart to {result}")
+                        completed += 1
+                    else:
+                        print(f"  {sym} ({interval}): {result}")
+                        failed += 1
+            except Exception as e:
+                print(f"  {symbol}: Error - {e}")
+                failed += 1
+    
+    elapsed = time.time() - start_time
+    print(f"Completed: {completed} charts in {elapsed:.2f}s ({completed/elapsed:.1f} charts/sec), Failed: {failed}")
 
 def draw_boxes_on_image(filepath, detections, show_volume=False):
     """
