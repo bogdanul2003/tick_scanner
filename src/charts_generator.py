@@ -299,3 +299,89 @@ def generate_symbol_chart(symbol, interval_label, months, end_date_str, output_p
 
     generate_single_chart_file(data, output_path, my_style, fig_size, show_volume=show_volume, detections=detections)
     return True
+
+
+def _upgrade_single_chart(args):
+    """
+    Worker function for parallel volume chart upgrade.
+    Args is a tuple: (symbol, interval_label, months, end_date_str, output_path, boxes)
+    """
+    symbol, interval_label, months, end_date_str, output_path, boxes = args
+    try:
+        result = generate_symbol_chart(
+            symbol=symbol,
+            interval_label=interval_label,
+            months=months,
+            end_date_str=end_date_str,
+            output_path=output_path,
+            show_volume=True,
+            detections=boxes
+        )
+        return (symbol, interval_label, output_path, result)
+    except Exception as e:
+        return (symbol, interval_label, None, str(e))
+
+
+def upgrade_charts_with_volume_parallel(detections_3m, detections_6m, base_dir, today_str, max_workers=4):
+    """
+    Upgrade filtered charts with volume bars in parallel.
+    
+    Args:
+        detections_3m: List of detection results for 3-month charts
+        detections_6m: List of detection results for 6-month charts
+        base_dir: Base directory for output
+        today_str: Date string (YYYY-MM-DD)
+        max_workers: Number of parallel workers
+        
+    Returns:
+        Number of successfully upgraded charts
+    """
+    import time
+    start_time = time.time()
+    
+    # Prepare all tasks
+    tasks = []
+    
+    for d in detections_3m:
+        fname = d["filename"]
+        boxes = d.get("boxes", [])
+        symbol = fname.split('_')[0]
+        save_path = os.path.join(base_dir, "3m", "filtered", fname)
+        tasks.append((symbol, "3m", 3, today_str, save_path, boxes))
+    
+    for d in detections_6m:
+        fname = d["filename"]
+        boxes = d.get("boxes", [])
+        symbol = fname.split('_')[0]
+        save_path = os.path.join(base_dir, "6m", "filtered", fname)
+        tasks.append((symbol, "6m", 6, today_str, save_path, boxes))
+    
+    if not tasks:
+        return 0
+    
+    print(f"Upgrading {len(tasks)} charts with volume (Workers: {max_workers})...")
+    
+    completed = 0
+    failed = 0
+    
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_upgrade_single_chart, task): task[0] for task in tasks}
+        
+        for future in as_completed(futures):
+            symbol = futures[future]
+            try:
+                sym, interval, path, result = future.result()
+                if result is True:
+                    print(f"  Upgraded {sym} ({interval}) with volume")
+                    completed += 1
+                else:
+                    print(f"  Failed {sym} ({interval}): {result}")
+                    failed += 1
+            except Exception as e:
+                print(f"  Error upgrading {symbol}: {e}")
+                failed += 1
+    
+    elapsed = time.time() - start_time
+    print(f"Volume upgrade completed: {completed} charts in {elapsed:.2f}s ({completed/elapsed:.1f} charts/sec), Failed: {failed}")
+    
+    return completed

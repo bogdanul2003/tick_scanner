@@ -35,7 +35,7 @@ class ChartService:
         Returns:
             Result dictionary with generated chart URLs and detection results
         """
-        from charts_generator import generate_charts_for_watchlist, generate_symbol_chart
+        from charts_generator import generate_charts_for_watchlist, upgrade_charts_with_volume_parallel
         from detector_neural import run_detection
         from db_utils import save_patterns_to_cache
         
@@ -69,12 +69,9 @@ class ChartService:
             find_x=565
         )
         
-        # Upgrade filtered charts with volume
-        self._upgrade_charts_with_volume(
-            detections_3m, "3m", 3, base_dir, today_str, generate_symbol_chart
-        )
-        self._upgrade_charts_with_volume(
-            detections_6m, "6m", 6, base_dir, today_str, generate_symbol_chart
+        # Upgrade filtered charts with volume (parallel)
+        upgrade_charts_with_volume_parallel(
+            detections_3m, detections_6m, base_dir, today_str, max_workers=4
         )
         
         # Save patterns to DB
@@ -120,32 +117,6 @@ class ChartService:
         cache_path = os.path.join(base_dir, "results.json")
         with open(cache_path, "w") as f:
             json.dump(result, f)
-    
-    def _upgrade_charts_with_volume(
-        self, 
-        detections: List[Dict], 
-        interval_label: str, 
-        months: int,
-        base_dir: str,
-        today_str: str,
-        generate_func
-    ) -> None:
-        """Re-generate detected charts with volume bars."""
-        for d in detections:
-            fname = d["filename"]
-            boxes = d.get("boxes", [])
-            symbol = fname.split('_')[0]
-            save_path = os.path.join(base_dir, interval_label, "filtered", fname)
-            logger.debug(f"Upgrading {fname} with volume bars")
-            generate_func(
-                symbol=symbol,
-                interval_label=interval_label,
-                months=months,
-                end_date_str=today_str,
-                output_path=save_path,
-                show_volume=True,
-                detections=boxes
-            )
     
     def _save_detected_patterns(
         self, 

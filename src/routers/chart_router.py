@@ -39,7 +39,7 @@ async def api_generate_watchlist_charts(
     Returns the relative URLs of the images that passed the pattern filter.
     """
     try:
-        from charts_generator import generate_charts_for_watchlist, generate_symbol_chart
+        from charts_generator import generate_charts_for_watchlist
         from detector_neural import run_detection
         from db_utils import save_patterns_to_cache
         
@@ -75,26 +75,9 @@ async def api_generate_watchlist_charts(
             find_x=565
         )
 
-        # 4. Re-generate filtered charts WITH volume
-        def upgrade_to_volume_charts(detections, interval_label, months):
-            for d in detections:
-                fname = d["filename"]
-                boxes = d.get("boxes", [])
-                symbol = fname.split('_')[0]
-                save_path = os.path.join(base_dir, interval_label, "filtered", fname)
-                print(f"Upgrading {fname} to include volume bars and bounding boxes...")
-                generate_symbol_chart(
-                    symbol=symbol,
-                    interval_label=interval_label,
-                    months=months,
-                    end_date_str=today_str,
-                    output_path=save_path,
-                    show_volume=True,
-                    detections=boxes
-                )
-
-        upgrade_to_volume_charts(detections_3m, "3m", 3)
-        upgrade_to_volume_charts(detections_6m, "6m", 6)
+        # 4. Re-generate filtered charts WITH volume (parallel)
+        from charts_generator import upgrade_charts_with_volume_parallel
+        upgrade_charts_with_volume_parallel(detections_3m, detections_6m, base_dir, today_str, max_workers=4)
 
         # 5. Save the two rightmost patterns to DB for each symbol
         target_date = datetime.strptime(today_str, '%Y-%m-%d').date()
