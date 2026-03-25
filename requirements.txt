@@ -1,0 +1,40 @@
+# Tick Scanner - Python Dependencies
+# Run: pip install -r requirements.txt
+
+# Web Framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# Database
+psycopg2-binary>=2.9.9
+
+# Data Processing
+pandas>=2.1.0
+numpy>=1.24.0
+
+# Stock Data
+yfinance>=0.2.36
+
+# Technical Analysis
+scipy>=1.11.0
+
+# Time Series Forecasting
+statsmodels>=0.14.0
+
+# Chart Generation
+mplfinance>=0.12.10b0
+matplotlib>=3.8.0
+
+# Image Processing
+opencv-python>=4.8.0
+Pillow>=10.0.0
+
+# Machine Learning (for neural pattern detection)
+# torch>=2.1.0  # Optional - for training
+coremltools>=7.0  # For CoreML inference on macOS
+ultralytics>=8.0.0  # YOLO
+
+# Development
+python-multipart>=0.0.6  # For file uploads
