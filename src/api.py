@@ -11,7 +11,7 @@ This is the main FastAPI application entry point. The API provides endpoints for
 The application uses a modular router-based architecture for better maintainability.
 """
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import os
@@ -136,9 +136,9 @@ def create_app() -> FastAPI:
     
     @app.post("/closing_prices/bulk", tags=["Prices"])
     async def closing_prices_bulk_alias(
-        symbols: list[str],
-        start_date: str,
-        end_date: str
+        symbols: list[str] = Body(..., embed=True),
+        start_date: str = Body(..., embed=True),
+        end_date: str = Body(..., embed=True)
     ):
         """Alias for /prices/closing/bulk."""
         from macd_utils import get_closing_prices_bulk
@@ -160,9 +160,9 @@ def create_app() -> FastAPI:
     
     @app.post("/macd/arima_positive_forecast", tags=["Forecast"])
     async def arima_forecast_alias(
-        symbols: list[str],
-        days_past: int = 100,
-        forecast_days: int = 5
+        symbols: list[str] = Body(..., embed=True),
+        days_past: int = Body(100),
+        forecast_days: int = Body(5)
     ):
         """Alias for /forecast/macd/arima_positive."""
         from services.forecast_service import forecast_service
@@ -170,16 +170,16 @@ def create_app() -> FastAPI:
     
     @app.post("/ma/arima_ma20_above_ma50_forecast", tags=["Forecast"])
     async def ma_forecast_alias(
-        symbols: list[str],
-        days_past: int = 100,
-        forecast_days: int = 5
+        symbols: list[str] = Body(..., embed=True),
+        days_past: int = Body(100),
+        forecast_days: int = Body(5)
     ):
         """Alias for /forecast/ma/arima_above_50."""
         from services.forecast_service import forecast_service
         return forecast_service.bulk_ma_forecast(symbols, days_past, forecast_days)
     
     @app.post("/watchlist/{watchlist_name}/generate_charts", tags=["Charts"])
-    async def generate_charts_alias(watchlist_name: str, selected_date: str = None):
+    async def generate_charts_alias(watchlist_name: str, selected_date: str = Body(None, embed=True)):
         """Alias for /charts/watchlist/{watchlist_name}/generate."""
         from services.chart_service import chart_service
         return chart_service.generate_and_scan_watchlist(watchlist_name, selected_date)
