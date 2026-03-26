@@ -569,7 +569,7 @@ function WatchlistBullishForecast({ watchlist, symbols, onClose }) {
       setError("");
       setResult(null);
       try {
-        const res = await fetch("http://localhost:8000/macd/arima_positive_forecast", {
+        const res = await fetch(`${API_BASE}/forecast/macd/arima_positive`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ symbols }),
@@ -657,7 +657,7 @@ function WatchlistBullishMAForecast({ watchlist, symbols, onClose }) {
       setError("");
       setResult(null);
       try {
-        const res = await fetch("http://localhost:8000/ma/arima_ma20_above_ma50_forecast", {
+        const res = await fetch(`${API_BASE}/forecast/ma/arima_above_50`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ symbols }),
@@ -731,7 +731,7 @@ function WatchlistCombinedForecast({ watchlist, onClose }) {
 
     const fetchCombined = async () => {
       try {
-        const res = await fetch(`${API_BASE}/watchlist/${encodeURIComponent(watchlist)}/combined_forecast`, {
+        const res = await fetch(`${API_BASE}/forecast/combined/${encodeURIComponent(watchlist)}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" }
         });
@@ -945,7 +945,7 @@ function WatchlistPatterns({ watchlist, onClose }) {
     const fetchDates = async () => {
       setLoadingDates(true);
       try {
-        const res = await fetch(`${API_BASE}/watchlist/${encodeURIComponent(watchlist)}/available_dates`);
+        const res = await fetch(`${API_BASE}/charts/watchlist/${encodeURIComponent(watchlist)}/available_dates`);
         if (res.ok) {
           const data = await res.json();
           setAvailableDates(data.dates || []);
@@ -968,7 +968,7 @@ function WatchlistPatterns({ watchlist, onClose }) {
     setMessage("");
     setResult(null);
     try {
-      const res = await fetch(`${API_BASE}/watchlist/${encodeURIComponent(watchlist)}/generate_charts`, {
+      const res = await fetch(`${API_BASE}/charts/watchlist/${encodeURIComponent(watchlist)}/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ selected_date: selectedDate })
@@ -992,7 +992,7 @@ function WatchlistPatterns({ watchlist, onClose }) {
     setBulkMessage("");
     setError("");
     try {
-      const res = await fetch(`${API_BASE}/watchlist/${encodeURIComponent(watchlist)}/bulk_generate_charts`, {
+      const res = await fetch(`${API_BASE}/charts/watchlist/${encodeURIComponent(watchlist)}/bulk_generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ num_days: bulkDays })

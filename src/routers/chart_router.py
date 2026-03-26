@@ -14,6 +14,32 @@ class ChartGenerationRequest(BaseModel):
     selected_date: Optional[str] = None
 
 
+class BulkChartGenerationRequest(BaseModel):
+    num_days: int
+
+
+@router.post("/watchlist/{watchlist_name}/bulk_generate")
+async def api_bulk_generate_watchlist_charts(
+    watchlist_name: str,
+    payload: BulkChartGenerationRequest
+):
+    """
+    Generate charts for multiple days without displaying them.
+    
+    This endpoint generates and scans charts for the specified number of days,
+    going back from the most recent available date. Useful for batch pre-processing.
+    """
+    try:
+        from services.chart_service import chart_service
+        return chart_service.bulk_generate_charts(watchlist_name, payload.num_days)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        print(f"Exception in api_bulk_generate_watchlist_charts: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/watchlist/{watchlist_name}/available_dates")
 async def api_get_available_dates(watchlist_name: str):
     """Get dates where data is available for a significant number of symbols in the watchlist."""
