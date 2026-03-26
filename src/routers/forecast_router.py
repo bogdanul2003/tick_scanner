@@ -1,11 +1,29 @@
-"""Forecast-related API endpoints (ARIMA predictions)."""
+"""Forecast-related API endpoints (ARIMA and Neural predictions)."""
 from fastapi import APIRouter, Body, HTTPException
 from fastapi.responses import JSONResponse
-from typing import List
+from typing import List, Optional
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import traceback
 
 router = APIRouter(prefix="/forecast", tags=["Forecast"])
+
+
+@router.get("/engine/status")
+async def get_forecast_engine_status():
+    """
+    Get information about available forecasting engines.
+    
+    Returns engine availability (ARIMA vs Neural/NPU) and configuration.
+    """
+    try:
+        from services.forecast_service import get_forecast_engine_status
+        return get_forecast_engine_status()
+    except Exception as e:
+        return {
+            "arima_available": True,
+            "neural_available": False,
+            "error": str(e)
+        }
 
 
 def run_forecast(symbol, days_past, forecast_days):

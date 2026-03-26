@@ -32,9 +32,14 @@ opencv-python>=4.8.0
 Pillow>=10.0.0
 
 # Machine Learning (for neural pattern detection)
-# torch>=2.1.0  # Optional - for training
-coremltools>=7.0  # For CoreML inference on macOS
+# torch>=2.1.0  # Optional - for training, uncomment to enable neural forecast training
+coremltools>=7.0  # For CoreML NPU inference on macOS
 ultralytics>=8.0.0  # YOLO
+
+# Neural Forecasting (optional - for training LSTM models)
+# To train neural forecast models, install:
+# pip install torch>=2.1.0
+# Then run: python src/scripts/train_forecast_model.py
 
 # Development
 python-multipart>=0.0.6  # For file uploads
