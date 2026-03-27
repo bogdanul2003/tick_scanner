@@ -53,7 +53,11 @@ def get_historical_data(
     for d in macd_data:
         if field_name in d and d[field_name] is not None:
             values.append(float(d[field_name]))
-            dates.append(d["date"])
+            # Handle both datetime objects and string dates
+            date_val = d["date"]
+            if isinstance(date_val, str):
+                date_val = datetime.strptime(date_val, "%Y-%m-%d")
+            dates.append(date_val)
     
     return values, dates
 
