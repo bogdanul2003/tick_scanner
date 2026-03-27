@@ -67,7 +67,7 @@ The platform includes an LSTM-based neural forecasting system that can run on Ap
 │  Training (GPU)              Inference (NPU)                    │
 │  ┌──────────────┐           ┌──────────────┐                   │
 │  │   PyTorch    │           │   Core ML    │                   │
-│  │    LSTM      │  ──────►  │   Model      │                   │
+│  │  LSTM/GRU    │  ──────►  │   Model      │                   │
 │  │   Training   │  export   │  (.mlpackage)│                   │
 │  └──────────────┘           └──────────────┘                   │
 │        │                           │                            │
@@ -80,12 +80,27 @@ The platform includes an LSTM-based neural forecasting system that can run on Ap
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### Supported Model Architectures
+
+Based on research (NIFTY50 MACD forecasting study), multiple architectures are available:
+
+| Architecture | Description | Research RMSE | Best For |
+|--------------|-------------|---------------|----------|
+| `bidirectional_gru` | Bidirectional GRU | **19.57** | Recommended - best accuracy |
+| `stacked_gru` | 2-layer GRU | 24.40 | Good balance of speed/accuracy |
+| `gru` | Standard single-layer GRU | 29.01 | Fastest training |
+| `standard_lstm` | Single-layer LSTM | 32.89 | Baseline |
+| `stacked_lstm` | 2-layer LSTM (default) | 115.46* | Legacy default |
+
+*Note: Stacked LSTM underperformed in research but may work better with larger datasets.
+
 ### Model Types
 
-| Model | Input | Output | Filename |
-|-------|-------|--------|----------|
-| MACD Forecaster | 30 days of MACD values | 5-day MACD forecast | `macd_forecaster.mlpackage` |
-| Signal Line Forecaster | 30 days of Signal Line values | 5-day Signal Line forecast | `signal_line_forecaster.mlpackage` |
+| Signal Type | Architecture | Input | Output | Filename |
+|-------------|--------------|-------|--------|----------|
+| MACD | bidirectional_gru | 30 days MACD | 5-day forecast | `macd_bidirectional_gru_forecaster.mlpackage` |
+| MACD | stacked_lstm | 30 days MACD | 5-day forecast | `macd_stacked_lstm_forecaster.mlpackage` |
+| Signal Line | bidirectional_gru | 30 days Signal | 5-day forecast | `signal_line_bidirectional_gru_forecaster.mlpackage` |
 
 ### Training the Models
 
@@ -104,14 +119,20 @@ pip install coremltools
 ```bash
 cd src
 
-# Train on default watchlist (sp500)
+# Train with Bidirectional GRU (recommended - best accuracy)
+python scripts/train_forecast_model.py --architecture bidirectional_gru --epochs 100
+
+# Train with Stacked GRU (good balance)
+python scripts/train_forecast_model.py --architecture stacked_gru --epochs 100
+
+# Train with default Stacked LSTM
 python scripts/train_forecast_model.py --epochs 100
 
 # Train on specific watchlist
-python scripts/train_forecast_model.py --watchlist my_watchlist --epochs 100
+python scripts/train_forecast_model.py --architecture bidirectional_gru --watchlist my_watchlist --epochs 100
 
 # Train on specific symbols
-python scripts/train_forecast_model.py --symbols "AAPL,MSFT,GOOG,AMZN" --epochs 100
+python scripts/train_forecast_model.py --architecture bidirectional_gru --symbols "AAPL,MSFT,GOOG,AMZN" --epochs 100
 ```
 
 #### Train Signal Line Forecaster
@@ -119,14 +140,26 @@ python scripts/train_forecast_model.py --symbols "AAPL,MSFT,GOOG,AMZN" --epochs 
 ```bash
 cd src
 
-# Train Signal Line model instead of MACD
-python scripts/train_forecast_model.py --signal-type signal_line --epochs 100
+# Train Signal Line model with Bidirectional GRU
+python scripts/train_forecast_model.py --signal-type signal_line --architecture bidirectional_gru --epochs 100
+```
+
+#### Compare Architectures
+
+```bash
+cd src
+
+# Train all architectures to compare performance
+python scripts/train_forecast_model.py --architecture bidirectional_gru --epochs 100
+python scripts/train_forecast_model.py --architecture stacked_gru --epochs 100
+python scripts/train_forecast_model.py --architecture stacked_lstm --epochs 100
 ```
 
 #### Training Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
+| `--architecture` | stacked_lstm | Model architecture: `bidirectional_gru`, `stacked_gru`, `gru`, `standard_lstm`, `stacked_lstm` |
 | `--symbols` | None | Comma-separated list of symbols |
 | `--watchlist` | sp500 | Watchlist name to use for training data |
 | `--days` | 365 | Days of historical data to use |
@@ -134,7 +167,7 @@ python scripts/train_forecast_model.py --signal-type signal_line --epochs 100
 | `--epochs` | 100 | Number of training epochs |
 | `--seq-length` | 30 | Input sequence length (days) |
 | `--forecast-horizon` | 5 | Number of days to forecast |
-| `--hidden-size` | 64 | LSTM hidden layer size |
+| `--hidden-size` | 64 | Hidden layer size |
 | `--batch-size` | 32 | Training batch size |
 | `--learning-rate` | 0.001 | Optimizer learning rate |
 | `--test-split` | 0.15 | Fraction of data for testing |
@@ -145,13 +178,17 @@ python scripts/train_forecast_model.py --signal-type signal_line --epochs 100
 
 ```
 ============================================================
-LSTM MACD Forecaster Training
+Bidirectional Gru MACD Forecaster Training
 ============================================================
+Architecture: bidirectional_gru
 Signal type: MACD
 Output directory: /path/to/models
 Sequence length: 30
 Forecast horizon: 5
 ...
+
+Using device: mps
+Architecture: bidirectional_gru
 
 Epoch 10/100 - Train Loss: 0.045678, Val Loss: 0.052341
 Epoch 20/100 - Train Loss: 0.032456, Val Loss: 0.041234
@@ -167,8 +204,8 @@ Directional Accuracy: 68.50%
 Positive Prediction Accuracy: 72.30%
 ==================================================
 
-Model saved to models/macd_forecaster.pt
-Core ML model saved to models/macd_forecaster.mlpackage
+Model saved to models/macd_bidirectional_gru_forecaster.pt
+Core ML model saved to models/macd_bidirectional_gru_forecaster.mlpackage
 ```
 
 ### Using the Neural Forecaster
