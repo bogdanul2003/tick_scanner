@@ -2,6 +2,7 @@ import multiprocessing
 import pandas as pd
 from datetime import datetime, time, timedelta
 from fastapi import HTTPException
+import pytz
 from db_utils import (
     fetch_bulk_from_cache,
     load_cached_data,
@@ -648,32 +649,30 @@ def refresh_watchlist_data(watchlist_name, days_back=365):
 def get_latest_market_date():
     """
     Returns the latest date for which market data is available.
-    If the US market is still open today or before market open, returns yesterday's date.
-    Otherwise, returns today's date.
+    If the market is currently open or hasn't opened yet, returns yesterday's date.
+    If the market has closed today, returns today's date.
     """
-    now = datetime.now()
-    # US market hours: 9:30am to 4:00pm Eastern Time (ET)
-    # We'll use UTC-5 for ET (not handling DST for simplicity)
-    market_open = time(9, 30)
+    # Get current time in Eastern Time
+    et = pytz.timezone('America/New_York')
+    now_et = datetime.now(et)
+    
     market_close = time(16, 0)
-    today = now.date()
-    current_time = now.time()
+    today = now_et.date()
+    current_time = now_et.time()
     weekday = today.weekday()
+    
     # If today is Saturday (5) or Sunday (6), return last Friday
     if weekday == 5:
         return today - timedelta(days=1)
     if weekday == 6:
         return today - timedelta(days=2)
-    # If before market open, use previous trading day
-    if current_time < market_open:
-        if weekday == 0:  # Monday before open, return last Friday
-            return today - timedelta(days=3)
-        else:
-            return today - timedelta(days=1)
-    # If before market close, use previous trading day
+    
+    # If before market close (before 4:00 PM), return previous trading day
     if current_time < market_close:
         if weekday == 0:  # Monday before close, return last Friday
             return today - timedelta(days=3)
         else:
             return today - timedelta(days=1)
+    
+    # Market has closed for today
     return today
