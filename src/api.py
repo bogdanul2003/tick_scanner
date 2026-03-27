@@ -1,881 +1,160 @@
-from fastapi import FastAPI, HTTPException, Body, UploadFile, File, Form
-from fastapi.responses import JSONResponse, StreamingResponse
-from fastapi.middleware.cors import CORSMiddleware  # Add this import
-import pandas as pd
-from datetime import datetime, timedelta, time
-import yfinance as yf
+"""
+Tick Scanner API - Stock Market Technical Analysis Platform
+
+This is the main FastAPI application entry point. The API provides endpoints for:
+- MACD technical indicator calculations
+- Watchlist management
+- Chart pattern detection (using neural networks)
+- ARIMA-based forecasting
+- Closing price retrieval
+
+The application uses a modular router-based architecture for better maintainability.
+"""
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+import os
+import sys
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+# Add chart_scan to path for neural detector imports
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", "chart_scan"))
+
+# Import routers
+from routers import (
+    macd_router,
+    watchlist_router,
+    pattern_router,
+    chart_router,
+    price_router,
+    forecast_router,
+)
+
+# Import core modules
+from core.config import settings
+from core.middleware import register_exception_handlers
+
+# Import database initialization (legacy - for backwards compatibility)
 from db_utils import (
     create_symbol_picks_table,
     create_symbol_properties_table,
     create_table,
     create_watchlist_tables,
-    create_watchlist,
-    delete_watchlist,
-    add_symbol_to_watchlist,
-    remove_symbol_from_watchlist,
-    get_watchlist_symbols,
-    get_all_watchlists_with_symbols,
     create_forecast_util_table,
-    get_available_dates_for_watchlist
-)
-from typing import List, Optional
-from pydantic import BaseModel
-from macd_utils import get_latest_market_date, get_macd_for_date, macd_crossover_signal, get_closing_prices_bulk, get_closing_prices
-from picks import get_watchlist_bullish_signal, get_company_names_from_bullish_signal_result
-from concurrent.futures import ProcessPoolExecutor, as_completed
-import io
-
-from fastapi.staticfiles import StaticFiles
-import os
-import sys
-
-# Add chart_scan to path so we can import detector_neural
-sys.path.append(os.path.join(os.path.dirname(__file__), "..", "chart_scan"))
-
-app = FastAPI(title="Stock MACD API", description="API for retrieving MACD indicators for stocks")
-
-# Mount static files to serve generated charts
-# Root is ../generated_charts relative to api.py
-app.mount("/charts", StaticFiles(directory="../generated_charts"), name="charts")
-
-# Add CORS middleware to allow requests from the frontend
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # Allow the frontend origin
-    allow_credentials=True,
-    allow_methods=["*"],  # Allow all HTTP methods
-    allow_headers=["*"],  # Allow all headers
 )
 
-@app.get("/macd/{symbol}", tags=["MACD"])
-async def get_macd(symbol: str):
-    """
-    Get the MACD and Signal Line for the specified ticker symbol for the current date.
-    """
-    try:
-        symbol = symbol.upper()
-        today = get_latest_market_date()
-        # get_macd_for_date now expects a list of symbols
-        result = get_macd_for_date([symbol], today)
-        return result[symbol]
-    except Exception as e:
-        import traceback
-        print(f"Exception in get_macd: {e}")  # Print the exception error
-        traceback.print_exc()  # Print the stack trace
-        return JSONResponse(
-            status_code=500,
-            content={"message": f"An error occurred: {str(e)}"}
-        )
 
-@app.post("/macd/bulk", tags=["MACD"])
-async def get_macd_bulk(symbols: list[str] = Body(..., embed=True)):
-    """
-    Get the MACD and Signal Line for a list of ticker symbols for the current date.
-    """
-    today = get_latest_market_date()
-    # get_macd_for_date now expects a list of symbols
-    symbols = [s.upper() for s in symbols]
-    result = get_macd_for_date(symbols, today)
-    # Return a list of results for consistency with previous API
-    return [result[symbol] for symbol in symbols]
-
-@app.post("/macd/bullish_signal", tags=["MACD"])
-async def macd_bullish_signal(
-    symbols: list[str] = Body(..., embed=True),
-    days: int = 30,
-    threshold: float = 0.05
-):
-    """
-    For a list of ticker symbols, check if there is a bullish MACD crossover signal in the past 'days' (default 30).
-    """
-    symbols = [s.upper() for s in symbols]
-    results = {}
-    for symbol in symbols:
-        try:
-            signal = macd_crossover_signal(symbol, days, threshold)
-            results[symbol] = signal
-        except Exception as e:
-            import traceback
-            print(f"Exception in macd_bullish_signal for {symbol}: {e}")
-            traceback.print_exc()
-            results[symbol] = {"error": str(e)}
-    return results
-
-@app.post("/watchlist", tags=["Watchlist"])
-async def api_create_watchlist(name: str = Body(..., embed=True)):
-    """
-    Create a new watchlist with the given name.
-    """
-    watchlist_id = create_watchlist(name)
-    if watchlist_id is None:
-        raise HTTPException(status_code=400, detail="Watchlist already exists")
-    return {"id": watchlist_id, "name": name}
-
-@app.delete("/watchlist/{name}", tags=["Watchlist"])
-async def api_delete_watchlist(name: str):
-    """
-    Delete a watchlist by name.
-    """
-    delete_watchlist(name)
-    return {"deleted": name}
-
-@app.post("/watchlist/{watchlist_name}/add_symbol", tags=["Watchlist"])
-async def api_add_symbol_to_watchlist(watchlist_name: str, symbols: list[str] = Body(..., embed=True)):
-    """
-    Add one or more symbols to a watchlist.
-    """
-    added = []
-    errors = []
-    for symbol in symbols:
-        try:
-            add_symbol_to_watchlist(watchlist_name, symbol.upper())
-            added.append(symbol.upper())
-            today = get_latest_market_date()
-            # get_macd_for_date now expects a list of symbols
-            get_macd_for_date([symbol.upper()], today)
-        except ValueError as e:
-            errors.append({"symbol": symbol, "error": str(e)})
-    if errors and not added:
-        raise HTTPException(status_code=404, detail=errors)
-    return {"watchlist": watchlist_name, "symbols_added": added, "errors": errors}
-
-@app.post("/watchlist/{watchlist_name}/remove_symbol", tags=["Watchlist"])
-async def api_remove_symbol_from_watchlist(watchlist_name: str, symbols: list[str] = Body(..., embed=True)):
-    """
-    Remove one or more symbols from a watchlist.
-    """
-    removed = []
-    errors = []
-    for symbol in symbols:
-        try:
-            remove_symbol_from_watchlist(watchlist_name, symbol.upper())
-            removed.append(symbol.upper())
-        except ValueError as e:
-            import traceback
-            print(f"Exception in api_remove_symbol_from_watchlist for {symbol}: {e}")
-            traceback.print_exc()
-            errors.append({"symbol": symbol, "error": str(e)})
-    if errors and not removed:
-        raise HTTPException(status_code=404, detail=errors)
-    return {"watchlist": watchlist_name, "symbols_removed": removed, "errors": errors}
-
-@app.post("/watchlist/{watchlist_name}/refresh", tags=["Watchlist"])
-async def api_refresh_watchlist(watchlist_name: str, days_back: int = 365):
-    """
-    Refresh missing/null OHLCV data for all symbols in a watchlist.
-    """
-    try:
-        from macd_utils import refresh_watchlist_data
-        result = refresh_watchlist_data(watchlist_name, days_back=days_back)
-        return result
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        import traceback
-        print(f"Exception in api_refresh_watchlist: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/watchlist/{watchlist_name}/symbols", tags=["Watchlist"])
-async def api_get_watchlist_symbols(watchlist_name: str):
-    """
-    Get all symbols in a watchlist.
-    """
-    try:
-        symbols = get_watchlist_symbols(watchlist_name)
-        return {"watchlist": watchlist_name, "symbols": symbols}
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-@app.get("/watchlists", tags=["Watchlist"])
-async def api_get_all_watchlists():
-    """
-    Get all watchlists with their symbols.
-    """
-    watchlists = get_all_watchlists_with_symbols()
-    return {"watchlists": watchlists}
-
-@app.get("/watchlist/{watchlist_name}", tags=["Watchlist"])
-async def api_get_watchlist(watchlist_name: str):
-    """
-    Get a watchlist by name, including its symbols.
-    """
-    try:
-        symbols = get_watchlist_symbols(watchlist_name)
-        return {"watchlist": watchlist_name, "symbols": symbols}
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-@app.post("/watchlist/{watchlist_name}/bullish_signal", tags=["Watchlist"])
-async def api_watchlist_bullish_signal(
-    watchlist_name: str,
-    days: int = Body(30, embed=True),
-    threshold: float = Body(0.05, embed=True)
-):
-    """
-    For a given watchlist, check if there is a bullish MACD crossover signal for each symbol.
-    """
-    try:
-        return get_watchlist_bullish_signal(watchlist_name, days, threshold)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-import math
-
-def sanitize_float(value):
-    """Convert NaN/Infinity to None for JSON serialization."""
-    if value is None:
-        return None
-    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
-        return None
-    return value
-
-def sanitize_record(record):
-    """Sanitize all float values in a dictionary."""
-    return {k: sanitize_float(v) if isinstance(v, (float, int, type(None))) else v for k, v in record.items()}
-
-@app.get("/macd/{symbol}/history", tags=["MACD"])
-async def get_macd_history(symbol: str, days: int = 60):
-    """
-    Get the MACD and Signal Line for the specified ticker symbol for the past 'days' (default 60).
-    """
-    try:
-        symbol = symbol.upper()
-        end_date = get_latest_market_date()
-        start_date = end_date - timedelta(days=days-1)
-        from macd_utils import get_macd_for_range
-        result = get_macd_for_range(symbol, start_date, end_date)
-        # Sanitize float values (NaN, Infinity) for JSON serialization
-        sanitized_result = [sanitize_record(r) for r in result]
-        return sanitized_result
-    except Exception as e:
-        import traceback
-        print(f"Exception in get_macd_history: {e}")
-        traceback.print_exc()
-        return JSONResponse(
-            status_code=500,
-            content={"message": f"An error occurred: {str(e)}"}
-        )
-
-def run_forecast(symbol, days_past, forecast_days):
-    from forecast_utils import arima_macd_positive_forecast
-    try:
-        return symbol.upper(), arima_macd_positive_forecast(symbol.upper(), days_past, forecast_days)
-    except Exception as e:
-        import traceback
-        print(f"Exception in get_arima_macd_positive_forecast for {symbol}: {e}")
-        traceback.print_exc()
-        return symbol.upper(), {"error": str(e)}
-    
-def run_ma_forecast(symbol, days_past, forecast_days):
-    from forecast_utils import arima_ma20_above_ma50_forecast
-    try:
-        return symbol.upper(), arima_ma20_above_ma50_forecast(symbol.upper(), days_past, forecast_days)
-    except Exception as e:
-        import traceback
-        print(f"Exception in arima_ma20_above_ma50_forecast for {symbol}: {e}")
-        traceback.print_exc()
-        return symbol.upper(), {"error": str(e)}
-
-@app.post("/macd/arima_positive_forecast", tags=["MACD"])
-async def get_arima_macd_positive_forecast_bulk(
-    symbols: list[str] = Body(..., embed=True),
-    days_past: int = 100,
-    forecast_days: int = 5
-):
-    """
-    For a list of symbols, forecast if MACD will become positive in the next `forecast_days` days using ARIMA,
-    based on the past `days_past` days of MACD data.
-    """
-
-    results = {}
-    with ProcessPoolExecutor(max_workers=4) as executor:
-        futures = [
-            executor.submit(run_forecast, symbol, days_past, forecast_days)
-            for symbol in symbols
-        ]
-        for future in as_completed(futures):
-            symbol, result = future.result()
-            results[symbol] = result
-
-    # --- Order results with improved sorting logic ---
-    def get_sorting_keys(symbol):
-        result = results[symbol]
-        # Handle error case
-        if "error" in result:
-            return (False, False, False, float('-inf'), float('-inf'))
-        
-        will_become_positive = result.get("will_become_positive", False)
-        forecast_values = result.get("forecast_values", [])
-        details = result.get("details")
-        last_macd = details.get("last_macd") if isinstance(details, dict) else None
-
-        # Convert forecasted_macd from dict to list if needed
-        if isinstance(result.get("forecasted_macd"), dict):
-            if not forecast_values:
-                forecast_values = list(result["forecasted_macd"].values())
-        
-        if last_macd is not None:
-            if not isinstance(forecast_values, list):
-                forecast_values = list(forecast_values)
-            forecast_values = [last_macd, *forecast_values]
-
-        
-        
-        # No forecast values case
-        if not forecast_values:
-            return (will_become_positive, False, False, float('-inf'), float('-inf'))
-        
-        # Check if values are increasing
-        # Filter out None values for comparison
-        valid_values = [v for v in forecast_values if v is not None]
-        if len(valid_values) < 2:
-            is_increasing = False
-        else:
-            is_increasing = all(valid_values[i] < valid_values[i+1] for i in range(len(valid_values)-1))
-        
-        # Check if first value is positive
-        first_value_positive = False
-        if forecast_values and forecast_values[0] is not None:
-            first_value_positive = forecast_values[0] > 0
-        
-        # Find index of first positive value
-        first_positive_index = float('inf')
-        first_positive_value = float('inf')
-        for i, value in enumerate(forecast_values):
-            if value is not None and value > 0:
-                first_positive_index = i
-                first_positive_value = value
-                break
-        
-        return (will_become_positive, is_increasing, first_value_positive, first_positive_index, first_positive_value)
-
-    ordered_symbols = sorted(
-        results.keys(),
-        key=lambda sym: (
-            not results[sym].get("will_become_positive", False),  # Will become positive first
-            not get_sorting_keys(sym)[1],  # Values are increasing
-            not get_sorting_keys(sym)[2],  # First value is positive
-            get_sorting_keys(sym)[3],      # Index of first positive value
-            get_sorting_keys(sym)[4]       # Value of first positive (for tie-breaking)
-        )
-    )
-    ordered_results = {sym: results[sym] for sym in ordered_symbols}
-    return ordered_results
-
-@app.post("/watchlist/upload", tags=["Watchlist"])
-async def api_upload_watchlist(
-    watchlist_name: str = Form(...),
-    file: UploadFile = File(...)
-):
-    """
-    Create a new watchlist from a text file containing stock symbols (one per line).
-    """
-    try:
-        content = await file.read()
-        lines = content.decode("utf-8").splitlines()
-        symbols = [line.strip().upper() for line in lines if line.strip()]
-        if not symbols:
-            raise HTTPException(status_code=400, detail="No symbols found in file")
-        # Start of modification: Allow existing watchlists
-        create_watchlist(watchlist_name)
-        # End of modification: If create_watchlist returns None, it means it exists, which is acceptable here.
-        added = []
-        errors = []
-        for symbol in symbols:
-            try:
-                add_symbol_to_watchlist(watchlist_name, symbol)
-                added.append(symbol)
-            except ValueError as e:
-                errors.append({"symbol": symbol, "error": str(e)})
-        return {
-            "watchlist": watchlist_name,
-            "symbols_added": added,
-            "errors": errors
-        }
-    except Exception as e:
-        import traceback
-        print(f"Exception in api_upload_watchlist: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/closing_prices/bulk", tags=["Prices"])
-async def get_closing_prices_bulk_api(
-    symbols: list[str] = Body(..., embed=True),
-    start_date: str = Body(..., embed=True),
-    end_date: str = Body(..., embed=True)
-):
-    """
-    Get closing prices for a list of symbols between start_date and end_date (inclusive).
-    Dates must be in 'YYYY-MM-DD' format.
-    """
-    try:
-        symbols = [s.upper() for s in symbols]
-        from datetime import datetime
-        start = datetime.fromisoformat(start_date).date()
-        end = datetime.fromisoformat(end_date).date()
-        result = get_closing_prices_bulk(symbols, start, end)
-        return result
-    except Exception as e:
-        import traceback
-        print(f"Exception in get_closing_prices_bulk_api: {e}")
-        traceback.print_exc()
-        return JSONResponse(
-            status_code=500,
-            content={"message": f"An error occurred: {str(e)}"}
-        )
-
-@app.get("/closing_prices/{symbol}", tags=["Prices"])
-async def get_closing_prices_api(
-    symbol: str,
-    start_date: str,
-    end_date: str
-):
-    """
-    Get closing prices for a single symbol between start_date and end_date (inclusive).
-    Dates must be in 'YYYY-MM-DD' format.
-    """
-    try:
-        symbol = symbol.upper()
-        from datetime import datetime
-        start = datetime.fromisoformat(start_date).date()
-        end = datetime.fromisoformat(end_date).date()
-        result = get_closing_prices(symbol, start, end)
-        return result
-    except Exception as e:
-        import traceback
-        print(f"Exception in get_closing_prices_api: {e}")
-        traceback.print_exc()
-        return JSONResponse(
-            status_code=500,
-            content={"message": f"An error occurred: {str(e)}"}
-        )
-
-@app.post("/watchlist/{watchlist_name}/bullish_companies_csv", tags=["Watchlist"])
-async def api_watchlist_bullish_companies_csv(
-    watchlist_name: str,
-    days: int = Body(30, embed=True),
-    threshold: float = Body(0.05, embed=True)
-):
-    """
-    For a given watchlist, return a CSV file with columns Name, Symbol, Open Price, and Amount for all companies
-    that have both ma20_just_became_above_ma50 and bullish_macd_above_signal set to True.
-    The filename includes the current date and time and the watchlist name.
-    """
-    try:
-        # Get company names and closing prices for filtered symbols
-        company_dict = get_company_names_from_bullish_signal_result(watchlist_name, days, threshold)
-        # Prepare CSV
-        output = io.StringIO()
-        output.write("Name,Symbol,Open Price,Amount\n")
-        for symbol, info in company_dict.items():
-            name = info.get("company_name", "")
-            close = info.get("close", "")
-            # Format close to 2 decimals if it's a number
-            if isinstance(close, (float, int)):
-                close_str = f"{close:.2f}"
-            else:
-                close_str = close
-            # Escape quotes and commas in name if needed
-            safe_name = '"' + name.replace('"', '""') + '"' if ',' in name or '"' in name else name
-            output.write(f"{safe_name},{symbol},{close_str},1\n")
-        output.seek(0)
-        # Generate filename with current date and time and watchlist name
-        from datetime import datetime
-        now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        safe_watchlist = "".join(c if c.isalnum() or c in ('-', '_') else '_' for c in watchlist_name)
-        filename = f"{now_str}_{safe_watchlist}_bullish_companies.csv"
-        return StreamingResponse(
-            output,
-            media_type="text/csv",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
-        )
-    except Exception as e:
-        import traceback
-        print(f"Exception in api_watchlist_bullish_companies_csv: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/ma/arima_ma20_above_ma50_forecast", tags=["MA"])
-async def get_arima_ma20_above_ma50_forecast_bulk(
-    symbols: list[str] = Body(..., embed=True),
-    days_past: int = 100,
-    forecast_days: int = 5
-):
-    """
-    For a list of symbols, forecast if MA20 will become higher than MA50 in the next `forecast_days` days using ARIMA,
-    based on the past `days_past` days of MA20/MA50 data. Returns only symbols where ma20_will_be_above_ma50 is True.
-    """
-    results = {}
-    with ProcessPoolExecutor(max_workers=4) as executor:
-        futures = [
-            executor.submit(run_ma_forecast, symbol, days_past, forecast_days)
-            for symbol in symbols
-        ]
-        for future in as_completed(futures):
-            symbol, result = future.result()
-            results[symbol] = result
-
-    print(f"Results for {len(results)} symbols: {results.keys()} results: {results}")
-    # Filter to only those where ma20_will_be_above_ma50_and_macd_above_signal is True
-    filtered_results = {
-        sym: results[sym]
-        for sym in results
-        if isinstance(results[sym], dict) and results[sym].get("ma20_will_be_above_ma50_and_macd_above_signal", False)
-    }
-    return filtered_results
-
-@app.post("/watchlist/{watchlist_name}/combined_forecast", tags=["Watchlist"])
-async def get_combined_forecast(watchlist_name: str):
-    """
-    For a given watchlist, return symbols that have both will_become_positive and ma20_will_be_above_ma50 set to True
-    in the stock_cache table for the current date.
-    """
-    try:
-        from db_utils import get_watchlist_symbols, get_connection, put_connection
-        from macd_utils import get_latest_market_date
-        
-        symbols = get_watchlist_symbols(watchlist_name)
-        if not symbols:
-            return {"symbols": []}
-        
-        current_date = get_latest_market_date()
-        
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT symbol 
-                    FROM stock_cache
-                    WHERE symbol = ANY(%s) 
-                    AND date = %s
-                    AND will_become_positive = TRUE
-                    AND ma20_will_be_above_ma50 = TRUE
-                """, (symbols, current_date))
-                matching_symbols = [row[0] for row in cur.fetchall()]
-        finally:
-            put_connection(conn)
-        
-        return {"symbols": matching_symbols, "date": current_date.isoformat()}
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        print(f"Exception in get_combined_forecast: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/patterns/{symbol}", tags=["Patterns"])
-async def get_symbol_patterns(
-    symbol: str,
-    days: int = 120,
-    pattern_type: str = "all"
-):
-    """
-    Scan a symbol for chart patterns (Head and Shoulders, Inverse Head and Shoulders).
-    
-    Args:
-        symbol: Stock symbol to scan
-        days: Number of days of historical data to analyze (default 120)
-        pattern_type: 'all', 'head_and_shoulders', or 'inverse_head_and_shoulders'
-    
-    Returns:
-        List of detected patterns with details
-    """
-    try:
-        from pattern_utils import scan_symbol_for_patterns
-        
-        symbol = symbol.upper()
-        patterns = scan_symbol_for_patterns(symbol, days, pattern_type)
-        
-        return {
-            "symbol": symbol,
-            "days_analyzed": days,
-            "pattern_type": pattern_type,
-            "patterns_found": len(patterns),
-            "patterns": patterns
-        }
-    except Exception as e:
-        print(f"Exception in get_symbol_patterns: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/patterns/bulk", tags=["Patterns"])
-async def get_bulk_patterns(
-    symbols: list[str] = Body(..., embed=True),
-    days: int = 120,
-    pattern_type: str = "all"
-):
-    """
-    Scan multiple symbols for chart patterns.
-    
-    Args:
-        symbols: List of stock symbols to scan
-        days: Number of days of historical data to analyze (default 120)
-        pattern_type: 'all', 'head_and_shoulders', or 'inverse_head_and_shoulders'
-    
-    Returns:
-        Dictionary with symbols as keys and their detected patterns
-    """
-    try:
-        from pattern_utils import scan_symbol_for_patterns
-        
-        results = {}
-        for symbol in symbols:
-            symbol = symbol.upper()
-            try:
-                patterns = scan_symbol_for_patterns(symbol, days, pattern_type)
-                if patterns:
-                    results[symbol] = patterns
-            except Exception as e:
-                print(f"Error scanning {symbol}: {e}")
-                continue
-        
-        return {
-            "days_analyzed": days,
-            "pattern_type": pattern_type,
-            "symbols_with_patterns": len(results),
-            "results": results
-        }
-    except Exception as e:
-        print(f"Exception in get_bulk_patterns: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/watchlist/{watchlist_name}/patterns", tags=["Patterns"])
-async def get_watchlist_patterns(
-    watchlist_name: str,
-    days: int = Body(120, embed=True),
-    pattern_type: str = Body("all", embed=True)
-):
-    """
-    Scan all symbols in a watchlist for chart patterns.
-    
-    Args:
-        watchlist_name: Name of the watchlist to scan
-        days: Number of days of historical data to analyze (default 120)
-        pattern_type: 'all', 'head_and_shoulders', or 'inverse_head_and_shoulders'
-    
-    Returns:
-        Dictionary with symbols that have detected patterns
-    """
-    try:
-        from pattern_utils import scan_watchlist_for_patterns
-        
-        results = scan_watchlist_for_patterns(watchlist_name, days, pattern_type)
-        
-        # Count patterns by type
-        pattern_counts = {"head_and_shoulders": 0, "inverse_head_and_shoulders": 0}
-        for symbol_patterns in results.values():
-            for pattern in symbol_patterns:
-                if pattern["pattern_type"] in pattern_counts:
-                    pattern_counts[pattern["pattern_type"]] += 1
-        
-        return {
-            "watchlist": watchlist_name,
-            "days_analyzed": days,
-            "pattern_type_filter": pattern_type,
-            "symbols_with_patterns": len(results),
-            "pattern_counts": pattern_counts,
-            "results": results
-        }
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        print(f"Exception in get_watchlist_patterns: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-
-class ChartGenerationRequest(BaseModel):
-    selected_date: Optional[str] = None
-
-@app.get("/watchlist/{watchlist_name}/available_dates", tags=["Charts"])
-async def api_get_available_dates(watchlist_name: str):
-    """
-    Get dates where data is available for a significant number of symbols in the watchlist.
-    """
-    try:
-        from db_utils import get_available_dates_for_watchlist
-        dates = get_available_dates_for_watchlist(watchlist_name)
-        return {"dates": dates}
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        print(f"Exception in api_get_available_dates: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/watchlist/{watchlist_name}/generate_charts", tags=["Charts"])
-async def api_generate_watchlist_charts(watchlist_name: str, payload: ChartGenerationRequest = None):
-    """
-    Generate candle charts and run pattern detection for all companies in a watchlist.
-    Returns the relative URLs of the images that passed the pattern filter.
-    """
-    try:
-        import json
-        from charts_generator import generate_charts_for_watchlist
-        from detector_neural import run_detection
-        
-        # 0. Define paths
-        selected_date = payload.selected_date if payload and payload.selected_date else None
-        
-        if selected_date:
-            today_str = selected_date
-        else:
-            today_str = datetime.now().strftime('%Y-%m-%d')
-
-        safe_watchlist = "".join(c if c.isalnum() or c in ('-', '_') else '_' for c in watchlist_name)
-        base_dir = os.path.join("..", "generated_charts", safe_watchlist, today_str)
-        results_cache_path = os.path.join(base_dir, "results.json")
-        
-        # 1. Check if we already have results for this date
-        if os.path.exists(results_cache_path):
-            print(f"Loading cached results for '{watchlist_name}' on {today_str} from {results_cache_path}")
-            try:
-                with open(results_cache_path, "r") as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"Error loading cache: {e}. Re-generating...")
-
-        # 2. Generate the charts (WITHOUT volume for detection)
-        generate_charts_for_watchlist(watchlist_name, selected_date=selected_date, show_volume=False)
-        
-        # 3. Run Neural Detection for 3m (find_x=550) and 6m (find_x=555)
-        detections_3m = run_detection(
-            os.path.join(base_dir, "3m"), 
-            os.path.join(base_dir, "3m", "filtered"), 
-            find_x=550
-        )
-        detections_6m = run_detection(
-            os.path.join(base_dir, "6m"), 
-            os.path.join(base_dir, "6m", "filtered"), 
-            find_x=565
-        )
-
-        # 4. Re-generate filtered charts WITH volume
-        from charts_generator import generate_symbol_chart
-        
-        def upgrade_to_volume_charts(detections, interval_label, months):
-            for d in detections:
-                fname = d["filename"]
-                boxes = d.get("boxes", [])
-                # Filename format: SYMBOL_INTERVAL_DATE.png
-                symbol = fname.split('_')[0]
-                save_path = os.path.join(base_dir, interval_label, "filtered", fname)
-                print(f"Upgrading {fname} to include volume bars and bounding boxes...")
-                generate_symbol_chart(
-                    symbol=symbol,
-                    interval_label=interval_label,
-                    months=months,
-                    end_date_str=today_str,
-                    output_path=save_path,
-                    show_volume=True,
-                    detections=boxes
-                )
-
-        upgrade_to_volume_charts(detections_3m, "3m", 3)
-        upgrade_to_volume_charts(detections_6m, "6m", 6)
-
-        # 5. Save the two rightmost patterns to DB for each symbol
-        from db_utils import save_patterns_to_cache
-        from datetime import datetime
-        
-        target_date = datetime.strptime(today_str, '%Y-%m-%d').date()
-        
-        # Combine detections from both intervals
-        all_symbol_detections = {}
-        for d in detections_3m + detections_6m:
-            fname = d["filename"]
-            symbol = fname.split('_')[0]
-            if symbol not in all_symbol_detections:
-                all_symbol_detections[symbol] = []
-            
-            # Add boxes if they exist
-            if "boxes" in d:
-                for b in d["boxes"]:
-                    # Avoid duplicates (sometimes same pattern in both 3m and 6m)
-                    # We'll use a simple name + box coordinate comparison
-                    exists = False
-                    for existing in all_symbol_detections[symbol]:
-                        if existing["name"] == b["name"] and existing["box"] == b["box"]:
-                            exists = True
-                            break
-                    if not exists:
-                        all_symbol_detections[symbol].append(b)
-
-        for symbol, boxes in all_symbol_detections.items():
-            if not boxes:
-                continue
-            
-            # Sort by x2 coordinate descending (rightmost first)
-            # box format: [x1, y1, x2, y2]
-            sorted_boxes = sorted(boxes, key=lambda x: x["box"][2], reverse=True)
-            
-            # Take the top 2 rightmost
-            rightmost_two = sorted_boxes[:2]
-            
-            print(f"Saving {len(rightmost_two)} patterns to DB for {symbol} on {today_str}")
-            save_patterns_to_cache(symbol, target_date, rightmost_two)
-        
-        # 6. Build URLs and categorize
-        bullish_images = []
-        bearish_images = []
-        
-        # Helper to process detections
-        def process_detections(detections, interval_label):
-            for d in detections:
-                fname = d["filename"]
-                pattern = d["rightmost_pattern"]
-                url = f"/charts/{safe_watchlist}/{today_str}/{interval_label}/filtered/{fname}"
-                
-                is_bullish = False
-                if pattern:
-                    p_lower = pattern.lower()
-                    if "bottom" in p_lower:
-                        is_bullish = True
-                
-                if is_bullish:
-                    bullish_images.append(url)
-                else:
-                    bearish_images.append(url)
-
-        process_detections(detections_3m, "3m")
-        process_detections(detections_6m, "6m")
-        
-        final_result = {
-            "message": f"Charts generated and scanned for '{watchlist_name}' on {today_str}",
-            "watchlist": watchlist_name,
-            "date": today_str,
-            "count": len(bullish_images) + len(bearish_images),
-            "bullish": bullish_images,
-            "bearish": bearish_images,
-            "images": bullish_images + bearish_images, # Bullish first
-            "status": "success"
-        }
-        
-        # 5. Save to cache
-        os.makedirs(base_dir, exist_ok=True)
-        with open(results_cache_path, "w") as f:
-            json.dump(final_result, f)
-            
-        return final_result
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        import traceback
-        print(f"Exception in api_generate_watchlist_charts: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-
-if __name__ == "__main__":
-    import uvicorn
-
-    # First ensure the table exists
+# Initialize database tables
+def init_database():
+    """Initialize all required database tables."""
+    logger.info("Initializing database tables...")
     create_table()
     create_watchlist_tables()
     create_forecast_util_table()
     create_symbol_picks_table()
     create_symbol_properties_table()
-    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
+    logger.info("Database initialization complete")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan event handler."""
+    # Startup
+    logger.info("Starting Tick Scanner API...")
+    init_database()
+    logger.info(f"API running on {settings.api_host}:{settings.api_port}")
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down Tick Scanner API...")
+
+
+def create_app() -> FastAPI:
+    """
+    Application factory function.
+    
+    Creates and configures the FastAPI application with all middleware,
+    routers, and static file mounts.
+    
+    Returns:
+        Configured FastAPI application instance
+    """
+    app = FastAPI(
+        title="Tick Scanner API",
+        description="Stock Market Technical Analysis Platform - MACD indicators, pattern detection, and forecasting",
+        version="2.0.0",
+        docs_url="/docs",
+        redoc_url="/redoc",
+        lifespan=lifespan,
+    )
+    
+    # Configure CORS
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    
+    # Register exception handlers
+    register_exception_handlers(app)
+    
+    # Mount static files for generated charts
+    charts_dir = os.path.join(os.path.dirname(__file__), "..", "generated_charts")
+    if os.path.exists(charts_dir):
+        app.mount("/charts", StaticFiles(directory=charts_dir), name="charts")
+    else:
+        logger.warning(f"Charts directory not found: {charts_dir}")
+    
+    # Include routers
+    app.include_router(macd_router)
+    app.include_router(watchlist_router)
+    app.include_router(pattern_router)
+    app.include_router(chart_router)
+    app.include_router(price_router)
+    app.include_router(forecast_router)
+    
+    return app
+
+
+# Create the application instance
+app = create_app()
+
+
+@app.get("/health", tags=["System"])
+async def health_check():
+    """Health check endpoint."""
+    return {"status": "healthy", "version": "2.0.0"}
+
+
+@app.get("/", tags=["System"])
+async def root():
+    """Root endpoint with API information."""
+    return {
+        "name": "Tick Scanner API",
+        "version": "2.0.0",
+        "description": "Stock Market Technical Analysis Platform",
+        "docs": "/docs",
+        "health": "/health"
+    }
+
+
+if __name__ == "__main__":
+    import uvicorn
+    
+    uvicorn.run(
+        "api:app",
+        host=settings.api_host,
+        port=settings.api_port,
+        reload=settings.api_reload
+    )
