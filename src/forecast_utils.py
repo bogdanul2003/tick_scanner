@@ -19,7 +19,7 @@ def sanitize_data(data):
         return data
 
 
-def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days: int = 3, end_date=None):
+def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days: int = 3, end_date=None, skip_cache: bool = False):
     """
     Uses ARIMA (with dynamic window and grid search) to forecast if MACD will become positive in the next `forecast_days` days
     based on the past `days_past` days of MACD data.
@@ -29,6 +29,8 @@ def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days
         days_past: Number of calendar days of historical data to use
         forecast_days: Number of trading days to forecast ahead
         end_date: End date for data retrieval. If None, uses latest market date.
+        skip_cache: If True, skip loading/saving ARIMA grid cache. Useful for
+                    historical evaluation where cached models don't match the date range.
 
     Returns:
         {
@@ -91,7 +93,7 @@ def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days
     print(f"Using dynamic window size: {window_size} for symbol {symbol}")
 
     # Try to load ARIMA grid search from cache (forecast_util table)
-    cached = get_arima_grid_cache(symbol, window_size, cache_days=1, with_model=True, model_type="MACD_MODEL")
+    cached = None if skip_cache else get_arima_grid_cache(symbol, window_size, cache_days=1, with_model=True, model_type="MACD_MODEL")
 
     best_model = None
     if cached:
@@ -202,7 +204,8 @@ def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days
         print(f"Best ARIMA order for {symbol}: {best_order} with AIC: {best_aic}")
 
         # Save grid search result and model to cache
-        set_arima_grid_cache(symbol, best_order, best_aic, window_size, model=best_model, model_type="MACD_MODEL")
+        if not skip_cache:
+            set_arima_grid_cache(symbol, best_order, best_aic, window_size, model=best_model, model_type="MACD_MODEL")
 
     # Forecast
     forecast = best_model.forecast(steps=forecast_days)
@@ -234,11 +237,12 @@ def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days
     forecasted_macd = {date: value for date, value in zip(forecasted_dates, forecasted_macd_values)}
 
     # Cache the forecast result in stock_cache table using the last market date (end_date)
-    try:
-        from db_utils import cache_macd_positive_forecast
-        cache_macd_positive_forecast(symbol, end_date, will_become_positive)
-    except Exception as e:
-        print(f"Failed to cache will_become_positive for {symbol}: {e}")
+    if not skip_cache:
+        try:
+            from db_utils import cache_macd_positive_forecast
+            cache_macd_positive_forecast(symbol, end_date, will_become_positive)
+        except Exception as e:
+            print(f"Failed to cache will_become_positive for {symbol}: {e}")
 
     return sanitize_data({
         "will_become_positive": will_become_positive,

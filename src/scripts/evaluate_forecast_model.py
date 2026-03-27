@@ -96,7 +96,8 @@ def run_arima_forecast(
         symbol,
         days_past=days_past,
         forecast_days=forecast_horizon,
-        end_date=end_date
+        end_date=end_date,
+        skip_cache=True
     )
 
     if "error" in result.get("details", {}):
