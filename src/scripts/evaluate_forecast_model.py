@@ -241,11 +241,12 @@ def run_evaluation(
 
     # Get model parameters
     seq_length = model.seq_length
-    model_forecast_horizon = model.forecast_horizon
+    # Use the passed forecast_horizon parameter instead of model's default
+    model_forecast_horizon = forecast_horizon
 
     # Get historical data
     end_date = get_latest_market_date()
-    total_days_needed = input_days + num_samples + forecast_horizon + seq_length
+    total_days_needed = input_days + num_samples + model_forecast_horizon + seq_length
 
     all_values, all_dates = get_historical_data(
         symbol, signal_type, end_date, total_days_needed
