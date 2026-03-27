@@ -19,10 +19,16 @@ def sanitize_data(data):
         return data
 
 
-def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days: int = 3):
+def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days: int = 3, end_date=None):
     """
     Uses ARIMA (with dynamic window and grid search) to forecast if MACD will become positive in the next `forecast_days` days
     based on the past `days_past` days of MACD data.
+
+    Args:
+        symbol: Stock symbol
+        days_past: Number of calendar days of historical data to use
+        forecast_days: Number of trading days to forecast ahead
+        end_date: End date for data retrieval. If None, uses latest market date.
 
     Returns:
         {
@@ -60,7 +66,8 @@ def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days
     # --- ARIMA grid search caching logic ---
     from db_utils import get_arima_grid_cache, set_arima_grid_cache, get_cached_arima_model
 
-    end_date = get_latest_market_date()
+    if end_date is None:
+        end_date = get_latest_market_date()
     print(f"Latest market date for {symbol}: {end_date}")
     start_date = end_date - timedelta(days=days_past-1)
     # get_macd_for_date([symbol], end_date)  # Ensure we have data for the start date
