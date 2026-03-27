@@ -10,7 +10,7 @@ def run_detection(input_dir, output_dir, find_x=510, show_boxes=False):
     # Path is relative to the root if called from src/api.py, 
     # but let's make it more robust.
     model_path = os.path.join(os.path.dirname(__file__), "model.mlpackage")
-    coreml_model = YOLO(model_path)
+    coreml_model = YOLO(model_path, task='detect')
 
     # Get list of images
     image_files = glob.glob(os.path.join(input_dir, "*.png")) + \

@@ -1,0 +1,1059 @@
+python3 scripts/evaluate_forecast_model.py --compare
+
+======================================================================
+Neural vs ARIMA Comparison
+======================================================================
+Symbol:       MSFT
+Signal Type:  macd
+Architecture: bidirectional_gru
+Input Days:   30
+Samples:      10
+Compare:      Neural (bidirectional_gru) vs ARIMA
+/Users/dabo/Documents/tick_scanner/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+Torch version 2.8.0 has not been tested with coremltools. You may run into unexpected errors. Torch 2.7.0 is the most recent version that has been tested.
+
+==========================================================================================
+Running 10 predictions on MSFT MACD
+Mode: COMPARISON: Neural vs ARIMA
+Neural Model: bidirectional_gru (coreml)
+Input sequence: 30 days, Forecast: 5 days
+==========================================================================================
+
+Latest market date for MSFT: 2026-03-05
+MACD data for MSFT from 2025-11-26 to 2026-03-05 with length 67
+Using dynamic window size: 30 for symbol MSFT
+Fitting ARIMA(0,0,0) for MSFT with AIC: 182.9483058366375
+Fitting ARIMA(0,0,1) for MSFT with AIC: 148.85476868431041
+Fitting ARIMA(0,0,2) for MSFT with AIC: 127.55415966273617
+Fitting ARIMA(0,0,3) for MSFT with AIC: 110.24288298123723
+Fitting ARIMA(1,0,0) for MSFT with AIC: 111.16127126609565
+Fitting ARIMA(1,0,1) for MSFT with AIC: 94.07553665451155
+Fitting ARIMA(1,0,2) for MSFT with AIC: 96.09185248062578
+Fitting ARIMA(1,0,3) for MSFT with AIC: 91.67922826490633
+Fitting ARIMA(2,0,0) for MSFT with AIC: 89.00132289991068
+Fitting ARIMA(2,0,1) for MSFT with AIC: 90.88693185601505
+Fitting ARIMA(2,0,2) for MSFT with AIC: 87.62683574266438
+Fitting ARIMA(2,0,3) for MSFT with AIC: 89.34378426063219
+Fitting ARIMA(3,0,0) for MSFT with AIC: 90.9599647826978
+Fitting ARIMA(3,0,1) for MSFT with AIC: 90.6209962640263
+Fitting ARIMA(3,0,2) for MSFT with AIC: 88.41285788102897
+Fitting ARIMA(3,0,3) for MSFT with AIC: 92.55733699878635
+Best ARIMA order for MSFT: (2, 0, 2) with AIC: 87.62683574266438
+Forecasted MACD for MSFT over the next 5 days: [-8.560293455501087, -8.258806878514964, -8.277517542963377, -8.606128095768046, -9.218475353673785]
+Sample 1: Input ends 2026-03-05
+  Last input value: -9.5041
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-06)    -8.2836    -7.6150   +0.6687    -8.5603   +0.2767    ARIMA
+  Day 2 (2026-03-09)    -7.1972    -7.1511   +0.0461    -8.2588   +1.0616   Neural
+  Day 3 (2026-03-10)    -6.5551    -6.5761   +0.0210    -8.2775   +1.7224   Neural
+  Day 4 (2026-03-11)    -6.0476    -5.9522   +0.0954    -8.6061   +2.5586   Neural
+  Day 5 (2026-03-12)    -5.8219    -5.2041   +0.6179    -9.2185   +3.3966   Neural
+
+Latest market date for MSFT: 2026-03-06
+MACD data for MSFT from 2025-11-27 to 2026-03-06 with length 67
+Using dynamic window size: 30 for symbol MSFT
+Fitting ARIMA(0,0,0) for MSFT with AIC: 183.3216755962265
+Fitting ARIMA(0,0,1) for MSFT with AIC: 149.40207013649427
+Fitting ARIMA(0,0,2) for MSFT with AIC: 126.73156741407657
+Fitting ARIMA(0,0,3) for MSFT with AIC: 110.99377071753129
+Fitting ARIMA(1,0,0) for MSFT with AIC: 111.69038605470794
+Fitting ARIMA(1,0,1) for MSFT with AIC: 94.63249547481384
+Fitting ARIMA(1,0,2) for MSFT with AIC: 96.11833620581353
+Fitting ARIMA(1,0,3) for MSFT with AIC: 92.05614294691566
+Fitting ARIMA(2,0,0) for MSFT with AIC: 88.97451871576364
+Fitting ARIMA(2,0,1) for MSFT with AIC: 90.49717672126594
+Fitting ARIMA(2,0,2) for MSFT with AIC: 87.37671582474735
+Fitting ARIMA(2,0,3) for MSFT with AIC: 88.56262484675949
+Fitting ARIMA(3,0,0) for MSFT with AIC: 90.86060191522809
+Fitting ARIMA(3,0,1) for MSFT with AIC: 90.35915528651984
+Fitting ARIMA(3,0,2) for MSFT with AIC: 87.72262723338288
+Fitting ARIMA(3,0,3) for MSFT with AIC: 88.94407537154854
+Best ARIMA order for MSFT: (2, 0, 2) with AIC: 87.37671582474735
+Forecasted MACD for MSFT over the next 5 days: [-7.883343413486583, -8.018231542008303, -8.505039291064815, -9.306313328515403, -10.36803136917851]
+Sample 2: Input ends 2026-03-06
+  Last input value: -8.2836
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-09)    -7.1972    -6.6480   +0.5492    -7.8833   +0.6862   Neural
+  Day 2 (2026-03-10)    -6.5551    -6.2168   +0.3383    -8.0182   +1.4631   Neural
+  Day 3 (2026-03-11)    -6.0476    -5.6483   +0.3992    -8.5050   +2.4575   Neural
+  Day 4 (2026-03-12)    -5.8219    -5.0636   +0.7583    -9.3063   +3.4844   Neural
+  Day 5 (2026-03-13)    -6.0821    -4.4070   +1.6752   -10.3680   +4.2859   Neural
+
+Latest market date for MSFT: 2026-03-09
+MACD data for MSFT from 2025-11-30 to 2026-03-09 with length 67
+Using dynamic window size: 30 for symbol MSFT
+Fitting ARIMA(0,0,0) for MSFT with AIC: 183.83299829637676
+Fitting ARIMA(0,0,1) for MSFT with AIC: 150.533477405849
+Fitting ARIMA(0,0,2) for MSFT with AIC: 129.20696110654833
+Fitting ARIMA(0,0,3) for MSFT with AIC: 110.24508761711064
+Fitting ARIMA(1,0,0) for MSFT with AIC: 111.80392877764196
+Fitting ARIMA(1,0,1) for MSFT with AIC: 93.00807942120785
+Fitting ARIMA(1,0,2) for MSFT with AIC: 94.6891145547258
+Fitting ARIMA(1,0,3) for MSFT with AIC: 92.23122728938849
+Fitting ARIMA(2,0,0) for MSFT with AIC: 88.59363582347252
+Fitting ARIMA(2,0,1) for MSFT with AIC: 89.85405107840626
+Fitting ARIMA(2,0,2) for MSFT with AIC: 87.60608508810594
+Fitting ARIMA(2,0,3) for MSFT with AIC: 88.11385892415622
+Fitting ARIMA(3,0,0) for MSFT with AIC: 90.14289914453556
+Fitting ARIMA(3,0,1) for MSFT with AIC: 90.53004312372416
+Fitting ARIMA(3,0,2) for MSFT with AIC: 87.21151241418455
+Fitting ARIMA(3,0,3) for MSFT with AIC: 89.22757685571939
+Best ARIMA order for MSFT: (3, 0, 2) with AIC: 87.21151241418455
+Forecasted MACD for MSFT over the next 5 days: [-6.945260604705362, -7.1905645200456725, -7.7230534052790585, -8.568694527975172, -9.660469494204952]
+Sample 3: Input ends 2026-03-09
+  Last input value: -7.1972
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-10)    -6.5551    -6.0730   +0.4821    -6.9453   +0.3901    ARIMA
+  Day 2 (2026-03-11)    -6.0476    -5.6222   +0.4254    -7.1906   +1.1430   Neural
+  Day 3 (2026-03-12)    -5.8219    -5.0636   +0.7583    -7.7231   +1.9011   Neural
+  Day 4 (2026-03-13)    -6.0821    -4.5017   +1.5804    -8.5687   +2.4866   Neural
+  Day 5 (2026-03-16)    -5.8657    -3.8549   +2.0108    -9.6605   +3.7948   Neural
+
+Latest market date for MSFT: 2026-03-10
+MACD data for MSFT from 2025-12-01 to 2026-03-10 with length 68
+Using dynamic window size: 30 for symbol MSFT
+Fitting ARIMA(0,0,0) for MSFT with AIC: 184.08792604388503
+Fitting ARIMA(0,0,1) for MSFT with AIC: 150.78693545249757
+Fitting ARIMA(0,0,2) for MSFT with AIC: 124.3004535461227
+Fitting ARIMA(0,0,3) for MSFT with AIC: 110.26091450279492
+Fitting ARIMA(1,0,0) for MSFT with AIC: 110.45892633487685
+Fitting ARIMA(1,0,1) for MSFT with AIC: 93.05261979940632
+Fitting ARIMA(1,0,2) for MSFT with AIC: 94.44476771194229
+Fitting ARIMA(1,0,3) for MSFT with AIC: 92.11653045366849
+Fitting ARIMA(2,0,0) for MSFT with AIC: 88.66835609477198
+Fitting ARIMA(2,0,1) for MSFT with AIC: 89.37316440145592
+Fitting ARIMA(2,0,2) for MSFT with AIC: 87.33828364813456
+Fitting ARIMA(2,0,3) for MSFT with AIC: 87.82390551659988
+Fitting ARIMA(3,0,0) for MSFT with AIC: 90.12039234570491
+Fitting ARIMA(3,0,1) for MSFT with AIC: 90.13181803699221
+Fitting ARIMA(3,0,2) for MSFT with AIC: 87.29342209402347
+Fitting ARIMA(3,0,3) for MSFT with AIC: 89.25861464859037
+Best ARIMA order for MSFT: (3, 0, 2) with AIC: 87.29342209402347
+Forecasted MACD for MSFT over the next 5 days: [-6.377222103963112, -6.71324438890849, -7.278655543996248, -8.139705374749827, -9.217439128750257]
+Sample 4: Input ends 2026-03-10
+  Last input value: -6.5551
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-11)    -6.0476    -5.7333   +0.3143    -6.3772   +0.3297   Neural
+  Day 2 (2026-03-12)    -5.8219    -5.3380   +0.4839    -6.7132   +0.8913   Neural
+  Day 3 (2026-03-13)    -6.0821    -4.8284   +1.2538    -7.2787   +1.1965    ARIMA
+  Day 4 (2026-03-16)    -5.8657    -4.2861   +1.5796    -8.1397   +2.2740   Neural
+  Day 5 (2026-03-17)    -5.6724    -3.7013   +1.9710    -9.2174   +3.5451   Neural
+
+Latest market date for MSFT: 2026-03-11
+MACD data for MSFT from 2025-12-02 to 2026-03-11 with length 68
+Using dynamic window size: 30 for symbol MSFT
+Fitting ARIMA(0,0,0) for MSFT with AIC: 183.46163406557312
+Fitting ARIMA(0,0,1) for MSFT with AIC: 151.5386778840438
+Fitting ARIMA(0,0,2) for MSFT with AIC: 126.25304489521956
+Fitting ARIMA(0,0,3) for MSFT with AIC: 110.08925264996566
+Fitting ARIMA(1,0,0) for MSFT with AIC: 109.38804302321685
+Fitting ARIMA(1,0,1) for MSFT with AIC: 87.6660349595744
+Fitting ARIMA(1,0,2) for MSFT with AIC: 83.10743756198697
+Fitting ARIMA(1,0,3) for MSFT with AIC: 80.83659575748344
+Fitting ARIMA(2,0,0) for MSFT with AIC: 68.46570772073238
+Fitting ARIMA(2,0,1) for MSFT with AIC: 69.36070752352379
+Fitting ARIMA(2,0,2) for MSFT with AIC: 68.83059986637895
+Fitting ARIMA(2,0,3) for MSFT with AIC: 72.97266068715666
+Fitting ARIMA(3,0,0) for MSFT with AIC: 70.13547092193117
+Fitting ARIMA(3,0,1) for MSFT with AIC: 71.22753009835762
+Fitting ARIMA(3,0,2) for MSFT with AIC: 70.2602999947252
+Fitting ARIMA(3,0,3) for MSFT with AIC: 71.82024817600903
+Best ARIMA order for MSFT: (2, 0, 0) with AIC: 68.46570772073238
+Forecasted MACD for MSFT over the next 5 days: [-5.71528822056051, -5.55031135355669, -5.540356873528566, -5.6696606552257895, -5.91981793592352]
+Sample 5: Input ends 2026-03-11
+  Last input value: -6.0476
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-12)    -5.8219    -5.2955   +0.5264    -5.7153   +0.1066    ARIMA
+  Day 2 (2026-03-13)    -6.0821    -5.0113   +1.0708    -5.5503   +0.5318    ARIMA
+  Day 3 (2026-03-16)    -5.8657    -4.6095   +1.2562    -5.5404   +0.3253    ARIMA
+  Day 4 (2026-03-17)    -5.6724    -4.1195   +1.5529    -5.6697   +0.0027    ARIMA
+  Day 5 (2026-03-18)    -6.0641    -3.5576   +2.5065    -5.9198   +0.1443    ARIMA
+
+Latest market date for MSFT: 2026-03-12
+MACD data for MSFT from 2025-12-03 to 2026-03-12 with length 68
+Using dynamic window size: 30 for symbol MSFT
+Fitting ARIMA(0,0,0) for MSFT with AIC: 181.6350260976255
+Fitting ARIMA(0,0,1) for MSFT with AIC: 149.49859389744063
+Fitting ARIMA(0,0,2) for MSFT with AIC: 123.5302079320054
+Fitting ARIMA(0,0,3) for MSFT with AIC: 104.79239657659458
+Fitting ARIMA(1,0,0) for MSFT with AIC: 105.0664986837824
+Fitting ARIMA(1,0,1) for MSFT with AIC: 86.73596513702557
+Fitting ARIMA(1,0,2) for MSFT with AIC: 77.86440430492945
+Fitting ARIMA(1,0,3) for MSFT with AIC: 80.35318395511109
+Fitting ARIMA(2,0,0) for MSFT with AIC: 66.76970473664625
+Fitting ARIMA(2,0,1) for MSFT with AIC: 67.8604715042079
+Fitting ARIMA(2,0,2) for MSFT with AIC: 66.86206717056166
+Fitting ARIMA(2,0,3) for MSFT with AIC: 81.34662657392332
+Fitting ARIMA(3,0,0) for MSFT with AIC: 68.46223087927815
+Fitting ARIMA(3,0,1) for MSFT with AIC: 66.7044198540938
+Fitting ARIMA(3,0,2) for MSFT with AIC: 68.04406704386679
+Fitting ARIMA(3,0,3) for MSFT with AIC: 70.56221713026376
+Best ARIMA order for MSFT: (3, 0, 1) with AIC: 66.7044198540938
+Forecasted MACD for MSFT over the next 5 days: [-5.734555641845343, -5.8237553384557845, -6.1035136917434, -6.5721720346734465, -7.217143006875126]
+Sample 6: Input ends 2026-03-12
+  Last input value: -5.8219
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-13)    -6.0821    -5.3543   +0.7278    -5.7346   +0.3476    ARIMA
+  Day 2 (2026-03-16)    -5.8657    -5.0864   +0.7792    -5.8238   +0.0419    ARIMA
+  Day 3 (2026-03-17)    -5.6724    -4.6944   +0.9779    -6.1035   +0.4312    ARIMA
+  Day 4 (2026-03-18)    -6.0641    -4.2142   +1.8499    -6.5722   +0.5081    ARIMA
+  Day 5 (2026-03-19)    -6.5229    -3.6687   +2.8542    -7.2171   +0.6943    ARIMA
+
+Latest market date for MSFT: 2026-03-13
+MACD data for MSFT from 2025-12-04 to 2026-03-13 with length 68
+Using dynamic window size: 30 for symbol MSFT
+Fitting ARIMA(0,0,0) for MSFT with AIC: 181.67901598771024
+Fitting ARIMA(0,0,1) for MSFT with AIC: 148.0620105326295
+Fitting ARIMA(0,0,2) for MSFT with AIC: 119.79489292409922
+Fitting ARIMA(0,0,3) for MSFT with AIC: 99.73361238476338
+Fitting ARIMA(1,0,0) for MSFT with AIC: 101.52905196487829
+Fitting ARIMA(1,0,1) for MSFT with AIC: 79.96624770632127
+Fitting ARIMA(1,0,2) for MSFT with AIC: 76.15334369079429
+Fitting ARIMA(1,0,3) for MSFT with AIC: 76.21754687983994
+Fitting ARIMA(2,0,0) for MSFT with AIC: 66.39137110203723
+Fitting ARIMA(2,0,1) for MSFT with AIC: 67.75690932830301
+Fitting ARIMA(2,0,2) for MSFT with AIC: 64.80833980048104
+Fitting ARIMA(2,0,3) for MSFT with AIC: 70.76560803443454
+Fitting ARIMA(3,0,0) for MSFT with AIC: 68.21485515465454
+Fitting ARIMA(3,0,1) for MSFT with AIC: 69.15880337536723
+Fitting ARIMA(3,0,2) for MSFT with AIC: 67.10845000259125
+Fitting ARIMA(3,0,3) for MSFT with AIC: 68.55369408673182
+Best ARIMA order for MSFT: (2, 0, 2) with AIC: 64.80833980048104
+Forecasted MACD for MSFT over the next 5 days: [-6.452937171697534, -6.936586255092213, -7.61876694854038, -8.473962146826072, -9.470947153548279]
+Sample 7: Input ends 2026-03-13
+  Last input value: -6.0821
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-16)    -5.8657    -5.9816   +0.1159    -6.4529   +0.5872   Neural
+  Day 2 (2026-03-17)    -5.6724    -5.7431   +0.0707    -6.9366   +1.2642   Neural
+  Day 3 (2026-03-18)    -6.0641    -5.3445   +0.7196    -7.6188   +1.5547   Neural
+  Day 4 (2026-03-19)    -6.5229    -4.8708   +1.6520    -8.4740   +1.9511   Neural
+  Day 5 (2026-03-20)    -7.3784    -4.3351   +3.0433    -9.4709   +2.0926    ARIMA
+
+Latest market date for MSFT: 2026-03-16
+MACD data for MSFT from 2025-12-07 to 2026-03-16 with length 67
+Using dynamic window size: 30 for symbol MSFT
+Fitting ARIMA(0,0,0) for MSFT with AIC: 183.17368451597156
+Fitting ARIMA(0,0,1) for MSFT with AIC: 149.6013028915144
+Fitting ARIMA(0,0,2) for MSFT with AIC: 122.71604940039383
+Fitting ARIMA(0,0,3) for MSFT with AIC: 103.5850524214731
+Fitting ARIMA(1,0,0) for MSFT with AIC: 97.79212999656826
+Fitting ARIMA(1,0,1) for MSFT with AIC: 80.34851316433975
+Fitting ARIMA(1,0,2) for MSFT with AIC: 77.18766533272688
+Fitting ARIMA(1,0,3) for MSFT with AIC: 76.43697388201782
+Fitting ARIMA(2,0,0) for MSFT with AIC: 67.64387138803836
+Fitting ARIMA(2,0,1) for MSFT with AIC: 68.80797481609626
+Fitting ARIMA(2,0,2) for MSFT with AIC: 79.72342828180808
+Fitting ARIMA(2,0,3) for MSFT with AIC: 71.3647382194852
+Fitting ARIMA(3,0,0) for MSFT with AIC: 69.41980107051688
+Fitting ARIMA(3,0,1) for MSFT with AIC: 70.30430074450179
+Fitting ARIMA(3,0,2) for MSFT with AIC: 67.99417507662838
+Fitting ARIMA(3,0,3) for MSFT with AIC: 68.70750046192538
+Best ARIMA order for MSFT: (2, 0, 0) with AIC: 67.64387138803836
+Forecasted MACD for MSFT over the next 5 days: [-5.865474001510574, -6.050771062192002, -6.388622554582713, -6.84529982100025, -7.3876213804706525]
+Sample 8: Input ends 2026-03-16
+  Last input value: -5.8657
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-17)    -5.6724    -5.8639   +0.1916    -5.8655   +0.1931   Neural
+  Day 2 (2026-03-18)    -6.0641    -5.5405   +0.5236    -6.0508   +0.0133    ARIMA
+  Day 3 (2026-03-19)    -6.5229    -5.1158   +1.4070    -6.3886   +0.1343    ARIMA
+  Day 4 (2026-03-20)    -7.3784    -4.6291   +2.7493    -6.8453   +0.5331    ARIMA
+  Day 5 (2026-03-23)    -7.8744    -4.0868   +3.7876    -7.3876   +0.4868    ARIMA
+
+Latest market date for MSFT: 2026-03-17
+MACD data for MSFT from 2025-12-08 to 2026-03-17 with length 68
+Using dynamic window size: 68 for symbol MSFT
+Fitting ARIMA(0,0,0) for MSFT with AIC: 432.1528716089737
+Fitting ARIMA(0,0,1) for MSFT with AIC: 346.06899637802456
+Fitting ARIMA(0,0,2) for MSFT with AIC: 280.624431499894
+Fitting ARIMA(0,0,3) for MSFT with AIC: 239.9728372148693
+Fitting ARIMA(1,0,0) for MSFT with AIC: 203.17307073839143
+Fitting ARIMA(1,0,1) for MSFT with AIC: 161.68867809672736
+Fitting ARIMA(1,0,2) for MSFT with AIC: 161.14742189867644
+Fitting ARIMA(1,0,3) for MSFT with AIC: 153.37203404819746
+Fitting ARIMA(2,0,0) for MSFT with AIC: 153.0723624804418
+Fitting ARIMA(2,0,1) for MSFT with AIC: 154.3164422374972
+Fitting ARIMA(2,0,2) for MSFT with AIC: 154.96040017317802
+Fitting ARIMA(2,0,3) for MSFT with AIC: 154.00503408540558
+Fitting ARIMA(3,0,0) for MSFT with AIC: 154.51346531562888
+Fitting ARIMA(3,0,1) for MSFT with AIC: 152.19452535659195
+Fitting ARIMA(3,0,2) for MSFT with AIC: 153.95220037333317
+Fitting ARIMA(3,0,3) for MSFT with AIC: 155.44835561328625
+Best ARIMA order for MSFT: (3, 0, 1) with AIC: 152.19452535659195
+Forecasted MACD for MSFT over the next 5 days: [-5.7085064204218074, -5.775691275309204, -5.941091010616006, -6.117088639037408, -6.327298952250898]
+Sample 9: Input ends 2026-03-17
+  Last input value: -5.6724
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-18)    -6.0641    -5.6941   +0.3700    -5.7085   +0.3556    ARIMA
+  Day 2 (2026-03-19)    -6.5229    -5.3184   +1.2045    -5.7757   +0.7472    ARIMA
+  Day 3 (2026-03-20)    -7.3784    -4.8610   +2.5173    -5.9411   +1.4373    ARIMA
+  Day 4 (2026-03-23)    -7.8744    -4.3710   +3.5034    -6.1171   +1.7573    ARIMA
+  Day 5 (2026-03-24)    -8.9917    -3.8549   +5.1369    -6.3273   +2.6644    ARIMA
+
+Latest market date for MSFT: 2026-03-18
+MACD data for MSFT from 2025-12-09 to 2026-03-18 with length 68
+Using dynamic window size: 68 for symbol MSFT
+Fitting ARIMA(0,0,0) for MSFT with AIC: 432.2492486727476
+Fitting ARIMA(0,0,1) for MSFT with AIC: 346.2717150999647
+Fitting ARIMA(0,0,2) for MSFT with AIC: 280.61628209866296
+Fitting ARIMA(0,0,3) for MSFT with AIC: 239.85203702573102
+Fitting ARIMA(1,0,0) for MSFT with AIC: 202.53151712740598
+Fitting ARIMA(1,0,1) for MSFT with AIC: 159.30469762266642
+Fitting ARIMA(1,0,2) for MSFT with AIC: 158.2447856903637
+Fitting ARIMA(1,0,3) for MSFT with AIC: 151.06056085800373
+Fitting ARIMA(2,0,0) for MSFT with AIC: 151.11548760360748
+Fitting ARIMA(2,0,1) for MSFT with AIC: 151.88012355306986
+Fitting ARIMA(2,0,2) for MSFT with AIC: 152.0625710604584
+Fitting ARIMA(2,0,3) for MSFT with AIC: 151.47566101425952
+Fitting ARIMA(3,0,0) for MSFT with AIC: 152.2816461930931
+Fitting ARIMA(3,0,1) for MSFT with AIC: 149.6390093178218
+Fitting ARIMA(3,0,2) for MSFT with AIC: 151.43579583962926
+Fitting ARIMA(3,0,3) for MSFT with AIC: 153.04585869497018
+Best ARIMA order for MSFT: (3, 0, 1) with AIC: 149.6390093178218
+Forecasted MACD for MSFT over the next 5 days: [-6.437768575449981, -6.721200749299754, -6.975511742841277, -7.1774350551386465, -7.352892948943907]
+Sample 10: Input ends 2026-03-18
+  Last input value: -6.0641
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-19)    -6.5229    -6.3540   +0.1689    -6.4378   +0.0851    ARIMA
+  Day 2 (2026-03-20)    -7.3784    -5.9522   +1.4262    -6.7212   +0.6572    ARIMA
+  Day 3 (2026-03-23)    -7.8744    -5.4360   +2.4384    -6.9755   +0.8989    ARIMA
+  Day 4 (2026-03-24)    -8.9917    -4.8937   +4.0980    -7.1774   +1.8143    ARIMA
+  Day 5 (2026-03-25)    -9.9513    -4.3383   +5.6130    -7.3529   +2.5985    ARIMA
+
+==========================================================================================
+COMPARISON SUMMARY
+==========================================================================================
+Symbol:              MSFT
+Signal Type:         MACD
+Samples Evaluated:   10
+
+Metric                              Neural (bidirectional_gru)                ARIMA     Winner
+-------------------------------------------------------------------------------------
+MAE  (Mean Absolute Error)                      1.417361             1.286098      ARIMA
+RMSE (Root Mean Square Error)                   1.926579             1.708591      ARIMA
+MAPE (Mean Absolute % Error)                      20.28%               19.92%      ARIMA
+Directional Accuracy                              60.00%               66.00%      ARIMA
+-------------------------------------------------------------------------------------
+Overall Winner                                                                     ARIMA
+  (Neural: 0 wins, ARIMA: 4 wins)
+
+
+
+
+
+
+
+python3 scripts/evaluate_forecast_model.py --symbol CRWD --compare
+
+======================================================================
+Neural vs ARIMA Comparison
+======================================================================
+Symbol:       CRWD
+Signal Type:  macd
+Architecture: bidirectional_gru
+Input Days:   30
+Samples:      10
+Compare:      Neural (bidirectional_gru) vs ARIMA
+/Users/dabo/Documents/tick_scanner/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+Torch version 2.8.0 has not been tested with coremltools. You may run into unexpected errors. Torch 2.7.0 is the most recent version that has been tested.
+
+==========================================================================================
+Running 10 predictions on CRWD MACD
+Mode: COMPARISON: Neural vs ARIMA
+Neural Model: bidirectional_gru (coreml)
+Input sequence: 30 days, Forecast: 5 days
+==========================================================================================
+
+Latest market date for CRWD: 2026-03-05
+MACD data for CRWD from 2025-11-26 to 2026-03-05 with length 67
+Using dynamic window size: 30 for symbol CRWD
+Fitting ARIMA(0,0,0) for CRWD with AIC: 183.32290195916406
+Fitting ARIMA(0,0,1) for CRWD with AIC: 150.0380340576909
+Fitting ARIMA(0,0,2) for CRWD with AIC: 133.7965667186927
+Fitting ARIMA(0,0,3) for CRWD with AIC: 113.63917727875831
+Fitting ARIMA(1,0,0) for CRWD with AIC: 130.81517509977755
+Fitting ARIMA(1,0,1) for CRWD with AIC: 114.96868302658835
+Fitting ARIMA(1,0,2) for CRWD with AIC: 110.14263478840671
+Fitting ARIMA(1,0,3) for CRWD with AIC: 111.6798341576561
+Fitting ARIMA(2,0,0) for CRWD with AIC: 106.50693670811779
+Fitting ARIMA(2,0,1) for CRWD with AIC: 108.29266789743133
+Fitting ARIMA(2,0,2) for CRWD with AIC: 110.05729509923684
+Fitting ARIMA(2,0,3) for CRWD with AIC: 112.05104927984922
+Fitting ARIMA(3,0,0) for CRWD with AIC: 108.34525605926835
+Fitting ARIMA(3,0,1) for CRWD with AIC: 108.72647474398815
+Fitting ARIMA(3,0,2) for CRWD with AIC: 111.11498868230619
+Fitting ARIMA(3,0,3) for CRWD with AIC: 112.68038682357974
+Best ARIMA order for CRWD: (2, 0, 0) with AIC: 106.50693670811779
+Forecasted MACD for CRWD over the next 5 days: [-8.669863236787585, -7.195855623670026, -6.955287701486771, -7.721024517946776, -9.178408133964405]
+Sample 1: Input ends 2026-03-05
+  Last input value: -11.4549
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-06)    -7.9873    -9.4248   +1.4375    -8.6699   +0.6825    ARIMA
+  Day 2 (2026-03-09)    -4.7695    -8.3794   +3.6099    -7.1959   +2.4264    ARIMA
+  Day 3 (2026-03-10)    -2.0185    -7.3797   +5.3612    -6.9553   +4.9368    ARIMA
+  Day 4 (2026-03-11)     0.6145    -6.3540   +6.9685    -7.7210   +8.3355   Neural
+  Day 5 (2026-03-12)     2.6313    -5.2727   +7.9040    -9.1784  +11.8097   Neural
+
+Latest market date for CRWD: 2026-03-06
+MACD data for CRWD from 2025-11-27 to 2026-03-06 with length 67
+Using dynamic window size: 30 for symbol CRWD
+Fitting ARIMA(0,0,0) for CRWD with AIC: 184.8174060006825
+Fitting ARIMA(0,0,1) for CRWD with AIC: 152.86385452842813
+Fitting ARIMA(0,0,2) for CRWD with AIC: 134.9871790761664
+Fitting ARIMA(0,0,3) for CRWD with AIC: 116.36546451240011
+Fitting ARIMA(1,0,0) for CRWD with AIC: 134.27518573576447
+Fitting ARIMA(1,0,1) for CRWD with AIC: 117.47647718255736
+Fitting ARIMA(1,0,2) for CRWD with AIC: 110.84613776286226
+Fitting ARIMA(1,0,3) for CRWD with AIC: 112.47547496951385
+Fitting ARIMA(2,0,0) for CRWD with AIC: 105.29996367653645
+Fitting ARIMA(2,0,1) for CRWD with AIC: 107.28680596118498
+Fitting ARIMA(2,0,2) for CRWD with AIC: 108.73688042104418
+Fitting ARIMA(2,0,3) for CRWD with AIC: 110.72129585444618
+Fitting ARIMA(3,0,0) for CRWD with AIC: 107.29149974492333
+Fitting ARIMA(3,0,1) for CRWD with AIC: 108.15243510955179
+Fitting ARIMA(3,0,2) for CRWD with AIC: 109.75028286921105
+Fitting ARIMA(3,0,3) for CRWD with AIC: 108.32398455161723
+Best ARIMA order for CRWD: (2, 0, 0) with AIC: 105.29996367653645
+Forecasted MACD for CRWD over the next 5 days: [-6.007758313995536, -5.55011856218959, -6.425236551982972, -8.28523759136981, -10.6997610894628]
+Sample 2: Input ends 2026-03-06
+  Last input value: -7.9873
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-09)    -4.7695    -4.9427   +0.1732    -6.0078   +1.2383   Neural
+  Day 2 (2026-03-10)    -2.0185    -4.2305   +2.2120    -5.5501   +3.5316   Neural
+  Day 3 (2026-03-11)     0.6145    -3.5935   +4.2080    -6.4252   +7.0397   Neural
+  Day 4 (2026-03-12)     2.6313    -2.9728   +5.6041    -8.2852  +10.9165   Neural
+  Day 5 (2026-03-13)     4.2006    -2.3848   +6.5854   -10.6998  +14.9003   Neural
+
+Latest market date for CRWD: 2026-03-09
+MACD data for CRWD from 2025-11-30 to 2026-03-09 with length 67
+Using dynamic window size: 30 for symbol CRWD
+Fitting ARIMA(0,0,0) for CRWD with AIC: 188.1197884142639
+Fitting ARIMA(0,0,1) for CRWD with AIC: 156.1434354052258
+Fitting ARIMA(0,0,2) for CRWD with AIC: 139.23997114212463
+Fitting ARIMA(0,0,3) for CRWD with AIC: 118.9911965500423
+Fitting ARIMA(1,0,0) for CRWD with AIC: 136.6837421516903
+Fitting ARIMA(1,0,1) for CRWD with AIC: 119.35514095261726
+Fitting ARIMA(1,0,2) for CRWD with AIC: 112.8276090179194
+Fitting ARIMA(1,0,3) for CRWD with AIC: 113.91993129914185
+Fitting ARIMA(2,0,0) for CRWD with AIC: 105.87424142607208
+Fitting ARIMA(2,0,1) for CRWD with AIC: 107.86125076565716
+Fitting ARIMA(2,0,2) for CRWD with AIC: 109.38694075188246
+Fitting ARIMA(2,0,3) for CRWD with AIC: 111.38655136359637
+Fitting ARIMA(3,0,0) for CRWD with AIC: 107.86522035920835
+Fitting ARIMA(3,0,1) for CRWD with AIC: 108.3723427050965
+Fitting ARIMA(3,0,2) for CRWD with AIC: 116.61252377228563
+Fitting ARIMA(3,0,3) for CRWD with AIC: 111.9191684047831
+Best ARIMA order for CRWD: (2, 0, 0) with AIC: 105.87424142607208
+Forecasted MACD for CRWD over the next 5 days: [-3.339430619149992, -3.660555322831746, -5.452717617338077, -8.264639768737082, -11.560838940064695]
+Sample 3: Input ends 2026-03-09
+  Last input value: -4.7695
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-10)    -2.0185    -1.8556   +0.1629    -3.3394   +1.3209   Neural
+  Day 2 (2026-03-11)     0.6145    -1.4113   +2.0258    -3.6606   +4.2750   Neural
+  Day 3 (2026-03-12)     2.6313    -1.0323   +3.6636    -5.4527   +8.0840   Neural
+  Day 4 (2026-03-13)     4.2006    -0.6942   +4.8948    -8.2646  +12.4652   Neural
+  Day 5 (2026-03-16)     3.9511    -0.3659   +4.3170   -11.5608  +15.5119   Neural
+
+Latest market date for CRWD: 2026-03-10
+MACD data for CRWD from 2025-12-01 to 2026-03-10 with length 68
+Using dynamic window size: 30 for symbol CRWD
+Fitting ARIMA(0,0,0) for CRWD with AIC: 192.5143954484989
+Fitting ARIMA(0,0,1) for CRWD with AIC: 161.65738374379507
+Fitting ARIMA(0,0,2) for CRWD with AIC: 141.76973458225328
+Fitting ARIMA(0,0,3) for CRWD with AIC: 123.28735650001076
+Fitting ARIMA(1,0,0) for CRWD with AIC: 137.92582493720823
+Fitting ARIMA(1,0,1) for CRWD with AIC: 120.13118570467903
+Fitting ARIMA(1,0,2) for CRWD with AIC: 113.43833504053336
+Fitting ARIMA(1,0,3) for CRWD with AIC: 114.93323539784157
+Fitting ARIMA(2,0,0) for CRWD with AIC: 106.92539074153949
+Fitting ARIMA(2,0,1) for CRWD with AIC: 108.91955734319535
+Fitting ARIMA(2,0,2) for CRWD with AIC: 110.40681603986711
+Fitting ARIMA(2,0,3) for CRWD with AIC: 112.37670958707899
+Fitting ARIMA(3,0,0) for CRWD with AIC: 108.92145753688935
+Fitting ARIMA(3,0,1) for CRWD with AIC: 109.79693092444177
+Fitting ARIMA(3,0,2) for CRWD with AIC: 111.17000721974209
+Fitting ARIMA(3,0,3) for CRWD with AIC: 111.20247129753925
+Best ARIMA order for CRWD: (2, 0, 0) with AIC: 106.92539074153949
+Forecasted MACD for CRWD over the next 5 days: [-1.0973424651269248, -1.8771454877563158, -4.035903668853903, -7.123795208522893, -10.635774376804875]
+Sample 4: Input ends 2026-03-10
+  Last input value: -2.0185
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-11)     0.6145    -0.0433   +0.6578    -1.0973   +1.7118   Neural
+  Day 2 (2026-03-12)     2.6313     0.5335   +2.0978    -1.8771   +4.5084   Neural
+  Day 3 (2026-03-13)     4.2006     1.0021   +3.1985    -4.0359   +8.2365   Neural
+  Day 4 (2026-03-16)     3.9511     1.3741   +2.5770    -7.1238  +11.0749   Neural
+  Day 5 (2026-03-17)     4.4573     1.7347   +2.7226   -10.6358  +15.0930   Neural
+
+Latest market date for CRWD: 2026-03-11
+MACD data for CRWD from 2025-12-02 to 2026-03-11 with length 68
+Using dynamic window size: 30 for symbol CRWD
+Fitting ARIMA(0,0,0) for CRWD with AIC: 197.51790283757066
+Fitting ARIMA(0,0,1) for CRWD with AIC: 166.34891027326358
+Fitting ARIMA(0,0,2) for CRWD with AIC: 147.51707352895073
+Fitting ARIMA(0,0,3) for CRWD with AIC: 126.15917874357991
+Fitting ARIMA(1,0,0) for CRWD with AIC: 139.52746801563626
+Fitting ARIMA(1,0,1) for CRWD with AIC: 121.20892432960241
+Fitting ARIMA(1,0,2) for CRWD with AIC: 112.74563705349239
+Fitting ARIMA(1,0,3) for CRWD with AIC: 114.63436925566087
+Fitting ARIMA(2,0,0) for CRWD with AIC: 107.28440860080829
+Fitting ARIMA(2,0,1) for CRWD with AIC: 109.23792860159952
+Fitting ARIMA(2,0,2) for CRWD with AIC: 111.04980036700361
+Fitting ARIMA(2,0,3) for CRWD with AIC: 112.09428738821845
+Fitting ARIMA(3,0,0) for CRWD with AIC: 109.24727761843177
+Fitting ARIMA(3,0,1) for CRWD with AIC: 109.93952883431831
+Fitting ARIMA(3,0,2) for CRWD with AIC: 111.87988023025895
+Fitting ARIMA(3,0,3) for CRWD with AIC: 113.6479917657885
+Best ARIMA order for CRWD: (2, 0, 0) with AIC: 107.28440860080829
+Forecasted MACD for CRWD over the next 5 days: [1.7353976417030914, 1.4641058664136288, 0.024393808563823782, -2.2904731725831784, -5.153254022307163]
+Sample 5: Input ends 2026-03-11
+  Last input value: 0.6145
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-12)     2.6313     1.8131   +0.8182     1.7354   +0.8959   Neural
+  Day 2 (2026-03-13)     4.2006     2.3651   +1.8354     1.4641   +2.7365   Neural
+  Day 3 (2026-03-16)     3.9511     2.7800   +1.1711     0.0244   +3.9267   Neural
+  Day 4 (2026-03-17)     4.4573     3.0773   +1.3799    -2.2905   +6.7477   Neural
+  Day 5 (2026-03-18)     5.0112     3.3468   +1.6644    -5.1533  +10.1645   Neural
+
+Latest market date for CRWD: 2026-03-12
+MACD data for CRWD from 2025-12-03 to 2026-03-12 with length 68
+Using dynamic window size: 30 for symbol CRWD
+Fitting ARIMA(0,0,0) for CRWD with AIC: 202.76821839169352
+Fitting ARIMA(0,0,1) for CRWD with AIC: 171.74152045259612
+Fitting ARIMA(0,0,2) for CRWD with AIC: 150.5080605939026
+Fitting ARIMA(0,0,3) for CRWD with AIC: 130.7427799684758
+Fitting ARIMA(1,0,0) for CRWD with AIC: 140.43276852069218
+Fitting ARIMA(1,0,1) for CRWD with AIC: 121.73761086201729
+Fitting ARIMA(1,0,2) for CRWD with AIC: 113.23890199334781
+Fitting ARIMA(1,0,3) for CRWD with AIC: 114.86076266539015
+Fitting ARIMA(2,0,0) for CRWD with AIC: 107.52255382314674
+Fitting ARIMA(2,0,1) for CRWD with AIC: 109.45430377898302
+Fitting ARIMA(2,0,2) for CRWD with AIC: 111.34584134823277
+Fitting ARIMA(2,0,3) for CRWD with AIC: 114.3338015881936
+Fitting ARIMA(3,0,0) for CRWD with AIC: 109.46522206440741
+Fitting ARIMA(3,0,1) for CRWD with AIC: 110.44942820084054
+Fitting ARIMA(3,0,2) for CRWD with AIC: 112.02002828780158
+Fitting ARIMA(3,0,3) for CRWD with AIC: 118.64348575796049
+Best ARIMA order for CRWD: (2, 0, 0) with AIC: 107.52255382314674
+Forecasted MACD for CRWD over the next 5 days: [3.1906221030388497, 2.4574762831674075, 0.6754707096457313, -1.8637428626335328, -4.850457056738884]
+Sample 6: Input ends 2026-03-12
+  Last input value: 2.6313
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-13)     4.2006     3.4024   +0.7982     3.1906   +1.0100   Neural
+  Day 2 (2026-03-16)     3.9511     3.7094   +0.2416     2.4575   +1.4936   Neural
+  Day 3 (2026-03-17)     4.4573     3.9234   +0.5338     0.6755   +3.7818   Neural
+  Day 4 (2026-03-18)     5.0112     4.0672   +0.9441    -1.8637   +6.8750   Neural
+  Day 5 (2026-03-19)     4.7795     4.2240   +0.5555    -4.8505   +9.6300   Neural
+
+Latest market date for CRWD: 2026-03-13
+MACD data for CRWD from 2025-12-04 to 2026-03-13 with length 68
+Using dynamic window size: 30 for symbol CRWD
+Fitting ARIMA(0,0,0) for CRWD with AIC: 208.40552937849813
+Fitting ARIMA(0,0,1) for CRWD with AIC: 176.20137440571276
+Fitting ARIMA(0,0,2) for CRWD with AIC: 152.31964392435725
+Fitting ARIMA(0,0,3) for CRWD with AIC: 132.78690970118103
+Fitting ARIMA(1,0,0) for CRWD with AIC: 140.97786308035177
+Fitting ARIMA(1,0,1) for CRWD with AIC: 121.18435396254198
+Fitting ARIMA(1,0,2) for CRWD with AIC: 113.56123164412901
+Fitting ARIMA(1,0,3) for CRWD with AIC: 115.32593415360785
+Fitting ARIMA(2,0,0) for CRWD with AIC: 107.95043923079758
+Fitting ARIMA(2,0,1) for CRWD with AIC: 109.80538881130639
+Fitting ARIMA(2,0,2) for CRWD with AIC: 111.7478260632128
+Fitting ARIMA(2,0,3) for CRWD with AIC: 112.52666522760114
+Fitting ARIMA(3,0,0) for CRWD with AIC: 109.82335197540262
+Fitting ARIMA(3,0,1) for CRWD with AIC: 110.552519301754
+Fitting ARIMA(3,0,2) for CRWD with AIC: 112.50978463196567
+Fitting ARIMA(3,0,3) for CRWD with AIC: 114.46715100718149
+Best ARIMA order for CRWD: (2, 0, 0) with AIC: 107.95043923079758
+Forecasted MACD for CRWD over the next 5 days: [4.451847793506456, 3.5642208510008775, 1.7682790015377101, -0.6774023641707352, -3.5081754978317274]
+Sample 7: Input ends 2026-03-13
+  Last input value: 4.2006
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-16)     3.9511     4.3612   +0.4101     4.4518   +0.5008   Neural
+  Day 2 (2026-03-17)     4.4573     4.4820   +0.0248     3.5642   +0.8930   Neural
+  Day 3 (2026-03-18)     5.0112     4.5343   +0.4769     1.7683   +3.2430   Neural
+  Day 4 (2026-03-19)     4.7795     4.5768   +0.2027    -0.6774   +5.4569   Neural
+  Day 5 (2026-03-20)     3.0134     4.6519   +1.6385    -3.5082   +6.5216   Neural
+
+Latest market date for CRWD: 2026-03-16
+MACD data for CRWD from 2025-12-07 to 2026-03-16 with length 67
+Using dynamic window size: 30 for symbol CRWD
+Fitting ARIMA(0,0,0) for CRWD with AIC: 213.03972880660592
+Fitting ARIMA(0,0,1) for CRWD with AIC: 180.08055744620202
+Fitting ARIMA(0,0,2) for CRWD with AIC: 153.47124845637833
+Fitting ARIMA(0,0,3) for CRWD with AIC: 134.09569438077784
+Fitting ARIMA(1,0,0) for CRWD with AIC: 140.85591567142953
+Fitting ARIMA(1,0,1) for CRWD with AIC: 121.01471224879322
+Fitting ARIMA(1,0,2) for CRWD with AIC: 113.70835152777111
+Fitting ARIMA(1,0,3) for CRWD with AIC: 115.6112410155396
+Fitting ARIMA(2,0,0) for CRWD with AIC: 107.84283387955051
+Fitting ARIMA(2,0,1) for CRWD with AIC: 109.72209293556521
+Fitting ARIMA(2,0,2) for CRWD with AIC: 111.38085276984648
+Fitting ARIMA(2,0,3) for CRWD with AIC: 112.90801849316095
+Fitting ARIMA(3,0,0) for CRWD with AIC: 109.75102443309667
+Fitting ARIMA(3,0,1) for CRWD with AIC: 110.27823461001347
+Fitting ARIMA(3,0,2) for CRWD with AIC: 120.77137531158276
+Fitting ARIMA(3,0,3) for CRWD with AIC: 114.20406143337514
+Best ARIMA order for CRWD: (2, 0, 0) with AIC: 107.84283387955051
+Forecasted MACD for CRWD over the next 5 days: [2.5909069464383983, 0.3770335010613799, -2.407537546813785, -5.478189499466522, -8.569736991785287]
+Sample 8: Input ends 2026-03-16
+  Last input value: 3.9511
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-17)     4.4573     3.3975   +1.0598     2.5909   +1.8663   Neural
+  Day 2 (2026-03-18)     5.0112     3.1786   +1.8327     0.3770   +4.6342   Neural
+  Day 3 (2026-03-19)     4.7795     2.9728   +1.8067    -2.4075   +7.1870   Neural
+  Day 4 (2026-03-20)     3.0134     2.8290   +0.1844    -5.4782   +8.4916   Neural
+  Day 5 (2026-03-23)     1.9393     2.7229   +0.7836    -8.5697  +10.5090   Neural
+
+Latest market date for CRWD: 2026-03-17
+MACD data for CRWD from 2025-12-08 to 2026-03-17 with length 68
+Using dynamic window size: 30 for symbol CRWD
+Fitting ARIMA(0,0,0) for CRWD with AIC: 217.2515041199814
+Fitting ARIMA(0,0,1) for CRWD with AIC: 183.98796008185718
+Fitting ARIMA(0,0,2) for CRWD with AIC: 157.60962176157156
+Fitting ARIMA(0,0,3) for CRWD with AIC: 138.78812632579474
+Fitting ARIMA(1,0,0) for CRWD with AIC: 140.30097005360417
+Fitting ARIMA(1,0,1) for CRWD with AIC: 120.09462225950452
+Fitting ARIMA(1,0,2) for CRWD with AIC: 115.05748242229681
+Fitting ARIMA(1,0,3) for CRWD with AIC: 115.60392013363193
+Fitting ARIMA(2,0,0) for CRWD with AIC: 109.71947748310039
+Fitting ARIMA(2,0,1) for CRWD with AIC: 111.50217670874493
+Fitting ARIMA(2,0,2) for CRWD with AIC: 113.20551228383
+Fitting ARIMA(2,0,3) for CRWD with AIC: 115.20546087398785
+Fitting ARIMA(3,0,0) for CRWD with AIC: 111.56837573745567
+Fitting ARIMA(3,0,1) for CRWD with AIC: 112.13092032130835
+Fitting ARIMA(3,0,2) for CRWD with AIC: 113.92541309713701
+Fitting ARIMA(3,0,3) for CRWD with AIC: 116.08451738845417
+Best ARIMA order for CRWD: (2, 0, 0) with AIC: 109.71947748310039
+Forecasted MACD for CRWD over the next 5 days: [4.060348501336456, 2.939474424750319, 1.2825753346498328, -0.7255025505175006, -2.912682388764887]
+Sample 9: Input ends 2026-03-17
+  Last input value: 4.4573
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-18)     5.0112     4.1913   +0.8199     4.0603   +0.9509   Neural
+  Day 2 (2026-03-19)     4.7795     3.9414   +0.8381     2.9395   +1.8400   Neural
+  Day 3 (2026-03-20)     3.0134     3.7143   +0.7009     1.2826   +1.7309   Neural
+  Day 4 (2026-03-23)     1.9393     3.5461   +1.6068    -0.7255   +2.6648   Neural
+  Day 5 (2026-03-24)    12.5813     3.3975   +9.1838    -2.9127  +15.4940   Neural
+
+Latest market date for CRWD: 2026-03-18
+MACD data for CRWD from 2025-12-09 to 2026-03-18 with length 68
+Using dynamic window size: 30 for symbol CRWD
+Fitting ARIMA(0,0,0) for CRWD with AIC: 221.1246309750516
+Fitting ARIMA(0,0,1) for CRWD with AIC: 187.33139139956617
+Fitting ARIMA(0,0,2) for CRWD with AIC: 159.05348508047945
+Fitting ARIMA(0,0,3) for CRWD with AIC: 139.7119816257068
+Fitting ARIMA(1,0,0) for CRWD with AIC: 139.7962342366078
+Fitting ARIMA(1,0,1) for CRWD with AIC: 120.05892744016154
+Fitting ARIMA(1,0,2) for CRWD with AIC: 114.58223316631819
+Fitting ARIMA(1,0,3) for CRWD with AIC: 112.97210462824758
+Fitting ARIMA(2,0,0) for CRWD with AIC: 107.40061296578773
+Fitting ARIMA(2,0,1) for CRWD with AIC: 107.94566873830786
+Fitting ARIMA(2,0,2) for CRWD with AIC: 109.90513197778218
+Fitting ARIMA(2,0,3) for CRWD with AIC: 111.87395157604797
+Fitting ARIMA(3,0,0) for CRWD with AIC: 108.19970320674852
+Fitting ARIMA(3,0,1) for CRWD with AIC: 109.91788008668826
+Fitting ARIMA(3,0,2) for CRWD with AIC: 110.27170126676172
+Fitting ARIMA(3,0,3) for CRWD with AIC: 112.20832984979002
+Best ARIMA order for CRWD: (2, 0, 0) with AIC: 107.40061296578773
+Forecasted MACD for CRWD over the next 5 days: [4.76632352993361, 3.8360042628463322, 2.355690731454965, 0.4727945660733628, -1.662566007554311]
+Sample 10: Input ends 2026-03-18
+  Last input value: 5.0112
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-19)     4.7795     4.4200   +0.3595     4.7663   +0.0132    ARIMA
+  Day 2 (2026-03-20)     3.0134     4.1619   +1.1484     3.8360   +0.8226    ARIMA
+  Day 3 (2026-03-23)     1.9393     3.9169   +1.9776     2.3557   +0.4164    ARIMA
+  Day 4 (2026-03-24)    12.5813     3.7454   +8.8359     0.4728  +12.1085   Neural
+  Day 5 (2026-03-25)    -3.1217     3.5869   +6.7086    -1.6626   +1.4591    ARIMA
+
+==========================================================================================
+COMPARISON SUMMARY
+==========================================================================================
+Symbol:              CRWD
+Signal Type:         MACD
+Samples Evaluated:   10
+
+Metric                              Neural (bidirectional_gru)                ARIMA     Winner
+-------------------------------------------------------------------------------------
+MAE  (Mean Absolute Error)                      2.418479             5.643289     Neural
+RMSE (Root Mean Square Error)                   3.413356             7.272608     Neural
+MAPE (Mean Absolute % Error)                     103.18%              207.80%     Neural
+Directional Accuracy                              82.00%               48.00%     Neural
+-------------------------------------------------------------------------------------
+Overall Winner                                                                    Neural
+  (Neural: 4 wins, ARIMA: 0 wins)
+==========================================================================================
+
+
+
+
+
+
+
+python3 scripts/evaluate_forecast_model.py --symbol EQIX --compare
+
+======================================================================
+Neural vs ARIMA Comparison
+======================================================================
+Symbol:       EQIX
+Signal Type:  macd
+Architecture: bidirectional_gru
+Input Days:   30
+Samples:      10
+Compare:      Neural (bidirectional_gru) vs ARIMA
+/Users/dabo/Documents/tick_scanner/venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+Torch version 2.8.0 has not been tested with coremltools. You may run into unexpected errors. Torch 2.7.0 is the most recent version that has been tested.
+
+==========================================================================================
+Running 10 predictions on EQIX MACD
+Mode: COMPARISON: Neural vs ARIMA
+Neural Model: bidirectional_gru (coreml)
+Input sequence: 30 days, Forecast: 5 days
+==========================================================================================
+
+Latest market date for EQIX: 2026-03-05
+MACD data for EQIX from 2025-11-26 to 2026-03-05 with length 67
+Using dynamic window size: 67 for symbol EQIX
+Fitting ARIMA(0,0,0) for EQIX with AIC: 590.9652687668588
+Fitting ARIMA(0,0,1) for EQIX with AIC: 508.4663370601423
+Fitting ARIMA(0,0,2) for EQIX with AIC: 433.51221794945695
+Fitting ARIMA(0,0,3) for EQIX with AIC: 385.50077419292165
+Fitting ARIMA(1,0,0) for EQIX with AIC: 282.8953534161294
+Fitting ARIMA(1,0,1) for EQIX with AIC: 253.76293905042348
+Fitting ARIMA(1,0,2) for EQIX with AIC: 241.53169465310896
+Fitting ARIMA(1,0,3) for EQIX with AIC: 241.03037472658465
+Fitting ARIMA(2,0,0) for EQIX with AIC: 235.14757083817864
+Fitting ARIMA(2,0,1) for EQIX with AIC: 237.11194948666113
+Fitting ARIMA(2,0,2) for EQIX with AIC: 239.00059948641425
+Fitting ARIMA(2,0,3) for EQIX with AIC: 239.70064730970114
+Fitting ARIMA(3,0,0) for EQIX with AIC: 237.10940898403868
+Fitting ARIMA(3,0,1) for EQIX with AIC: 237.71585399980924
+Fitting ARIMA(3,0,2) for EQIX with AIC: 239.2787522051092
+Fitting ARIMA(3,0,3) for EQIX with AIC: 239.99982176150954
+Best ARIMA order for EQIX: (2, 0, 0) with AIC: 235.14757083817864
+Forecasted MACD for EQIX over the next 5 days: [36.85799771127785, 35.18892576772475, 33.76281630933577, 32.52669434023041, 31.440000535936484]
+Sample 1: Input ends 2026-03-05
+  Last input value: 38.8393
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-06)    35.2684    35.5069   +0.2385    36.8580   +1.5896   Neural
+  Day 2 (2026-03-09)    32.6839    34.3570   +1.6731    35.1889   +2.5050   Neural
+  Day 3 (2026-03-10)    31.1767    32.8935   +1.7167    33.7628   +2.5861   Neural
+  Day 4 (2026-03-11)    31.0255    31.7697   +0.7442    32.5267   +1.5012   Neural
+  Day 5 (2026-03-12)    30.3971    31.0902   +0.6931    31.4400   +1.0429   Neural
+
+Latest market date for EQIX: 2026-03-06
+MACD data for EQIX from 2025-11-27 to 2026-03-06 with length 67
+Using dynamic window size: 30 for symbol EQIX
+Fitting ARIMA(0,0,0) for EQIX with AIC: 246.3245224996305
+Fitting ARIMA(0,0,1) for EQIX with AIC: 212.73327417676725
+Fitting ARIMA(0,0,2) for EQIX with AIC: 184.30632062758718
+Fitting ARIMA(0,0,3) for EQIX with AIC: 166.6105878241994
+Fitting ARIMA(1,0,0) for EQIX with AIC: 150.31267541518977
+Fitting ARIMA(1,0,1) for EQIX with AIC: 137.65517131810736
+Fitting ARIMA(1,0,2) for EQIX with AIC: 130.40344119965587
+Fitting ARIMA(1,0,3) for EQIX with AIC: 131.9726291286554
+Fitting ARIMA(2,0,0) for EQIX with AIC: 127.82807349991548
+Fitting ARIMA(2,0,1) for EQIX with AIC: 129.6147711208975
+Fitting ARIMA(2,0,2) for EQIX with AIC: 131.30046718581792
+Fitting ARIMA(2,0,3) for EQIX with AIC: 128.84697302871984
+Fitting ARIMA(3,0,0) for EQIX with AIC: 129.60300403478976
+Fitting ARIMA(3,0,1) for EQIX with AIC: 130.69265093756985
+Fitting ARIMA(3,0,2) for EQIX with AIC: 131.1774855822896
+Fitting ARIMA(3,0,3) for EQIX with AIC: 130.72933419963448
+Best ARIMA order for EQIX: (2, 0, 0) with AIC: 127.82807349991548
+Forecasted MACD for EQIX over the next 5 days: [32.10125608528547, 29.350594697011502, 27.01231392195695, 25.069381330261233, 23.495427468199374]
+Sample 2: Input ends 2026-03-06
+  Last input value: 35.2684
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-09)    32.6839    30.9073   +1.7766    32.1013   +0.5826    ARIMA
+  Day 2 (2026-03-10)    31.1767    27.8495   +3.3272    29.3506   +1.8261    ARIMA
+  Day 3 (2026-03-11)    31.0255    24.7265   +6.2990    27.0123   +4.0132    ARIMA
+  Day 4 (2026-03-12)    30.3971    22.4528   +7.9443    25.0694   +5.3277    ARIMA
+  Day 5 (2026-03-13)    29.4331    21.0415   +8.3916    23.4954   +5.9376    ARIMA
+
+Latest market date for EQIX: 2026-03-09
+MACD data for EQIX from 2025-11-30 to 2026-03-09 with length 67
+Using dynamic window size: 30 for symbol EQIX
+Fitting ARIMA(0,0,0) for EQIX with AIC: 244.71844740008237
+Fitting ARIMA(0,0,1) for EQIX with AIC: 212.11969336754044
+Fitting ARIMA(0,0,2) for EQIX with AIC: 183.10205940253945
+Fitting ARIMA(0,0,3) for EQIX with AIC: 166.72555773564986
+Fitting ARIMA(1,0,0) for EQIX with AIC: 151.0190060941081
+Fitting ARIMA(1,0,1) for EQIX with AIC: 137.76978844552357
+Fitting ARIMA(1,0,2) for EQIX with AIC: 130.28891494585503
+Fitting ARIMA(1,0,3) for EQIX with AIC: 131.83303808616202
+Fitting ARIMA(2,0,0) for EQIX with AIC: 127.78978852844376
+Fitting ARIMA(2,0,1) for EQIX with AIC: 129.57112308218706
+Fitting ARIMA(2,0,2) for EQIX with AIC: 131.2043304581484
+Fitting ARIMA(2,0,3) for EQIX with AIC: 128.77930735992982
+Fitting ARIMA(3,0,0) for EQIX with AIC: 129.557595297225
+Fitting ARIMA(3,0,1) for EQIX with AIC: 130.25571058673216
+Fitting ARIMA(3,0,2) for EQIX with AIC: 130.44025794106204
+Fitting ARIMA(3,0,3) for EQIX with AIC: 130.57182132384702
+Best ARIMA order for EQIX: (2, 0, 0) with AIC: 127.78978852844376
+Forecasted MACD for EQIX over the next 5 days: [30.413218564284563, 28.457653653300095, 26.807392623008347, 25.444634256809255, 24.346113028690095]
+Sample 3: Input ends 2026-03-09
+  Last input value: 32.6839
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-10)    31.1767    30.0187   +1.1581    30.4132   +0.7635    ARIMA
+  Day 2 (2026-03-11)    31.0255    27.9018   +3.1237    28.4577   +2.5678    ARIMA
+  Day 3 (2026-03-12)    30.3971    25.6804   +4.7167    26.8074   +3.5897    ARIMA
+  Day 4 (2026-03-13)    29.4331    23.9816   +5.4514    25.4446   +3.9884    ARIMA
+  Day 5 (2026-03-16)    29.5039    22.7794   +6.7244    24.3461   +5.1577    ARIMA
+
+Latest market date for EQIX: 2026-03-10
+MACD data for EQIX from 2025-12-01 to 2026-03-10 with length 68
+Using dynamic window size: 30 for symbol EQIX
+Fitting ARIMA(0,0,0) for EQIX with AIC: 242.87167954345296
+Fitting ARIMA(0,0,1) for EQIX with AIC: 209.5447852409148
+Fitting ARIMA(0,0,2) for EQIX with AIC: 182.02774531117117
+Fitting ARIMA(0,0,3) for EQIX with AIC: 164.15489954096955
+Fitting ARIMA(1,0,0) for EQIX with AIC: 151.1284592787914
+Fitting ARIMA(1,0,1) for EQIX with AIC: 137.74295359380037
+Fitting ARIMA(1,0,2) for EQIX with AIC: 130.1763298393874
+Fitting ARIMA(1,0,3) for EQIX with AIC: 131.67761067913995
+Fitting ARIMA(2,0,0) for EQIX with AIC: 127.91424185477092
+Fitting ARIMA(2,0,1) for EQIX with AIC: 129.60529463229608
+Fitting ARIMA(2,0,2) for EQIX with AIC: 131.1103736804877
+Fitting ARIMA(2,0,3) for EQIX with AIC: 128.53254233688804
+Fitting ARIMA(3,0,0) for EQIX with AIC: 129.58370582898792
+Fitting ARIMA(3,0,1) for EQIX with AIC: 130.85598749939308
+Fitting ARIMA(3,0,2) for EQIX with AIC: 130.92925871386336
+Fitting ARIMA(3,0,3) for EQIX with AIC: 130.30361552753618
+Best ARIMA order for EQIX: (2, 0, 0) with AIC: 127.91424185477092
+Forecasted MACD for EQIX over the next 5 days: [29.815169437341122, 28.609004794860642, 27.560307495826294, 26.665241725493672, 25.915691851514737]
+Sample 4: Input ends 2026-03-10
+  Last input value: 31.1767
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-11)    31.0255    28.4768   +2.5487    29.8152   +1.2103    ARIMA
+  Day 2 (2026-03-12)    30.3971    26.4775   +3.9196    28.6090   +1.7881    ARIMA
+  Day 3 (2026-03-13)    29.4331    24.1646   +5.2685    27.5603   +1.8728    ARIMA
+  Day 4 (2026-03-16)    29.5039    22.1783   +7.3255    26.6652   +2.8386    ARIMA
+  Day 5 (2026-03-17)    28.6184    20.4796   +8.1388    25.9157   +2.7027    ARIMA
+
+Latest market date for EQIX: 2026-03-11
+MACD data for EQIX from 2025-12-02 to 2026-03-11 with length 68
+Using dynamic window size: 30 for symbol EQIX
+Fitting ARIMA(0,0,0) for EQIX with AIC: 240.86047763429158
+Fitting ARIMA(0,0,1) for EQIX with AIC: 208.640242405138
+Fitting ARIMA(0,0,2) for EQIX with AIC: 179.25550549662705
+Fitting ARIMA(0,0,3) for EQIX with AIC: 162.83508552412238
+Fitting ARIMA(1,0,0) for EQIX with AIC: 150.90067621693194
+Fitting ARIMA(1,0,1) for EQIX with AIC: 137.7244026138093
+Fitting ARIMA(1,0,2) for EQIX with AIC: 130.2558932670673
+Fitting ARIMA(1,0,3) for EQIX with AIC: 131.7592537159621
+Fitting ARIMA(2,0,0) for EQIX with AIC: 128.37344535126633
+Fitting ARIMA(2,0,1) for EQIX with AIC: 129.98151221483533
+Fitting ARIMA(2,0,2) for EQIX with AIC: 131.24808194620348
+Fitting ARIMA(2,0,3) for EQIX with AIC: 129.2218922772526
+Fitting ARIMA(3,0,0) for EQIX with AIC: 129.9281071337408
+Fitting ARIMA(3,0,1) for EQIX with AIC: 130.85904422968872
+Fitting ARIMA(3,0,2) for EQIX with AIC: 130.55383609075574
+Fitting ARIMA(3,0,3) for EQIX with AIC: 131.08336562101843
+Best ARIMA order for EQIX: (2, 0, 0) with AIC: 128.37344535126633
+Forecasted MACD for EQIX over the next 5 days: [30.71996492324082, 30.310955599560206, 29.839504271086312, 29.3380605615016, 28.83161631950194]
+Sample 5: Input ends 2026-03-11
+  Last input value: 31.0255
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-12)    30.3971    30.4368   +0.0398    30.7200   +0.3229   Neural
+  Day 2 (2026-03-13)    29.4331    28.5813   +0.8518    30.3110   +0.8779   Neural
+  Day 3 (2026-03-16)    29.5039    26.5297   +2.9741    29.8395   +0.3357    ARIMA
+  Day 4 (2026-03-17)    28.6184    24.9486   +3.6698    29.3381   +0.7196    ARIMA
+  Day 5 (2026-03-18)    27.3337    23.7987   +3.5350    28.8316   +1.4979    ARIMA
+
+Latest market date for EQIX: 2026-03-12
+MACD data for EQIX from 2025-12-03 to 2026-03-12 with length 68
+Using dynamic window size: 30 for symbol EQIX
+Fitting ARIMA(0,0,0) for EQIX with AIC: 238.7327951463289
+Fitting ARIMA(0,0,1) for EQIX with AIC: 205.6851893409656
+Fitting ARIMA(0,0,2) for EQIX with AIC: 178.72102687985296
+Fitting ARIMA(0,0,3) for EQIX with AIC: 162.06329632427224
+Fitting ARIMA(1,0,0) for EQIX with AIC: 150.4975536336007
+Fitting ARIMA(1,0,1) for EQIX with AIC: 137.34099940943645
+Fitting ARIMA(1,0,2) for EQIX with AIC: 130.0914482331678
+Fitting ARIMA(1,0,3) for EQIX with AIC: 131.50312047229528
+Fitting ARIMA(2,0,0) for EQIX with AIC: 127.5907285564024
+Fitting ARIMA(2,0,1) for EQIX with AIC: 129.36554645500436
+Fitting ARIMA(2,0,2) for EQIX with AIC: 130.91592599838836
+Fitting ARIMA(2,0,3) for EQIX with AIC: 128.37953649074876
+Fitting ARIMA(3,0,0) for EQIX with AIC: 129.359588627451
+Fitting ARIMA(3,0,1) for EQIX with AIC: 130.41349752446172
+Fitting ARIMA(3,0,2) for EQIX with AIC: 130.50916740232583
+Fitting ARIMA(3,0,3) for EQIX with AIC: 130.2398920612453
+Best ARIMA order for EQIX: (2, 0, 0) with AIC: 127.5907285564024
+Forecasted MACD for EQIX over the next 5 days: [29.77687948304527, 29.186873427477384, 28.642132929651087, 28.152089789532205, 27.72161482264451]
+Sample 6: Input ends 2026-03-12
+  Last input value: 30.3971
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-13)    29.4331    30.8550   +1.4219    29.7769   +0.3438    ARIMA
+  Day 2 (2026-03-16)    29.5039    29.6528   +0.1490    29.1869   +0.3170   Neural
+  Day 3 (2026-03-17)    28.6184    28.2677   +0.3507    28.6421   +0.0237    ARIMA
+  Day 4 (2026-03-18)    27.3337    27.0002   +0.3336    28.1521   +0.8184   Neural
+  Day 5 (2026-03-19)    26.1114    25.9417   +0.1697    27.7216   +1.6102   Neural
+
+Latest market date for EQIX: 2026-03-13
+MACD data for EQIX from 2025-12-04 to 2026-03-13 with length 68
+Using dynamic window size: 30 for symbol EQIX
+Fitting ARIMA(0,0,0) for EQIX with AIC: 236.6304925386454
+Fitting ARIMA(0,0,1) for EQIX with AIC: 204.58227462339877
+Fitting ARIMA(0,0,2) for EQIX with AIC: 175.3772735996637
+Fitting ARIMA(0,0,3) for EQIX with AIC: 159.7147549106549
+Fitting ARIMA(1,0,0) for EQIX with AIC: 150.4803290063036
+Fitting ARIMA(1,0,1) for EQIX with AIC: 137.22510307232233
+Fitting ARIMA(1,0,2) for EQIX with AIC: 129.5145303369359
+Fitting ARIMA(1,0,3) for EQIX with AIC: 130.89707828321235
+Fitting ARIMA(2,0,0) for EQIX with AIC: 126.72106797152654
+Fitting ARIMA(2,0,1) for EQIX with AIC: 128.6124216725326
+Fitting ARIMA(2,0,2) for EQIX with AIC: 130.37977139174126
+Fitting ARIMA(2,0,3) for EQIX with AIC: 127.13930643073361
+Fitting ARIMA(3,0,0) for EQIX with AIC: 128.6199197531572
+Fitting ARIMA(3,0,1) for EQIX with AIC: 128.96592954872557
+Fitting ARIMA(3,0,2) for EQIX with AIC: 129.09435596698683
+Fitting ARIMA(3,0,3) for EQIX with AIC: 128.92790944657781
+Best ARIMA order for EQIX: (2, 0, 0) with AIC: 126.72106797152654
+Forecasted MACD for EQIX over the next 5 days: [28.620581896188273, 27.958722156832856, 27.440072813252897, 27.052645075857935, 26.781530734744543]
+Sample 7: Input ends 2026-03-13
+  Last input value: 29.4331
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-16)    29.5039    29.5483   +0.0444    28.6206   +0.8833   Neural
+  Day 2 (2026-03-17)    28.6184    28.8426   +0.2242    27.9587   +0.6597   Neural
+  Day 3 (2026-03-18)    27.3337    27.8757   +0.5419    27.4401   +0.1064    ARIMA
+  Day 4 (2026-03-19)    26.1114    27.0263   +0.9149    27.0526   +0.9412   Neural
+  Day 5 (2026-03-20)    23.6118    26.4383   +2.8265    26.7815   +3.1698   Neural
+
+Latest market date for EQIX: 2026-03-16
+MACD data for EQIX from 2025-12-07 to 2026-03-16 with length 67
+Using dynamic window size: 30 for symbol EQIX
+Fitting ARIMA(0,0,0) for EQIX with AIC: 234.36997715544263
+Fitting ARIMA(0,0,1) for EQIX with AIC: 201.54605455900995
+Fitting ARIMA(0,0,2) for EQIX with AIC: 174.6227291489428
+Fitting ARIMA(0,0,3) for EQIX with AIC: 157.2547206953072
+Fitting ARIMA(1,0,0) for EQIX with AIC: 150.48025066965533
+Fitting ARIMA(1,0,1) for EQIX with AIC: 137.24022211172326
+Fitting ARIMA(1,0,2) for EQIX with AIC: 129.88246167592598
+Fitting ARIMA(1,0,3) for EQIX with AIC: 131.25440062324594
+Fitting ARIMA(2,0,0) for EQIX with AIC: 126.48475486361386
+Fitting ARIMA(2,0,1) for EQIX with AIC: 128.43881035334442
+Fitting ARIMA(2,0,2) for EQIX with AIC: 129.31840307136616
+Fitting ARIMA(2,0,3) for EQIX with AIC: 127.99710493149368
+Fitting ARIMA(3,0,0) for EQIX with AIC: 128.44610728689898
+Fitting ARIMA(3,0,1) for EQIX with AIC: 129.426677015859
+Fitting ARIMA(3,0,2) for EQIX with AIC: 130.02029260677477
+Fitting ARIMA(3,0,3) for EQIX with AIC: 127.57457845521782
+Best ARIMA order for EQIX: (2, 0, 0) with AIC: 126.48475486361386
+Forecasted MACD for EQIX over the next 5 days: [29.53107622871187, 29.523490905508144, 29.489574169926158, 29.437160475279065, 29.373195455663016]
+Sample 8: Input ends 2026-03-16
+  Last input value: 29.5039
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-17)    28.6184    30.4630   +1.8446    29.5311   +0.9127    ARIMA
+  Day 2 (2026-03-18)    27.3337    29.6528   +2.3191    29.5235   +2.1898    ARIMA
+  Day 3 (2026-03-19)    26.1114    28.7904   +2.6789    29.4896   +3.3782   Neural
+  Day 4 (2026-03-20)    23.6118    28.0325   +4.4207    29.4372   +5.8254   Neural
+  Day 5 (2026-03-23)    22.0065    27.5098   +5.5033    29.3732   +7.3667   Neural
+
+Latest market date for EQIX: 2026-03-17
+MACD data for EQIX from 2025-12-08 to 2026-03-17 with length 68
+Using dynamic window size: 30 for symbol EQIX
+Fitting ARIMA(0,0,0) for EQIX with AIC: 231.61895581587657
+Fitting ARIMA(0,0,1) for EQIX with AIC: 200.3362050851917
+Fitting ARIMA(0,0,2) for EQIX with AIC: 172.02414473389234
+Fitting ARIMA(0,0,3) for EQIX with AIC: 157.36564551889344
+Fitting ARIMA(1,0,0) for EQIX with AIC: 150.4314531209014
+Fitting ARIMA(1,0,1) for EQIX with AIC: 137.28250085245716
+Fitting ARIMA(1,0,2) for EQIX with AIC: 130.28214255916117
+Fitting ARIMA(1,0,3) for EQIX with AIC: 131.76156142546347
+Fitting ARIMA(2,0,0) for EQIX with AIC: 126.69963372859846
+Fitting ARIMA(2,0,1) for EQIX with AIC: 128.68858314748388
+Fitting ARIMA(2,0,2) for EQIX with AIC: 129.31905612833427
+Fitting ARIMA(2,0,3) for EQIX with AIC: 128.0654888567695
+Fitting ARIMA(3,0,0) for EQIX with AIC: 128.69024401401157
+Fitting ARIMA(3,0,1) for EQIX with AIC: 129.63359631286187
+Fitting ARIMA(3,0,2) for EQIX with AIC: 130.51778065942725
+Fitting ARIMA(3,0,3) for EQIX with AIC: 127.30041476812822
+Best ARIMA order for EQIX: (2, 0, 0) with AIC: 126.69963372859846
+Forecasted MACD for EQIX over the next 5 days: [27.94987547462526, 27.48440211299245, 27.20049969073113, 27.071899075878353, 27.070045743909407]
+Sample 9: Input ends 2026-03-17
+  Last input value: 28.6184
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-18)    27.3337    27.7711   +0.4374    27.9499   +0.6162   Neural
+  Day 2 (2026-03-19)    26.1114    26.6735   +0.5621    27.4844   +1.3730   Neural
+  Day 3 (2026-03-20)    23.6118    25.4582   +1.8465    27.2005   +3.5887   Neural
+  Day 4 (2026-03-23)    22.0065    24.5304   +2.5240    27.0719   +5.0654   Neural
+  Day 5 (2026-03-24)    20.3042    23.7464   +3.4422    27.0700   +6.7659   Neural
+
+Latest market date for EQIX: 2026-03-18
+MACD data for EQIX from 2025-12-09 to 2026-03-18 with length 68
+Using dynamic window size: 30 for symbol EQIX
+Fitting ARIMA(0,0,0) for EQIX with AIC: 228.02478803288415
+Fitting ARIMA(0,0,1) for EQIX with AIC: 195.92980105324168
+Fitting ARIMA(0,0,2) for EQIX with AIC: 169.96010533597084
+Fitting ARIMA(0,0,3) for EQIX with AIC: 153.307063738012
+Fitting ARIMA(1,0,0) for EQIX with AIC: 150.5403723882753
+Fitting ARIMA(1,0,1) for EQIX with AIC: 137.3527299534788
+Fitting ARIMA(1,0,2) for EQIX with AIC: 129.77367305736547
+Fitting ARIMA(1,0,3) for EQIX with AIC: 131.3477418054012
+Fitting ARIMA(2,0,0) for EQIX with AIC: 126.79166452001412
+Fitting ARIMA(2,0,1) for EQIX with AIC: 128.75281492332
+Fitting ARIMA(2,0,2) for EQIX with AIC: 129.31661339094586
+Fitting ARIMA(2,0,3) for EQIX with AIC: 127.81211130857311
+Fitting ARIMA(3,0,0) for EQIX with AIC: 128.75895641248616
+Fitting ARIMA(3,0,1) for EQIX with AIC: 129.70278498301744
+Fitting ARIMA(3,0,2) for EQIX with AIC: 130.52190348941775
+Fitting ARIMA(3,0,3) for EQIX with AIC: 127.70821137735571
+Best ARIMA order for EQIX: (2, 0, 0) with AIC: 126.79166452001412
+Forecasted MACD for EQIX over the next 5 days: [26.423936405009858, 25.856606262056808, 25.587362551240112, 25.56505779506577, 25.73612103331518]
+Sample 10: Input ends 2026-03-18
+  Last input value: 27.3337
+  Day                        Actual     Neural       Err      ARIMA       Err   Winner
+  ------------------------------------------------------------------------------------
+  Day 1 (2026-03-19)    26.1114    24.8833   +1.2282    26.4239   +0.3125    ARIMA
+  Day 2 (2026-03-20)    23.6118    23.2760   +0.3358    25.8566   +2.2448   Neural
+  Day 3 (2026-03-23)    22.0065    21.6687   +0.3378    25.5874   +3.5809   Neural
+  Day 4 (2026-03-24)    20.3042    20.4927   +0.1885    25.5651   +5.2609   Neural
+  Day 5 (2026-03-25)    18.8523    19.4081   +0.5558    25.7361   +6.8838   Neural
+
+==========================================================================================
+COMPARISON SUMMARY
+==========================================================================================
+Symbol:              EQIX
+Signal Type:         MACD
+Samples Evaluated:   10
+
+Metric                              Neural (bidirectional_gru)                ARIMA     Winner
+-------------------------------------------------------------------------------------
+MAE  (Mean Absolute Error)                      2.549038             2.427677      ARIMA
+RMSE (Root Mean Square Error)                   3.490248             3.138762      ARIMA
+MAPE (Mean Absolute % Error)                       9.12%                9.48%     Neural
+Directional Accuracy                              94.00%               94.00%        Tie
+-------------------------------------------------------------------------------------
+Overall Winner                                                                     ARIMA
+  (Neural: 1 wins, ARIMA: 2 wins)
