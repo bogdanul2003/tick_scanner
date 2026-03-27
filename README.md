@@ -208,6 +208,87 @@ Model saved to models/macd_bidirectional_gru_forecaster.pt
 Core ML model saved to models/macd_bidirectional_gru_forecaster.mlpackage
 ```
 
+### Evaluating Models
+
+After training, you can evaluate model performance by comparing predictions to actual values stored in the database.
+
+#### Basic Evaluation
+
+```bash
+cd src
+
+# Evaluate bidirectional GRU model on MSFT (defaults)
+python scripts/evaluate_forecast_model.py
+
+# Evaluate on specific symbol
+python scripts/evaluate_forecast_model.py --symbol AAPL
+
+# Evaluate stacked LSTM for comparison
+python scripts/evaluate_forecast_model.py --symbol AAPL --architecture stacked_lstm
+
+# Evaluate signal line model
+python scripts/evaluate_forecast_model.py --symbol NVDA --signal-type signal_line
+
+# More samples for better statistics
+python scripts/evaluate_forecast_model.py --symbol GOOGL --samples 30
+```
+
+#### List Available Models
+
+```bash
+python scripts/evaluate_forecast_model.py --list-models
+```
+
+#### Evaluation Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--symbol` | MSFT | Stock symbol to evaluate |
+| `--signal-type` | macd | Type of signal: `macd` or `signal_line` |
+| `--architecture` | bidirectional_gru | Model architecture to use |
+| `--input-days` | 30 | Number of input context days |
+| `--samples` | 10 | Number of prediction samples to evaluate |
+| `--forecast-horizon` | 5 | Number of days to forecast |
+| `--list-models` | - | List available trained models |
+
+#### Evaluation Output
+
+```
+======================================================================
+Running 10 predictions on AAPL MACD
+Model: bidirectional_gru (coreml)
+Input sequence: 30 days, Forecast: 5 days
+======================================================================
+
+Sample 1: Input ends 2026-03-10
+  Last input value: -0.5234
+  Day 1 (2026-03-11): Pred= -0.4123, Actual= -0.4567, Error=+0.0444 (9.7%) ✓
+  Day 2 (2026-03-12): Pred= -0.2891, Actual= -0.3012, Error=+0.0121 (4.0%) ✓
+  Day 3 (2026-03-13): Pred= -0.1234, Actual= -0.0987, Error=-0.0247 (25.0%) ✓
+  Day 4 (2026-03-14): Pred=  0.0567, Actual=  0.1234, Error=-0.0667 (54.1%) ✓
+  Day 5 (2026-03-17): Pred=  0.2345, Actual=  0.2890, Error=-0.0545 (18.9%) ✓
+
+...
+
+======================================================================
+EVALUATION SUMMARY
+======================================================================
+Symbol:              AAPL
+Signal Type:         MACD
+Architecture:        bidirectional_gru
+Inference Engine:    COREML
+Samples Evaluated:   10
+Total Predictions:   50
+
+MAE  (Mean Absolute Error):    0.234567
+RMSE (Root Mean Square Error): 0.345678
+MAPE (Mean Absolute % Error):  12.34%
+Directional Accuracy:          68.50%
+======================================================================
+```
+
+The ✓ and ✗ symbols indicate whether the model correctly predicted the direction of change relative to the last input value.
+
 ### Using the Neural Forecaster
 
 #### Check Engine Status
@@ -282,7 +363,8 @@ tick_scanner/
 │   │   ├── lstm_forecaster.py # LSTM training & export
 │   │   └── neural_forecast.py # NPU inference
 │   └── scripts/
-│       └── train_forecast_model.py
+│       ├── train_forecast_model.py      # Train LSTM/GRU models
+│       └── evaluate_forecast_model.py   # Evaluate model accuracy
 ├── chart_scan/
 │   ├── detector_neural.py     # YOLO pattern detection
 │   └── model.mlpackage/       # YOLO Core ML model
