@@ -68,6 +68,9 @@ def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days
 
     if end_date is None:
         end_date = get_latest_market_date()
+    # Normalize to datetime.date to match DB and get_latest_market_date() return type
+    if hasattr(end_date, 'date') and callable(end_date.date):
+        end_date = end_date.date()
     print(f"Latest market date for {symbol}: {end_date}")
     start_date = end_date - timedelta(days=days_past-1)
     # get_macd_for_date([symbol], end_date)  # Ensure we have data for the start date
