@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
 """
-Training script for LSTM MACD Forecaster.
+Training script for MACD Forecaster models.
 
-This script trains an LSTM model on historical MACD data and exports it
-to Core ML format for NPU inference on Apple Silicon.
+This script trains various neural network architectures on historical MACD data
+and exports them to Core ML format for NPU inference on Apple Silicon.
+
+Supported architectures:
+    - stacked_lstm: 2-layer LSTM (default)
+    - bidirectional_gru: Bidirectional GRU (best in research)
+    - stacked_gru: 2-layer GRU
+    - standard_lstm: Single-layer LSTM
+    - gru: Single-layer GRU
 
 Usage:
-    python train_forecast_model.py [--symbols SYMBOLS] [--epochs EPOCHS]
+    python train_forecast_model.py [--architecture ARCH] [--symbols SYMBOLS] [--epochs EPOCHS]
     
 Example:
-    python train_forecast_model.py --symbols "AAPL,MSFT,GOOG" --epochs 100
+    python train_forecast_model.py --architecture bidirectional_gru --epochs 100
 """
 import os
 import sys
@@ -96,6 +103,13 @@ def main():
         help="Type of signal to train on: 'macd' or 'signal_line' (default: macd)"
     )
     parser.add_argument(
+        "--architecture",
+        type=str,
+        choices=["stacked_lstm", "bidirectional_gru", "stacked_gru", "standard_lstm", "gru"],
+        default="stacked_lstm",
+        help="Model architecture: stacked_lstm, bidirectional_gru, stacked_gru, standard_lstm, gru (default: stacked_lstm)"
+    )
+    parser.add_argument(
         "--epochs",
         type=int,
         default=100,
@@ -161,13 +175,15 @@ def main():
         )
     os.makedirs(output_dir, exist_ok=True)
     
-    # Determine model name based on signal type
+    # Determine model name based on signal type and architecture
     signal_label = "MACD" if args.signal_type == "macd" else "Signal Line"
-    model_suffix = args.signal_type  # "macd" or "signal_line"
+    arch_label = args.architecture.replace("_", " ").title()
+    model_name = f"{args.signal_type}_{args.architecture}"  # e.g., "macd_bidirectional_gru"
     
     print("=" * 60)
-    print(f"LSTM {signal_label} Forecaster Training")
+    print(f"{arch_label} {signal_label} Forecaster Training")
     print("=" * 60)
+    print(f"Architecture: {args.architecture}")
     print(f"Signal type: {signal_label}")
     print(f"Output directory: {output_dir}")
     print(f"Sequence length: {args.seq_length}")
@@ -237,7 +253,8 @@ def main():
         seq_length=args.seq_length,
         forecast_horizon=args.forecast_horizon,
         hidden_size=args.hidden_size,
-        learning_rate=args.learning_rate
+        learning_rate=args.learning_rate,
+        architecture=args.architecture
     )
     
     print("\nTraining...")
@@ -260,8 +277,8 @@ def main():
         print("\nSkipping test evaluation (not enough test data)")
         test_metrics = None
     
-    # Save PyTorch model (filename includes signal type)
-    pytorch_path = os.path.join(output_dir, f"{model_suffix}_forecaster.pt")
+    # Save PyTorch model (filename includes signal type and architecture)
+    pytorch_path = os.path.join(output_dir, f"{model_name}_forecaster.pt")
     trainer.save(pytorch_path)
     
     # Export to Core ML
@@ -270,7 +287,7 @@ def main():
             import coremltools
             print(f"\nCore ML Tools version: {coremltools.__version__}")
             
-            coreml_path = os.path.join(output_dir, f"{model_suffix}_forecaster.mlpackage")
+            coreml_path = os.path.join(output_dir, f"{model_name}_forecaster.mlpackage")
             trainer.export_to_coreml(coreml_path)
             
             print("\n" + "=" * 60)

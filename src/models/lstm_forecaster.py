@@ -11,6 +11,10 @@ from typing import Tuple, Optional, List
 import os
 
 
+# Supported architectures
+ARCHITECTURES = ["stacked_lstm", "bidirectional_gru", "stacked_gru", "standard_lstm", "gru"]
+
+
 class LSTMForecaster(nn.Module):
     """
     LSTM model for time series forecasting (MACD values).
@@ -85,8 +89,258 @@ class LSTMForecaster(nn.Module):
         return forecast
 
 
+class BidirectionalGRUForecaster(nn.Module):
+    """
+    Bidirectional GRU model for time series forecasting.
+    
+    Based on research showing Bidirectional GRUs outperform LSTMs for
+    technical indicators like MACD (simpler gating + bidirectional processing).
+    
+    Architecture:
+    - Input: sequence of values (batch, seq_len, 1)
+    - Bidirectional GRU layers
+    - Fully connected output layer
+    - Output: forecasted values (batch, forecast_horizon)
+    """
+    
+    def __init__(
+        self,
+        input_size: int = 1,
+        hidden_size: int = 64,
+        num_layers: int = 2,
+        dropout: float = 0.2,
+        forecast_horizon: int = 5
+    ):
+        super(BidirectionalGRUForecaster, self).__init__()
+        
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.forecast_horizon = forecast_horizon
+        
+        # Bidirectional GRU layers
+        self.gru = nn.GRU(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0,
+            bidirectional=True  # Key difference: processes sequence both ways
+        )
+        
+        # Output projection (hidden_size * 2 because bidirectional)
+        self.fc = nn.Sequential(
+            nn.Linear(hidden_size * 2, hidden_size),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size, forecast_horizon)
+        )
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # GRU forward (bidirectional)
+        gru_out, _ = self.gru(x)
+        
+        # Take the last timestep's output (contains both directions)
+        last_output = gru_out[:, -1, :]
+        
+        # Project to forecast horizon
+        forecast = self.fc(last_output)
+        
+        return forecast
+
+
+class StackedGRUForecaster(nn.Module):
+    """
+    Stacked GRU model (non-bidirectional) for time series forecasting.
+    """
+    
+    def __init__(
+        self,
+        input_size: int = 1,
+        hidden_size: int = 64,
+        num_layers: int = 2,
+        dropout: float = 0.2,
+        forecast_horizon: int = 5
+    ):
+        super(StackedGRUForecaster, self).__init__()
+        
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.forecast_horizon = forecast_horizon
+        
+        self.gru = nn.GRU(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0
+        )
+        
+        self.fc = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size // 2, forecast_horizon)
+        )
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        gru_out, _ = self.gru(x)
+        last_output = gru_out[:, -1, :]
+        forecast = self.fc(last_output)
+        return forecast
+
+
+class StandardGRUForecaster(nn.Module):
+    """
+    Standard single-layer GRU for time series forecasting.
+    """
+    
+    def __init__(
+        self,
+        input_size: int = 1,
+        hidden_size: int = 64,
+        num_layers: int = 1,  # Single layer
+        dropout: float = 0.2,
+        forecast_horizon: int = 5
+    ):
+        super(StandardGRUForecaster, self).__init__()
+        
+        self.hidden_size = hidden_size
+        self.num_layers = 1
+        self.forecast_horizon = forecast_horizon
+        
+        self.gru = nn.GRU(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=1,
+            batch_first=True
+        )
+        
+        self.fc = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size // 2, forecast_horizon)
+        )
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        gru_out, _ = self.gru(x)
+        last_output = gru_out[:, -1, :]
+        forecast = self.fc(last_output)
+        return forecast
+
+
+class StandardLSTMForecaster(nn.Module):
+    """
+    Standard single-layer LSTM for time series forecasting.
+    """
+    
+    def __init__(
+        self,
+        input_size: int = 1,
+        hidden_size: int = 64,
+        num_layers: int = 1,  # Single layer
+        dropout: float = 0.2,
+        forecast_horizon: int = 5
+    ):
+        super(StandardLSTMForecaster, self).__init__()
+        
+        self.hidden_size = hidden_size
+        self.num_layers = 1
+        self.forecast_horizon = forecast_horizon
+        
+        self.lstm = nn.LSTM(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=1,
+            batch_first=True
+        )
+        
+        self.fc = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size // 2, forecast_horizon)
+        )
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        lstm_out, _ = self.lstm(x)
+        last_output = lstm_out[:, -1, :]
+        forecast = self.fc(last_output)
+        return forecast
+
+
+def create_model(
+    architecture: str = "stacked_lstm",
+    input_size: int = 1,
+    hidden_size: int = 64,
+    num_layers: int = 2,
+    dropout: float = 0.2,
+    forecast_horizon: int = 5
+) -> nn.Module:
+    """
+    Factory function to create a forecaster model by architecture name.
+    
+    Args:
+        architecture: One of 'stacked_lstm', 'bidirectional_gru', 'stacked_gru',
+                     'standard_lstm', 'gru'
+        input_size: Number of input features
+        hidden_size: Hidden layer size
+        num_layers: Number of recurrent layers (ignored for standard variants)
+        dropout: Dropout rate
+        forecast_horizon: Number of steps to forecast
+        
+    Returns:
+        Instantiated model
+    """
+    architecture = architecture.lower()
+    
+    if architecture == "stacked_lstm":
+        return LSTMForecaster(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            dropout=dropout,
+            forecast_horizon=forecast_horizon
+        )
+    elif architecture == "bidirectional_gru":
+        return BidirectionalGRUForecaster(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            dropout=dropout,
+            forecast_horizon=forecast_horizon
+        )
+    elif architecture == "stacked_gru":
+        return StackedGRUForecaster(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            dropout=dropout,
+            forecast_horizon=forecast_horizon
+        )
+    elif architecture == "standard_lstm":
+        return StandardLSTMForecaster(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            dropout=dropout,
+            forecast_horizon=forecast_horizon
+        )
+    elif architecture in ("gru", "standard_gru"):
+        return StandardGRUForecaster(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            dropout=dropout,
+            forecast_horizon=forecast_horizon
+        )
+    else:
+        raise ValueError(
+            f"Unknown architecture: {architecture}. "
+            f"Choose from: {ARCHITECTURES}"
+        )
+
+
 class MACDForecasterTrainer:
-    """Trainer for the LSTM MACD forecaster."""
+    """Trainer for MACD forecaster models (LSTM, GRU, Bidirectional variants)."""
     
     def __init__(
         self,
@@ -95,6 +349,7 @@ class MACDForecasterTrainer:
         hidden_size: int = 64,
         num_layers: int = 2,
         learning_rate: float = 0.001,
+        architecture: str = "stacked_lstm",
         device: str = None
     ):
         """
@@ -103,13 +358,20 @@ class MACDForecasterTrainer:
         Args:
             seq_length: Length of input sequences
             forecast_horizon: Number of days to forecast
-            hidden_size: LSTM hidden size
-            num_layers: Number of LSTM layers
+            hidden_size: Hidden layer size
+            num_layers: Number of recurrent layers
             learning_rate: Learning rate for optimizer
+            architecture: Model architecture - one of:
+                - 'stacked_lstm' (default, 2-layer LSTM)
+                - 'bidirectional_gru' (best in research)
+                - 'stacked_gru' (2-layer GRU)
+                - 'standard_lstm' (single-layer LSTM)
+                - 'gru' (single-layer GRU)
             device: Device to train on ('cpu', 'mps', or 'cuda')
         """
         self.seq_length = seq_length
         self.forecast_horizon = forecast_horizon
+        self.architecture = architecture
         
         # Auto-select device
         if device is None:
@@ -123,9 +385,11 @@ class MACDForecasterTrainer:
             self.device = torch.device(device)
         
         print(f"Using device: {self.device}")
+        print(f"Architecture: {architecture}")
         
-        # Initialize model
-        self.model = LSTMForecaster(
+        # Initialize model using factory function
+        self.model = create_model(
+            architecture=architecture,
             input_size=1,
             hidden_size=hidden_size,
             num_layers=num_layers,
@@ -372,7 +636,8 @@ class MACDForecasterTrainer:
             "seq_length": self.seq_length,
             "forecast_horizon": self.forecast_horizon,
             "hidden_size": self.model.hidden_size,
-            "num_layers": self.model.num_layers
+            "num_layers": self.model.num_layers,
+            "architecture": self.architecture
         }, path)
         print(f"Model saved to {path}")
     
@@ -418,7 +683,7 @@ class MACDForecasterTrainer:
         
         # Add metadata
         mlmodel.author = "Tick Scanner"
-        mlmodel.short_description = "LSTM-based MACD forecaster for time series prediction"
+        mlmodel.short_description = f"{self.architecture} MACD forecaster for time series prediction"
         mlmodel.version = "1.0"
         
         # Save with normalization parameters in metadata
@@ -433,29 +698,31 @@ class MACDForecasterTrainer:
         return output_path
 
 
-def get_model_path(signal_type: str = "macd") -> str:
+def get_model_path(signal_type: str = "macd", architecture: str = "stacked_lstm") -> str:
     """
     Get the path to the Core ML model.
     
     Args:
         signal_type: Type of signal model - "macd" or "signal_line"
+        architecture: Model architecture name
         
     Returns:
         Path to the .mlpackage file
     """
     base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    return os.path.join(base_dir, "models", f"{signal_type}_forecaster.mlpackage")
+    return os.path.join(base_dir, "models", f"{signal_type}_{architecture}_forecaster.mlpackage")
 
 
-def get_pytorch_model_path(signal_type: str = "macd") -> str:
+def get_pytorch_model_path(signal_type: str = "macd", architecture: str = "stacked_lstm") -> str:
     """
     Get the path to the PyTorch model checkpoint.
     
     Args:
         signal_type: Type of signal model - "macd" or "signal_line"
+        architecture: Model architecture name
         
     Returns:
         Path to the .pt file
     """
     base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    return os.path.join(base_dir, "models", f"{signal_type}_forecaster.pt")
+    return os.path.join(base_dir, "models", f"{signal_type}_{architecture}_forecaster.pt")
