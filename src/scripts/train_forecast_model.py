@@ -28,7 +28,7 @@ from datetime import datetime, timedelta
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 
-def get_training_data(symbols: list, days: int = 365, signal_type: str = "macd") -> np.ndarray:
+def get_training_data(symbols: list, days: int = 365, signal_type: str = "macd"):
     """
     Gather MACD or Signal Line data for training from multiple symbols.
     
@@ -38,12 +38,13 @@ def get_training_data(symbols: list, days: int = 365, signal_type: str = "macd")
         signal_type: Type of signal to gather - "macd" or "signal_line"
         
     Returns:
-        Concatenated values from all symbols
+        List of numpy arrays, one per symbol (maintains symbol boundaries)
     """
     from macd_utils import get_macd_for_range, get_latest_market_date
     from db_utils import get_watchlist_symbols
     
-    all_values = []
+    per_symbol_data = []
+    total_points = 0
     
     end_date = get_latest_market_date()
     start_date = end_date - timedelta(days=days)
@@ -66,13 +67,15 @@ def get_training_data(symbols: list, days: int = 365, signal_type: str = "macd")
                     if "signal_line" in d and d["signal_line"] is not None
                 ]
             if len(series) >= 50:  # Need enough data
-                all_values.extend(series)
+                symbol_array = np.array(series, dtype=np.float32)
+                per_symbol_data.append(symbol_array)
+                total_points += len(series)
                 print(f"  [{i+1}/{len(symbols)}] {symbol}: {len(series)} data points")
         except Exception as e:
             print(f"  [{i+1}/{len(symbols)}] {symbol}: Error - {e}")
     
-    print(f"\nTotal {signal_label} data points: {len(all_values)}")
-    return np.array(all_values, dtype=np.float32)
+    print(f"\nTotal {signal_label} data points: {total_points} across {len(per_symbol_data)} symbols")
+    return per_symbol_data
 
 
 def main():
@@ -211,24 +214,33 @@ def main():
     
     # Gather training data
     print("Gathering training data...")
-    all_data = get_training_data(symbols, args.days, args.signal_type)
+    per_symbol_data = get_training_data(symbols, args.days, args.signal_type)
     
-    if len(all_data) < 1000:
-        print(f"Warning: Only {len(all_data)} data points. Need at least 1000 for good training.")
-        if len(all_data) < 100:
+    if len(per_symbol_data) == 0:
+        print("Error: No valid symbol data collected")
+        sys.exit(1)
+    
+    # Calculate total data points across all symbols
+    total_points = sum(len(data) for data in per_symbol_data)
+    if total_points < 1000:
+        print(f"Warning: Only {total_points} total data points. Need at least 1000 for good training.")
+        if total_points < 100:
             print("Error: Not enough data for training")
             sys.exit(1)
     
-    # Split into train and test sets
-    test_size = int(len(all_data) * args.test_split)
-    train_data = all_data[:-test_size] if test_size > 0 else all_data
-    test_data = all_data[-test_size:] if test_size > 0 else None
+    # Split symbols into train and test sets (keeps symbol boundaries intact)
+    test_size = int(len(per_symbol_data) * args.test_split)
+    train_data = per_symbol_data[:-test_size] if test_size > 0 else per_symbol_data
+    test_data = per_symbol_data[-test_size:] if test_size > 0 else None
     
-    print(f"\nData split:")
-    print(f"  Total: {len(all_data)} data points")
-    print(f"  Train: {len(train_data)} data points ({100 - args.test_split * 100:.0f}%)")
+    train_points = sum(len(data) for data in train_data)
+    test_points = sum(len(data) for data in test_data) if test_data else 0
+    
+    print(f"\nData split (by symbols to maintain boundaries):")
+    print(f"  Total: {len(per_symbol_data)} symbols, {total_points} data points")
+    print(f"  Train: {len(train_data)} symbols, {train_points} data points")
     if test_data is not None:
-        print(f"  Test:  {len(test_data)} data points ({args.test_split * 100:.0f}%)")
+        print(f"  Test:  {len(test_data)} symbols, {test_points} data points")
     
     # Check for PyTorch
     try:
@@ -270,11 +282,17 @@ def main():
     print(f"Final val loss: {history['val_loss'][-1]:.6f}")
     
     # Evaluate on held-out test set
-    if test_data is not None and len(test_data) > args.seq_length + args.forecast_horizon:
-        print("\nEvaluating on held-out test set...")
-        test_metrics = trainer.evaluate(test_data, verbose=True)
+    if test_data is not None and len(test_data) > 0:
+        # Check if any test symbol has enough data
+        has_enough_data = any(len(data) > args.seq_length + args.forecast_horizon for data in test_data)
+        if has_enough_data:
+            print("\nEvaluating on held-out test set...")
+            test_metrics = trainer.evaluate(test_data, verbose=True)
+        else:
+            print("\nSkipping test evaluation (not enough test data)")
+            test_metrics = None
     else:
-        print("\nSkipping test evaluation (not enough test data)")
+        print("\nSkipping test evaluation (no test symbols)")
         test_metrics = None
     
     # Save PyTorch model (filename includes signal type and architecture)
