@@ -405,35 +405,72 @@ class MACDForecasterTrainer:
     
     def prepare_sequences(
         self, 
-        data: np.ndarray
+        data
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Prepare training sequences from time series data.
         
         Args:
-            data: 1D numpy array of MACD values
+            data: Either:
+                - Single 1D numpy array of MACD values (legacy mode)
+                - List of 1D numpy arrays, one per symbol (symbol-aware mode)
             
         Returns:
             Tuple of (X, y) tensors for training
         """
-        # Normalize
-        self.mean = np.mean(data)
-        self.std = np.std(data) + 1e-8
-        normalized = (data - self.mean) / self.std
+        # Check if data is a list of arrays (symbol-aware) or single array (legacy)
+        if isinstance(data, list):
+            # Symbol-aware mode: build sequences per symbol, then combine
+            all_sequences = []
+            
+            # First pass: collect all data for normalization
+            all_data = np.concatenate(data)
+            self.mean = np.mean(all_data)
+            self.std = np.std(all_data) + 1e-8
+            
+            # Second pass: create sequences within each symbol
+            for symbol_data in data:
+                if len(symbol_data) < self.seq_length + self.forecast_horizon:
+                    continue  # Skip symbols with insufficient data
+                
+                normalized = (symbol_data - self.mean) / self.std
+                
+                # Create sequences only within this symbol's data
+                for i in range(len(normalized) - self.seq_length - self.forecast_horizon + 1):
+                    X_seq = normalized[i:i + self.seq_length]
+                    y_seq = normalized[i + self.seq_length:i + self.seq_length + self.forecast_horizon]
+                    all_sequences.append((X_seq, y_seq))
+            
+            # Shuffle sequences to mix symbols
+            np.random.shuffle(all_sequences)
+            
+            # Separate X and y
+            X = np.array([seq[0] for seq in all_sequences])
+            y = np.array([seq[1] for seq in all_sequences])
+            
+        else:
+            # Legacy mode: single array (backward compatible)
+            self.mean = np.mean(data)
+            self.std = np.std(data) + 1e-8
+            normalized = (data - self.mean) / self.std
+            
+            X, y = [], []
+            for i in range(len(normalized) - self.seq_length - self.forecast_horizon + 1):
+                X.append(normalized[i:i + self.seq_length])
+                y.append(normalized[i + self.seq_length:i + self.seq_length + self.forecast_horizon])
+            
+            X = np.array(X)
+            y = np.array(y)
         
-        X, y = [], []
-        for i in range(len(normalized) - self.seq_length - self.forecast_horizon + 1):
-            X.append(normalized[i:i + self.seq_length])
-            y.append(normalized[i + self.seq_length:i + self.seq_length + self.forecast_horizon])
-        
-        X = torch.tensor(np.array(X), dtype=torch.float32).unsqueeze(-1)  # (N, seq_len, 1)
-        y = torch.tensor(np.array(y), dtype=torch.float32)  # (N, forecast_horizon)
+        # Convert to tensors
+        X = torch.tensor(X, dtype=torch.float32).unsqueeze(-1)  # (N, seq_len, 1)
+        y = torch.tensor(y, dtype=torch.float32)  # (N, forecast_horizon)
         
         return X, y
     
     def train(
         self,
-        train_data: np.ndarray,
+        train_data,
         epochs: int = 100,
         batch_size: int = 32,
         validation_split: float = 0.2,
@@ -443,7 +480,7 @@ class MACDForecasterTrainer:
         Train the model on MACD data.
         
         Args:
-            train_data: 1D numpy array of MACD values
+            train_data: Either a 1D numpy array (legacy) or list of arrays (symbol-aware)
             epochs: Number of training epochs
             batch_size: Batch size for training
             validation_split: Fraction of data for validation
@@ -516,14 +553,14 @@ class MACDForecasterTrainer:
     
     def evaluate(
         self,
-        test_data: np.ndarray,
+        test_data,
         verbose: bool = True
     ) -> dict:
         """
         Evaluate the model on held-out test data.
         
         Args:
-            test_data: 1D numpy array of MACD values for testing
+            test_data: Either a 1D numpy array (legacy) or list of arrays (symbol-aware)
             verbose: Print evaluation results
             
         Returns:

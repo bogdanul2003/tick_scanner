@@ -109,20 +109,20 @@ def create_app() -> FastAPI:
     # Register exception handlers
     register_exception_handlers(app)
     
-    # Mount static files for generated charts
-    charts_dir = os.path.join(os.path.dirname(__file__), "..", "generated_charts")
-    if os.path.exists(charts_dir):
-        app.mount("/charts", StaticFiles(directory=charts_dir), name="charts")
-    else:
-        logger.warning(f"Charts directory not found: {charts_dir}")
-    
-    # Include routers
+    # Include routers FIRST (before static mount so API routes take precedence)
     app.include_router(macd_router)
     app.include_router(watchlist_router)
     app.include_router(pattern_router)
     app.include_router(chart_router)
     app.include_router(price_router)
     app.include_router(forecast_router)
+    
+    # Mount static files for generated charts at a different path to avoid API route conflicts
+    charts_dir = os.path.join(os.path.dirname(__file__), "..", "generated_charts")
+    if os.path.exists(charts_dir):
+        app.mount("/static/charts", StaticFiles(directory=charts_dir), name="charts")
+    else:
+        logger.warning(f"Charts directory not found: {charts_dir}")
     
     return app
 

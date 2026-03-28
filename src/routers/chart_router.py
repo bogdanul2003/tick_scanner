@@ -141,7 +141,7 @@ async def api_generate_watchlist_charts(
             for d in detections:
                 fname = d["filename"]
                 pattern = d["rightmost_pattern"]
-                url = f"/charts/{safe_watchlist}/{today_str}/{interval_label}/filtered/{fname}"
+                url = f"/static/charts/{safe_watchlist}/{today_str}/{interval_label}/filtered/{fname}"
                 
                 is_bullish = False
                 if pattern:
