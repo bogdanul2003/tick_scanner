@@ -402,6 +402,7 @@ def run_evaluation(
         print(f"Running {num_samples} predictions on {symbol} {signal_label}")
         print(f"Mode: {mode_label}")
         print(f"Neural Model: {architecture} ({engine_type})")
+        print(f"Normalization: {normalization_type}")
         print(f"Input sequence: {seq_length} days, Forecast: {model_forecast_horizon} days", end="")
         if eval_forcast_horizon < model_forecast_horizon:
             print(f" (evaluating on {eval_forcast_horizon} days)")
@@ -736,13 +737,15 @@ def run_watchlist_evaluation(
 
     signal_label = "MACD" if signal_type == "macd" else "Signal Line"
     
-    # Load model once for reuse
+    # Load model once for reuse and to get metadata
     cached_model = load_model(architecture, signal_type)
+    _, _, normalization_type = cached_model
     
     print(f"\n{'='*90}")
     print(f"EVALUATING WATCHLIST: {watchlist_name} ({len(symbols)} symbols)")
     print(f"Signal Type:  {signal_label}")
     print(f"Architecture: {architecture}")
+    print(f"Normalization: {normalization_type}")
     print(f"Samples:      {num_samples} per symbol")
     if exclude_list:
         print(f"Excluded:     {', '.join(exclude_list)}")
