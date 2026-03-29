@@ -145,7 +145,7 @@ def load_model(architecture: str, signal_type: str):
         signal_type: 'macd' or 'signal_line'
         
     Returns:
-        Loaded CoreMLForecaster or PyTorch model trainer
+        Tuple of (engine_type, model, normalization_type)
     """
     from models.lstm_forecaster import get_model_path, get_pytorch_model_path
     
@@ -158,7 +158,7 @@ def load_model(architecture: str, signal_type: str):
             from models.neural_forecast import CoreMLForecaster
             forecaster = CoreMLForecaster(coreml_path, signal_type)
             if forecaster.is_available:
-                return ("coreml", forecaster)
+                return ("coreml", forecaster, forecaster.normalization_type)
         except Exception as e:
             print(f"Warning: Could not load Core ML model: {e}")
     
@@ -167,7 +167,7 @@ def load_model(architecture: str, signal_type: str):
             import torch
             from models.lstm_forecaster import MACDForecasterTrainer
             
-            # Load checkpoint to get architecture info
+            # Load checkpoint once to get all info
             checkpoint = torch.load(pytorch_path, map_location="cpu")
             
             trainer = MACDForecasterTrainer(
@@ -177,11 +177,15 @@ def load_model(architecture: str, signal_type: str):
                 architecture=checkpoint.get("architecture", architecture)
             )
             trainer.load(pytorch_path)
-            return ("pytorch", trainer)
+            
+            # Extract normalization type directly from checkpoint (it's guaranteed to be loaded now)
+            normalization_type = checkpoint.get("normalization_type", "global")
+            
+            return ("pytorch", trainer, normalization_type)
         except Exception as e:
             print(f"Warning: Could not load PyTorch model: {e}")
     
-    return (None, None)
+    return (None, None, "unknown")
 
 
 def _compute_metrics(
@@ -190,9 +194,26 @@ def _compute_metrics(
     actuals: List[List[float]],
     num_samples: int,
     model_forecast_horizon: int,
-    seq_length: int
+    seq_length: int,
+    full_model_horizon: int = None
 ) -> Dict[str, float]:
-    """Compute MAE, RMSE, MAPE, and directional accuracy for a set of predictions."""
+    """
+    Compute MAE, RMSE, MAPE, and directional accuracy for a set of predictions.
+    
+    Args:
+        all_values: Historical MACD values
+        predictions: List of prediction sequences (already sliced to eval horizon)
+        actuals: List of actual values (already sliced to eval horizon)
+        num_samples: Number of samples evaluated
+        model_forecast_horizon: Number of forecast days in each prediction (after slicing)
+        seq_length: Input sequence length
+        full_model_horizon: Full model forecast horizon (used for positioning calculations)
+                           If None, uses model_forecast_horizon
+    """
+    # If not provided, assume full_model_horizon == model_forecast_horizon
+    if full_model_horizon is None:
+        full_model_horizon = model_forecast_horizon
+    
     all_pred = np.array([p for pred in predictions for p in pred])
     all_actual = np.array([a for act in actuals for a in act])
 
@@ -203,7 +224,8 @@ def _compute_metrics(
     correct_directions = 0
     total_directions = 0
     for i, (pred, act) in enumerate(zip(predictions, actuals)):
-        start_idx = len(all_values) - num_samples - model_forecast_horizon + i - seq_length
+        # Use full_model_horizon for positioning (not the sliced eval horizon)
+        start_idx = len(all_values) - num_samples - full_model_horizon + i - seq_length
         last_input = all_values[start_idx + seq_length - 1]
         for p, a in zip(pred, act):
             if (p > last_input) == (a > last_input):
@@ -223,6 +245,72 @@ def _compute_metrics(
     }
 
 
+def _compute_per_day_metrics(
+    all_values: List[float],
+    predictions: List[List[float]],
+    actuals: List[List[float]],
+    num_samples: int,
+    model_forecast_horizon: int,
+    seq_length: int,
+    full_model_horizon: int = None
+) -> Dict[int, Dict[str, float]]:
+    """
+    Compute metrics broken down by forecast day (day 1, day 2, etc).
+    
+    Args:
+        full_model_horizon: Full model forecast horizon (used for positioning calculations)
+                           If None, uses model_forecast_horizon
+    
+    Returns:
+        Dict mapping day number (1-indexed) to metrics dict
+    """
+    # If not provided, assume full_model_horizon == model_forecast_horizon
+    if full_model_horizon is None:
+        full_model_horizon = model_forecast_horizon
+    
+    per_day_metrics = {}
+    
+    for day_idx in range(model_forecast_horizon):
+        day_num = day_idx + 1
+        
+        # Collect all predictions and actuals for this day across all samples
+        day_preds = []
+        day_actuals = []
+        day_correct_dirs = 0
+        day_total_dirs = 0
+        
+        for sample_idx, (pred, act) in enumerate(zip(predictions, actuals)):
+            if day_idx < len(pred) and day_idx < len(act):
+                day_preds.append(pred[day_idx])
+                day_actuals.append(act[day_idx])
+                
+                # Directional accuracy check - use full_model_horizon for positioning
+                start_idx = len(all_values) - num_samples - full_model_horizon + sample_idx - seq_length
+                last_input = all_values[start_idx + seq_length - 1]
+                if (pred[day_idx] > last_input) == (act[day_idx] > last_input):
+                    day_correct_dirs += 1
+                day_total_dirs += 1
+        
+        if day_preds:
+            day_preds = np.array(day_preds)
+            day_actuals = np.array(day_actuals)
+            
+            mae = float(np.mean(np.abs(day_preds - day_actuals)))
+            rmse = float(np.sqrt(np.mean((day_preds - day_actuals) ** 2)))
+            mape = float(np.mean(np.abs((day_preds - day_actuals) / (day_actuals + 1e-8))) * 100)
+            da = day_correct_dirs / day_total_dirs if day_total_dirs > 0 else 0.0
+            
+            per_day_metrics[day_num] = {
+                "mae": mae,
+                "rmse": rmse,
+                "mape": mape,
+                "directional_accuracy": da,
+                "total": day_total_dirs
+            }
+    
+    return per_day_metrics
+
+
 def run_evaluation(
     symbol: str,
     signal_type: str,
@@ -233,7 +321,8 @@ def run_evaluation(
     inference_forcast_horizon: int = None,
     compare_arima: bool = False,
     verbose: bool = True,
-    cached_model: Any = None
+    cached_model: Any = None,
+    breakdown_by_day: bool = False
 ) -> Dict[str, Any]:
     """
     Run model evaluation comparing predictions to actual values.
@@ -257,9 +346,9 @@ def run_evaluation(
 
     # Load model (or use cached one)
     if cached_model is not None:
-        engine_type, model = cached_model
+        engine_type, model, normalization_type = cached_model
     else:
-        engine_type, model = load_model(architecture, signal_type)
+        engine_type, model, normalization_type = load_model(architecture, signal_type)
 
     if model is None:
         return {
@@ -303,6 +392,7 @@ def run_evaluation(
     arima_predictions = []
     actuals = []
     input_end_dates = []
+    input_baselines = []  # Store the last input value for DA calculation
 
     signal_label = "MACD" if signal_type == "macd" else "Signal Line"
     mode_label = "COMPARISON: Neural vs ARIMA" if compare_arima else f"Neural ({engine_type})"
@@ -419,6 +509,7 @@ def run_evaluation(
             arima_predictions.append(arima_pred)
         actuals.append(actual_values)
         input_end_dates.append(input_end_date)
+        input_baselines.append(float(input_sequence[-1]))  # Store baseline for DA calculation
 
         # Print sample
         sample_num = len(neural_predictions)  # Current sample count
@@ -461,8 +552,18 @@ def run_evaluation(
     # Calculate metrics for neural (using evaluation forecast horizon)
     neural_metrics = _compute_metrics(
         all_values, neural_predictions, actuals,
-        num_samples, eval_forcast_horizon, seq_length
+        num_samples, eval_forcast_horizon, seq_length,
+        full_model_horizon=model_forecast_horizon
     )
+
+    # Calculate per-day metrics if breakdown requested
+    per_day_metrics = None
+    if breakdown_by_day:
+        per_day_metrics = _compute_per_day_metrics(
+            all_values, neural_predictions, actuals,
+            num_samples, eval_forcast_horizon, seq_length,
+            full_model_horizon=model_forecast_horizon
+        )
 
     # Calculate metrics for ARIMA if comparing
     arima_metrics = None
@@ -478,7 +579,8 @@ def run_evaluation(
         if valid_arima:
             arima_metrics = _compute_metrics(
                 all_values, valid_arima, valid_actuals_for_arima,
-                num_samples, eval_forcast_horizon, seq_length
+                num_samples, eval_forcast_horizon, seq_length,
+                full_model_horizon=model_forecast_horizon
             )
 
     # Print summary
@@ -490,6 +592,7 @@ def run_evaluation(
             print(f"Symbol:              {symbol}")
             print(f"Architecture:        {architecture}")
             print(f"Signal Type:         {signal_label}")
+            print(f"Normalization:       {normalization_type}")
             print(f"Forecast Horizon:    {model_forecast_horizon} days", end="")
             if eval_forcast_horizon < model_forecast_horizon:
                 print(f" (evaluating on {eval_forcast_horizon} days)")
@@ -547,6 +650,7 @@ def run_evaluation(
             print(f"Symbol:              {symbol}")
             print(f"Architecture:        {architecture}")
             print(f"Signal Type:         {signal_label}")
+            print(f"Normalization:       {normalization_type}")
             print(f"Forecast Horizon:    {model_forecast_horizon} days", end="")
             if eval_forcast_horizon < model_forecast_horizon:
                 print(f" (evaluating on {eval_forcast_horizon} days)")
@@ -561,6 +665,19 @@ def run_evaluation(
             print(f"RMSE (Root Mean Square Error): {neural_metrics['rmse']:.6f}")
             print(f"MAPE (Mean Absolute % Error):  {neural_metrics['mape']:.2f}%")
             print(f"Directional Accuracy:          {neural_metrics['directional_accuracy']:.2%}")
+        
+        # Print per-day breakdown if requested
+        if breakdown_by_day and per_day_metrics:
+            print()
+            print("PER-DAY METRICS BREAKDOWN")
+            print("-" * 90)
+            print(f"{'Day':>5} {'DA':>8} {'MAE':>12} {'RMSE':>12} {'MAPE':>10} {'Samples':>10}")
+            print(f"{'-'*65}")
+            for day in sorted(per_day_metrics.keys()):
+                metrics = per_day_metrics[day]
+                print(f"{day:>5} {metrics['directional_accuracy']:>7.1%} {metrics['mae']:>12.6f} "
+                      f"{metrics['rmse']:>12.6f} {metrics['mape']:>9.2f}% {metrics['total']:>10}")
+        
         print("=" * 90)
 
     result = {
@@ -568,12 +685,17 @@ def run_evaluation(
         "signal_type": signal_type,
         "architecture": architecture,
         "engine": engine_type,
+        "normalization_type": normalization_type,
         "samples": num_samples,
         "total_predictions": neural_metrics["total_predictions"],
         "neural_metrics": neural_metrics,
         "predictions": neural_predictions,
-        "actuals": actuals
+        "actuals": actuals,
+        "input_baselines": input_baselines  # Store baselines for DA calculation during aggregation
     }
+
+    if per_day_metrics:
+        result["per_day_metrics"] = per_day_metrics
 
     if compare_arima and arima_metrics:
         result["arima_metrics"] = arima_metrics
@@ -591,7 +713,8 @@ def run_watchlist_evaluation(
     forecast_horizon: int = None,
     inference_forcast_horizon: int = None,
     compare_arima: bool = False,
-    exclude_list: List[str] = None
+    exclude_list: List[str] = None,
+    breakdown_by_day: bool = False
 ) -> Dict[str, Any]:
     """Run model evaluation for an entire watchlist."""
     from db_utils import get_watchlist_symbols
@@ -640,7 +763,8 @@ def run_watchlist_evaluation(
             inference_forcast_horizon=inference_forcast_horizon,
             compare_arima=compare_arima,
             verbose=False,
-            cached_model=cached_model
+            cached_model=cached_model,
+            breakdown_by_day=breakdown_by_day  # Compute per-day metrics for later aggregation
         )
         if "error" not in res:
             all_res.append(res)
@@ -686,13 +810,16 @@ def run_watchlist_evaluation(
                 "directional_accuracy": arima_da
             }
 
-    # Determine effective forecast horizons for display
+    # Determine effective forecast horizons for display and get normalization type
     # Load model to get defaults if not specified
+    normalization_type = "unknown"
     if forecast_horizon is None or inference_forcast_horizon is None:
-        _, temp_model = load_model(architecture, signal_type)
+        _, temp_model, normalization_type = load_model(architecture, signal_type)
         model_default_fh = temp_model.forecast_horizon if temp_model else 5
     else:
         model_default_fh = forecast_horizon
+        # Still need to get normalization_type
+        _, _, normalization_type = load_model(architecture, signal_type)
     
     display_fh = forecast_horizon if forecast_horizon is not None else model_default_fh
     display_eval_fh = inference_forcast_horizon if inference_forcast_horizon is not None else display_fh
@@ -705,6 +832,7 @@ def run_watchlist_evaluation(
         print(f"Symbols Evaluated:   {len(all_res)} / {len(symbols)}")
         print(f"Architecture:        {architecture}")
         print(f"Signal Type:         {signal_label}")
+        print(f"Normalization:       {normalization_type}")
         print(f"Forecast Horizon:    {display_fh} days", end="")
         if display_eval_fh < display_fh:
             print(f" (evaluating on {display_eval_fh} days)")
@@ -761,6 +889,7 @@ def run_watchlist_evaluation(
         print(f"Symbols Evaluated:   {len(all_res)} / {len(symbols)}")
         print(f"Architecture:        {architecture}")
         print(f"Signal Type:         {signal_label}")
+        print(f"Normalization:       {normalization_type}")
         print(f"Forecast Horizon:    {display_fh} days", end="")
         if display_eval_fh < display_fh:
             print(f" (evaluating on {display_eval_fh} days)")
@@ -774,9 +903,75 @@ def run_watchlist_evaluation(
         print(f"RMSE (Root Mean Square Error): {neural_rmse:.6f}")
         print(f"MAPE (Mean Absolute % Error):  {neural_mape:.2f}%")
         print(f"Directional Accuracy:          {neural_da:.2%}")
+    
+    # Aggregate per-day metrics if requested
+    aggregated_per_day = None
+    if breakdown_by_day:
+        # Collect all predictions, actuals, and baselines to compute per-day metrics once
+        all_predictions_combined = []
+        all_actuals_combined = []
+        all_baselines_combined = []
+        
+        for res in all_res:
+            if "predictions" in res and "actuals" in res and "input_baselines" in res:
+                all_predictions_combined.extend(res["predictions"])
+                all_actuals_combined.extend(res["actuals"])
+                all_baselines_combined.extend(res["input_baselines"])
+        
+        if all_predictions_combined:
+            # Compute per-day metrics on combined data
+            aggregated_per_day = {}
+            # Determine the max number of days across all predictions
+            max_days = max(len(p) for p in all_predictions_combined) if all_predictions_combined else 0
+            
+            for day_idx in range(max_days):
+                day_num = day_idx + 1
+                day_preds = []
+                day_actuals = []
+                day_correct_dirs = 0
+                day_total_dirs = 0
+                
+                for pred_seq, act_seq, baseline in zip(all_predictions_combined, all_actuals_combined, all_baselines_combined):
+                    if day_idx < len(pred_seq) and day_idx < len(act_seq):
+                        day_preds.append(pred_seq[day_idx])
+                        day_actuals.append(act_seq[day_idx])
+                        
+                        # Directional accuracy: compare to the input baseline
+                        if (pred_seq[day_idx] > baseline) == (act_seq[day_idx] > baseline):
+                            day_correct_dirs += 1
+                        day_total_dirs += 1
+                
+                if day_preds:
+                    day_preds = np.array(day_preds)
+                    day_actuals = np.array(day_actuals)
+                    
+                    mae = float(np.mean(np.abs(day_preds - day_actuals)))
+                    rmse = float(np.sqrt(np.mean((day_preds - day_actuals) ** 2)))
+                    mape = float(np.mean(np.abs((day_preds - day_actuals) / (day_actuals + 1e-8))) * 100)
+                    da = day_correct_dirs / day_total_dirs if day_total_dirs > 0 else 0.0
+                    
+                    aggregated_per_day[day_num] = {
+                        "mae": mae,
+                        "rmse": rmse,
+                        "mape": mape,
+                        "directional_accuracy": da,
+                        "total": len(day_preds)
+                    }
+            
+            # Print per-day breakdown
+            print()
+            print("PER-DAY METRICS BREAKDOWN (across all symbols)")
+            print("-" * 90)
+            print(f"{'Day':>5} {'DA':>8} {'MAE':>12} {'RMSE':>12} {'MAPE':>10}")
+            print(f"{'-'*57}")
+            for day in sorted(aggregated_per_day.keys()):
+                metrics = aggregated_per_day[day]
+                print(f"{day:>5} {metrics['directional_accuracy']:>7.1%} {metrics['mae']:>12.6f} "
+                      f"{metrics['rmse']:>12.6f} {metrics['mape']:>9.2f}%")
+    
     print("=" * 90)
 
-    return {
+    result = {
         "watchlist": watchlist_name,
         "symbols_evaluated": len(all_res),
         "neural_metrics": {
@@ -787,6 +982,11 @@ def run_watchlist_evaluation(
         },
         "arima_metrics": arima_metrics
     }
+    
+    if aggregated_per_day:
+        result["per_day_metrics"] = aggregated_per_day
+    
+    return result
 
 
 def main():
@@ -870,6 +1070,11 @@ Examples:
         help="Compare neural model predictions against ARIMA on the same data"
     )
     parser.add_argument(
+        "--breakdown-by-day",
+        action="store_true",
+        help="Show per-day metrics breakdown (DA, MAE, RMSE, MAPE for each forecast day)"
+    )
+    parser.add_argument(
         "--list-models",
         action="store_true",
         help="List available trained models"
@@ -926,7 +1131,8 @@ Examples:
             forecast_horizon=args.forecast_horizon,
             inference_forcast_horizon=args.inference_forcast_horizon,
             compare_arima=args.compare,
-            exclude_list=exclude_list
+            exclude_list=exclude_list,
+            breakdown_by_day=args.breakdown_by_day
         )
     else:
         # Run evaluation for single symbol
@@ -951,7 +1157,8 @@ Examples:
             forecast_horizon=args.forecast_horizon,
             inference_forcast_horizon=args.inference_forcast_horizon,
             compare_arima=args.compare,
-            verbose=True
+            verbose=True,
+            breakdown_by_day=args.breakdown_by_day
         )
     
     if "error" in results:

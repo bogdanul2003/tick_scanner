@@ -38,6 +38,7 @@ class CoreMLForecaster:
         self.std = 1.0
         self.seq_length = 30
         self.forecast_horizon = 5
+        self.normalization_type = "unknown"
         self.signal_type = signal_type
         
         if model_path is None:
@@ -58,6 +59,7 @@ class CoreMLForecaster:
             self.std = cached["std"]
             self.seq_length = cached["seq_length"]
             self.forecast_horizon = cached["forecast_horizon"]
+            self.normalization_type = cached.get("normalization_type", "unknown")
             logger.info(f"Loaded Core ML model from cache")
             return
         
@@ -77,6 +79,7 @@ class CoreMLForecaster:
             self.std = float(metadata.get("std", 1.0))
             self.seq_length = int(metadata.get("seq_length", 30))
             self.forecast_horizon = int(metadata.get("forecast_horizon", 5))
+            self.normalization_type = metadata.get("normalization_type", "global")
             
             # Cache the model
             _model_cache[self.model_path] = {
@@ -84,13 +87,14 @@ class CoreMLForecaster:
                 "mean": self.mean,
                 "std": self.std,
                 "seq_length": self.seq_length,
-                "forecast_horizon": self.forecast_horizon
+                "forecast_horizon": self.forecast_horizon,
+                "normalization_type": self.normalization_type
             }
             
             logger.info(f"Loaded Core ML model from {self.model_path}")
             logger.info(f"  - Sequence length: {self.seq_length}")
             logger.info(f"  - Forecast horizon: {self.forecast_horizon}")
-            logger.info(f"  - Normalization: mean={self.mean:.4f}, std={self.std:.4f}")
+            logger.info(f"  - Normalization: {self.normalization_type} (mean={self.mean:.4f}, std={self.std:.4f})")
             
         except ImportError:
             logger.error("coremltools not installed. Install with: pip install coremltools")
@@ -124,8 +128,16 @@ class CoreMLForecaster:
             # Take the most recent values
             sequence = sequence[-self.seq_length:]
         
+        # Determine normalization parameters
+        if self.normalization_type == "internal":
+            m = np.mean(sequence)
+            s = np.std(sequence) + 1e-8
+        else:
+            m = self.mean
+            s = self.std
+            
         # Normalize
-        normalized = (sequence - self.mean) / self.std
+        normalized = (sequence - m) / s
         
         # Reshape for model input: (1, seq_length, 1)
         input_data = normalized.reshape(1, self.seq_length, 1).astype(np.float32)
@@ -135,7 +147,7 @@ class CoreMLForecaster:
         
         # Get forecast and denormalize
         forecast = output["forecast"][0]
-        forecast = forecast * self.std + self.mean
+        forecast = forecast * s + m
         
         return forecast
     
