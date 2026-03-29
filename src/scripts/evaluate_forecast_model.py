@@ -220,6 +220,7 @@ def _compute_metrics(
     mae = float(np.mean(np.abs(all_pred - all_actual)))
     rmse = float(np.sqrt(np.mean((all_pred - all_actual) ** 2)))
     mape = float(np.mean(np.abs((all_pred - all_actual) / (all_actual + 1e-8))) * 100)
+    wape = float(np.sum(np.abs(all_actual - all_pred)) / (np.sum(np.abs(all_actual)) + 1e-8) * 100)
 
     correct_directions = 0
     total_directions = 0
@@ -238,6 +239,7 @@ def _compute_metrics(
         "mae": mae,
         "rmse": rmse,
         "mape": mape,
+        "wape": wape,
         "directional_accuracy": directional_accuracy,
         "total_predictions": len(all_pred),
         "correct_directions": correct_directions,
@@ -258,6 +260,12 @@ def _compute_per_day_metrics(
     Compute metrics broken down by forecast day (day 1, day 2, etc).
     
     Args:
+        all_values: Historical MACD values
+        predictions: List of prediction sequences
+        actuals: List of actual sequences
+        num_samples: Number of samples evaluated
+        model_forecast_horizon: Forecast horizon (days)
+        seq_length: Input sequence length
         full_model_horizon: Full model forecast horizon (used for positioning calculations)
                            If None, uses model_forecast_horizon
     
@@ -298,17 +306,65 @@ def _compute_per_day_metrics(
             mae = float(np.mean(np.abs(day_preds - day_actuals)))
             rmse = float(np.sqrt(np.mean((day_preds - day_actuals) ** 2)))
             mape = float(np.mean(np.abs((day_preds - day_actuals) / (day_actuals + 1e-8))) * 100)
+            wape = float(np.sum(np.abs(day_actuals - day_preds)) / (np.sum(np.abs(day_actuals)) + 1e-8) * 100)
             da = day_correct_dirs / day_total_dirs if day_total_dirs > 0 else 0.0
             
             per_day_metrics[day_num] = {
                 "mae": mae,
                 "rmse": rmse,
                 "mape": mape,
+                "wape": wape,
                 "directional_accuracy": da,
                 "total": day_total_dirs
             }
     
     return per_day_metrics
+
+
+def _compute_lag_metrics(
+    predictions: List[List[float]],
+    actuals: List[List[float]],
+    baselines: List[float]
+) -> Dict[str, float]:
+    """
+    Compute metrics against 'lagged' actual values (Shift Evaluation).
+    
+    If predictions match lagged actuals better than current actuals, 
+    the model is likely just 'lagging' (predicting yesterday as today).
+    
+    Args:
+        predictions: List of prediction sequences
+        actuals: List of actual sequences
+        baselines: List of last input values (to use as lag for Day 1)
+        
+    Returns:
+        Dict of metrics against lagged actuals
+    """
+    all_pred = []
+    all_lagged_actual = []
+    
+    for pred, act, baseline in zip(predictions, actuals, baselines):
+        # Lagged actuals: Day 1 prediction compared to baseline (last input),
+        # Day 2 prediction compared to actual Day 1, etc.
+        lagged = [baseline] + act[:-1]
+        
+        # Ensure same length
+        min_len = min(len(pred), len(lagged))
+        all_pred.extend(pred[:min_len])
+        all_lagged_actual.extend(lagged[:min_len])
+        
+    all_pred = np.array(all_pred)
+    all_lagged_actual = np.array(all_lagged_actual)
+    
+    mae = float(np.mean(np.abs(all_pred - all_lagged_actual)))
+    rmse = float(np.sqrt(np.mean((all_pred - all_lagged_actual) ** 2)))
+    wape = float(np.sum(np.abs(all_lagged_actual - all_pred)) / (np.sum(np.abs(all_lagged_actual)) + 1e-8) * 100)
+    
+    return {
+        "mae": mae,
+        "rmse": rmse,
+        "wape": wape
+    }
 
 
 def run_evaluation(
@@ -322,7 +378,8 @@ def run_evaluation(
     compare_arima: bool = False,
     verbose: bool = True,
     cached_model: Any = None,
-    breakdown_by_day: bool = False
+    breakdown_by_day: bool = False,
+    lag_test: bool = False
 ) -> Dict[str, Any]:
     """
     Run model evaluation comparing predictions to actual values.
@@ -338,6 +395,8 @@ def run_evaluation(
         compare_arima: If True, also run ARIMA on each sample and compare
         verbose: If True, print detailed output
         cached_model: Optional tuple of (engine_type, model) to reuse
+        breakdown_by_day: If True, show metrics for each forecast day
+        lag_test: If True, perform shift evaluation to check for model lagging
 
     Returns:
         Evaluation results dictionary
@@ -609,6 +668,7 @@ def run_evaluation(
                 ("MAE  (Mean Absolute Error)", "mae", False),
                 ("RMSE (Root Mean Square Error)", "rmse", False),
                 ("MAPE (Mean Absolute % Error)", "mape", False),
+                ("WAPE (Weighted Abs % Error)", "wape", False),
                 ("Directional Accuracy", "directional_accuracy", True),
             ]
 
@@ -632,7 +692,7 @@ def run_evaluation(
                 if key == "directional_accuracy":
                     n_str = f"{n_val:.2%}"
                     a_str = f"{a_val:.2%}"
-                elif key == "mape":
+                elif key in ["mape", "wape"]:
                     n_str = f"{n_val:.2f}%"
                     a_str = f"{a_val:.2f}%"
                 else:
@@ -665,19 +725,42 @@ def run_evaluation(
             print(f"MAE  (Mean Absolute Error):    {neural_metrics['mae']:.6f}")
             print(f"RMSE (Root Mean Square Error): {neural_metrics['rmse']:.6f}")
             print(f"MAPE (Mean Absolute % Error):  {neural_metrics['mape']:.2f}%")
+            print(f"WAPE (Weighted Abs % Error):   {neural_metrics['wape']:.2f}%")
             print(f"Directional Accuracy:          {neural_metrics['directional_accuracy']:.2%}")
+        
+        # Lag Analysis (Shift Evaluation)
+        if lag_test:
+            lag_metrics = _compute_lag_metrics(neural_predictions, actuals, input_baselines)
+            mae_ratio = lag_metrics["mae"] / neural_metrics["mae"]
+            wape_ratio = lag_metrics["wape"] / neural_metrics["wape"]
+            
+            print()
+            print("LAG ANALYSIS (SHIFT EVALUATION)")
+            print("-" * 90)
+            print(f"Lagged MAE:   {lag_metrics['mae']:.6f}  (Ratio: {mae_ratio:.2f}x)")
+            print(f"Lagged WAPE:  {lag_metrics['wape']:.2f}% (Ratio: {wape_ratio:.2f}x)")
+            
+            if mae_ratio < 0.95:
+                print("\nWARNING: Model appears to be LAGGING.")
+                print("Lagged error is lower than prediction error. The model is likely")
+                print("predicting today's value as tomorrow's forecast.")
+            elif mae_ratio > 1.05:
+                print("\nCONFIDENCE: Model is NOT lagging.")
+                print("Lagged error is significantly higher than prediction error.")
+            else:
+                print("\nNEUTRAL: Model performance is similar to a lagged baseline.")
         
         # Print per-day breakdown if requested
         if breakdown_by_day and per_day_metrics:
             print()
             print("PER-DAY METRICS BREAKDOWN")
             print("-" * 90)
-            print(f"{'Day':>5} {'DA':>8} {'MAE':>12} {'RMSE':>12} {'MAPE':>10} {'Samples':>10}")
+            print(f"{'Day':>5} {'DA':>8} {'MAE':>12} {'RMSE':>12} {'WAPE':>10} {'Samples':>10}")
             print(f"{'-'*65}")
             for day in sorted(per_day_metrics.keys()):
                 metrics = per_day_metrics[day]
                 print(f"{day:>5} {metrics['directional_accuracy']:>7.1%} {metrics['mae']:>12.6f} "
-                      f"{metrics['rmse']:>12.6f} {metrics['mape']:>9.2f}% {metrics['total']:>10}")
+                      f"{metrics['rmse']:>12.6f} {metrics['wape']:>9.2f}% {metrics['total']:>10}")
         
         print("=" * 90)
 
@@ -692,8 +775,11 @@ def run_evaluation(
         "neural_metrics": neural_metrics,
         "predictions": neural_predictions,
         "actuals": actuals,
-        "input_baselines": input_baselines  # Store baselines for DA calculation during aggregation
+        "input_baselines": input_baselines
     }
+
+    if lag_test:
+        result["lag_metrics"] = _compute_lag_metrics(neural_predictions, actuals, input_baselines)
 
     if per_day_metrics:
         result["per_day_metrics"] = per_day_metrics
@@ -715,7 +801,9 @@ def run_watchlist_evaluation(
     inference_forcast_horizon: int = None,
     compare_arima: bool = False,
     exclude_list: List[str] = None,
-    breakdown_by_day: bool = False
+    breakdown_by_day: bool = False,
+    lag_test: bool = False,
+    verbose: bool = False
 ) -> Dict[str, Any]:
     """Run model evaluation for an entire watchlist."""
     from db_utils import get_watchlist_symbols
@@ -751,11 +839,16 @@ def run_watchlist_evaluation(
         print(f"Excluded:     {', '.join(exclude_list)}")
     if compare_arima:
         print(f"Mode:         Neural vs ARIMA Comparison")
+    if lag_test:
+        print(f"Lag Analysis: Enabled")
+    if verbose:
+        print(f"Verbosity:    Full per-sample logs")
     print(f"{'='*90}\n")
 
     all_res = []
     for i, symbol in enumerate(symbols):
-        print(f"[{i+1}/{len(symbols)}] Evaluating {symbol:<8}...", end="", flush=True)
+        if not verbose:
+            print(f"[{i+1}/{len(symbols)}] Evaluating {symbol:<8}...", end="", flush=True)
         res = run_evaluation(
             symbol=symbol,
             signal_type=signal_type,
@@ -765,24 +858,29 @@ def run_watchlist_evaluation(
             forecast_horizon=forecast_horizon,
             inference_forcast_horizon=inference_forcast_horizon,
             compare_arima=compare_arima,
-            verbose=False,
+            verbose=verbose,
             cached_model=cached_model,
-            breakdown_by_day=breakdown_by_day  # Compute per-day metrics for later aggregation
+            breakdown_by_day=breakdown_by_day,
+            lag_test=lag_test
         )
         if "error" not in res:
             all_res.append(res)
             n_da = res['neural_metrics']['directional_accuracy']
             n_mae = res['neural_metrics']['mae']
-            n_rmse = res['neural_metrics']['rmse']
-            if compare_arima and 'arima_metrics' in res:
-                a_da = res['arima_metrics']['directional_accuracy']
-                a_mae = res['arima_metrics']['mae']
-                a_rmse = res['arima_metrics']['rmse']
-                print(f" DONE (Neural: DA {n_da:.1%}, MAE {n_mae:.4f}, RMSE {n_rmse:.4f} | ARIMA: DA {a_da:.1%}, MAE {a_mae:.4f}, RMSE {a_rmse:.4f})")
-            else:
-                print(f" DONE (DA: {n_da:.1%}, MAE: {n_mae:.4f}, RMSE: {n_rmse:.4f})")
+            n_wape = res['neural_metrics']['wape']
+            
+            if not verbose:
+                if compare_arima and 'arima_metrics' in res:
+                    a_da = res['arima_metrics']['directional_accuracy']
+                    a_mae = res['arima_metrics']['mae']
+                    print(f" DONE (Neural: DA {n_da:.1%}, WAPE {n_wape:.2f}% | ARIMA: DA {a_da:.1%})")
+                else:
+                    print(f" DONE (DA: {n_da:.1%}, MAE: {n_mae:.4f}, WAPE: {n_wape:.2f}%)")
         else:
-            print(f" FAILED: {res['error']}")
+            if not verbose:
+                print(f" FAILED: {res['error']}")
+            else:
+                print(f"\nFAILED {symbol}: {res['error']}")
 
     if not all_res:
         return {"error": "No symbols could be evaluated."}
@@ -791,6 +889,7 @@ def run_watchlist_evaluation(
     neural_mae = np.mean([r["neural_metrics"]["mae"] for r in all_res])
     neural_rmse = np.mean([r["neural_metrics"]["rmse"] for r in all_res])
     neural_mape = np.mean([r["neural_metrics"]["mape"] for r in all_res])
+    neural_wape = np.mean([r["neural_metrics"]["wape"] for r in all_res])
     neural_total_correct = sum([r["neural_metrics"]["correct_directions"] for r in all_res])
     neural_total_dirs = sum([r["neural_metrics"]["total_directions"] for r in all_res])
     neural_da = neural_total_correct / neural_total_dirs if neural_total_dirs > 0 else 0
@@ -803,6 +902,7 @@ def run_watchlist_evaluation(
             arima_mae = np.mean([r["arima_metrics"]["mae"] for r in valid_arima_res])
             arima_rmse = np.mean([r["arima_metrics"]["rmse"] for r in valid_arima_res])
             arima_mape = np.mean([r["arima_metrics"]["mape"] for r in valid_arima_res])
+            arima_wape = np.mean([r["arima_metrics"]["wape"] for r in valid_arima_res])
             arima_total_correct = sum([r["arima_metrics"]["correct_directions"] for r in valid_arima_res])
             arima_total_dirs = sum([r["arima_metrics"]["total_directions"] for r in valid_arima_res])
             arima_da = arima_total_correct / arima_total_dirs if arima_total_dirs > 0 else 0
@@ -810,7 +910,22 @@ def run_watchlist_evaluation(
                 "mae": arima_mae,
                 "rmse": arima_rmse,
                 "mape": arima_mape,
+                "wape": arima_wape,
                 "directional_accuracy": arima_da
+            }
+    
+    # Aggregate Lag Metrics (if applicable)
+    lag_metrics = None
+    if lag_test:
+        valid_lag_res = [r for r in all_res if "lag_metrics" in r]
+        if valid_lag_res:
+            lag_mae = np.mean([r["lag_metrics"]["mae"] for r in valid_lag_res])
+            lag_rmse = np.mean([r["lag_metrics"]["rmse"] for r in valid_lag_res])
+            lag_wape = np.mean([r["lag_metrics"]["wape"] for r in valid_lag_res])
+            lag_metrics = {
+                "mae": lag_mae,
+                "rmse": lag_rmse,
+                "wape": lag_wape
             }
 
     # Determine effective forecast horizons for display and get normalization type
@@ -851,6 +966,7 @@ def run_watchlist_evaluation(
             ("MAE  (Mean Absolute Error)", "mae", False),
             ("RMSE (Root Mean Square Error)", "rmse", False),
             ("MAPE (Mean Absolute % Error)", "mape", False),
+            ("WAPE (Weighted Abs % Error)", "wape", False),
             ("Directional Accuracy", "directional_accuracy", True),
         ]
 
@@ -858,7 +974,12 @@ def run_watchlist_evaluation(
         arima_wins = 0
 
         for label, key, higher_is_better in comparisons:
-            n_val = neural_mae if key == "mae" else neural_rmse if key == "rmse" else neural_mape if key == "mape" else neural_da
+            if key == "mae": n_val = neural_mae
+            elif key == "rmse": n_val = neural_rmse
+            elif key == "mape": n_val = neural_mape
+            elif key == "wape": n_val = neural_wape
+            else: n_val = neural_da
+            
             a_val = arima_metrics[key]
 
             if higher_is_better:
@@ -874,7 +995,7 @@ def run_watchlist_evaluation(
             if key == "directional_accuracy":
                 n_str = f"{n_val:.2%}"
                 a_str = f"{a_val:.2%}"
-            elif key == "mape":
+            elif key in ["mape", "wape"]:
                 n_str = f"{n_val:.2f}%"
                 a_str = f"{a_val:.2f}%"
             else:
@@ -905,7 +1026,26 @@ def run_watchlist_evaluation(
         print(f"MAE  (Mean Absolute Error):    {neural_mae:.6f}")
         print(f"RMSE (Root Mean Square Error): {neural_rmse:.6f}")
         print(f"MAPE (Mean Absolute % Error):  {neural_mape:.2f}%")
+        print(f"WAPE (Weighted Abs % Error):   {neural_wape:.2f}%")
         print(f"Directional Accuracy:          {neural_da:.2%}")
+    
+    # Lag Analysis Summary
+    if lag_test and lag_metrics:
+        mae_ratio = lag_metrics["mae"] / neural_mae
+        wape_ratio = lag_metrics["wape"] / neural_wape
+        
+        print()
+        print(f"LAG ANALYSIS (Watchlist Average)")
+        print("-" * 90)
+        print(f"Lagged MAE:   {lag_metrics['mae']:.6f}  (Ratio: {mae_ratio:.2f}x)")
+        print(f"Lagged WAPE:  {lag_metrics['wape']:.2f}% (Ratio: {wape_ratio:.2f}x)")
+        
+        if mae_ratio < 0.95:
+            print("\nWARNING: Model appears to be LAGGING on average across the watchlist.")
+        elif mae_ratio > 1.05:
+            print("\nCONFIDENCE: Model is NOT lagging on average across the watchlist.")
+        else:
+            print("\nNEUTRAL: Model performance is similar to a lagged baseline.")
     
     # Aggregate per-day metrics if requested
     aggregated_per_day = None
@@ -951,12 +1091,14 @@ def run_watchlist_evaluation(
                     mae = float(np.mean(np.abs(day_preds - day_actuals)))
                     rmse = float(np.sqrt(np.mean((day_preds - day_actuals) ** 2)))
                     mape = float(np.mean(np.abs((day_preds - day_actuals) / (day_actuals + 1e-8))) * 100)
+                    wape = float(np.sum(np.abs(day_actuals - day_preds)) / (np.sum(np.abs(day_actuals)) + 1e-8) * 100)
                     da = day_correct_dirs / day_total_dirs if day_total_dirs > 0 else 0.0
                     
                     aggregated_per_day[day_num] = {
                         "mae": mae,
                         "rmse": rmse,
                         "mape": mape,
+                        "wape": wape,
                         "directional_accuracy": da,
                         "total": len(day_preds)
                     }
@@ -965,12 +1107,12 @@ def run_watchlist_evaluation(
             print()
             print("PER-DAY METRICS BREAKDOWN (across all symbols)")
             print("-" * 90)
-            print(f"{'Day':>5} {'DA':>8} {'MAE':>12} {'RMSE':>12} {'MAPE':>10}")
+            print(f"{'Day':>5} {'DA':>8} {'MAE':>12} {'RMSE':>12} {'WAPE':>10}")
             print(f"{'-'*57}")
             for day in sorted(aggregated_per_day.keys()):
                 metrics = aggregated_per_day[day]
                 print(f"{day:>5} {metrics['directional_accuracy']:>7.1%} {metrics['mae']:>12.6f} "
-                      f"{metrics['rmse']:>12.6f} {metrics['mape']:>9.2f}%")
+                      f"{metrics['rmse']:>12.6f} {metrics['wape']:>9.2f}%")
     
     print("=" * 90)
 
@@ -981,9 +1123,11 @@ def run_watchlist_evaluation(
             "mae": neural_mae,
             "rmse": neural_rmse,
             "mape": neural_mape,
+            "wape": neural_wape,
             "directional_accuracy": neural_da
         },
-        "arima_metrics": arima_metrics
+        "arima_metrics": arima_metrics,
+        "lag_metrics": lag_metrics
     }
     
     if aggregated_per_day:
@@ -1078,6 +1222,16 @@ Examples:
         help="Show per-day metrics breakdown (DA, MAE, RMSE, MAPE for each forecast day)"
     )
     parser.add_argument(
+        "--lag-test",
+        action="store_true",
+        help="Perform shift evaluation (lag test) to see if model is simply lagging"
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Log predicted vs actual values for each sample"
+    )
+    parser.add_argument(
         "--list-models",
         action="store_true",
         help="List available trained models"
@@ -1135,7 +1289,9 @@ Examples:
             inference_forcast_horizon=args.inference_forcast_horizon,
             compare_arima=args.compare,
             exclude_list=exclude_list,
-            breakdown_by_day=args.breakdown_by_day
+            breakdown_by_day=args.breakdown_by_day,
+            lag_test=args.lag_test,
+            verbose=args.verbose
         )
     else:
         # Run evaluation for single symbol
@@ -1150,6 +1306,10 @@ Examples:
         print(f"Samples:      {args.samples}")
         if args.compare:
             print(f"Compare:      Neural ({args.architecture}) vs ARIMA")
+        if args.lag_test:
+            print(f"Lag Analysis: Enabled")
+        if args.verbose:
+            print(f"Verbosity:    Full per-sample logs")
 
         results = run_evaluation(
             symbol=args.symbol.upper(),
@@ -1160,8 +1320,9 @@ Examples:
             forecast_horizon=args.forecast_horizon,
             inference_forcast_horizon=args.inference_forcast_horizon,
             compare_arima=args.compare,
-            verbose=True,
-            breakdown_by_day=args.breakdown_by_day
+            verbose=args.verbose or not args.watchlist, # Default to verbose for single symbol
+            breakdown_by_day=args.breakdown_by_day,
+            lag_test=args.lag_test
         )
     
     if "error" in results:
