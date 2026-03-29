@@ -41,14 +41,17 @@ def get_historical_data(
         symbol: Stock symbol
         signal_type: 'macd' or 'signal_line'
         end_date: End date for data retrieval
-        days_back: Number of days to look back
+        days_back: Number of trading days to look back
         
     Returns:
         Tuple of (values list, dates list)
     """
     from macd_utils import get_macd_for_range
     
-    start_date = end_date - timedelta(days=days_back)
+    # Multiply by 1.6 to account for weekends and holidays
+    # (roughly 2 out of 7 days are non-trading, plus ~7-10 holidays/year)
+    calendar_days = int(days_back * 1.6)
+    start_date = end_date - timedelta(days=calendar_days)
     macd_data = get_macd_for_range(symbol, start_date, end_date)
     
     field_name = "macd" if signal_type == "macd" else "signal_line"
@@ -113,7 +116,8 @@ def run_arima_forecast(
         days_past=days_past,
         forecast_days=forecast_horizon,
         end_date=end_date,
-        skip_cache=True
+        skip_cache=True,
+        verbose=False
     )
 
     if "error" in result.get("details", {}):
@@ -225,7 +229,8 @@ def run_evaluation(
     architecture: str,
     input_days: int,
     num_samples: int,
-    forecast_horizon: int = 5,
+    forecast_horizon: int = None,
+    inference_forcast_horizon: int = None,
     compare_arima: bool = False,
     verbose: bool = True,
     cached_model: Any = None
@@ -239,7 +244,8 @@ def run_evaluation(
         architecture: Model architecture
         input_days: Number of days of input data
         num_samples: Number of prediction samples to evaluate
-        forecast_horizon: Number of days to forecast
+        forecast_horizon: Number of days to forecast (if None, uses model's default)
+        inference_forcast_horizon: Number of forecasted days to use for evaluation (if None, uses forecast_horizon)
         compare_arima: If True, also run ARIMA on each sample and compare
         verbose: If True, print detailed output
         cached_model: Optional tuple of (engine_type, model) to reuse
@@ -266,20 +272,30 @@ def run_evaluation(
 
     # Get model parameters
     seq_length = model.seq_length
-    # Use the passed forecast_horizon parameter instead of model's default
-    model_forecast_horizon = forecast_horizon
+    # Use the passed forecast_horizon parameter if specified, otherwise use model's default
+    model_forecast_horizon = forecast_horizon if forecast_horizon is not None else model.forecast_horizon
+    # Use the passed inference_forcast_horizon if specified, otherwise use forecast_horizon
+    eval_forcast_horizon = inference_forcast_horizon if inference_forcast_horizon is not None else model_forecast_horizon
+    
+    # Validate that eval_forcast_horizon doesn't exceed model_forecast_horizon
+    if eval_forcast_horizon > model_forecast_horizon:
+        return {
+            "error": f"inference-forcast-horizon ({eval_forcast_horizon}) cannot exceed forecast-horizon ({model_forecast_horizon})"
+        }
 
     # Get historical data
     end_date = get_latest_market_date()
-    total_days_needed = input_days + num_samples + model_forecast_horizon + seq_length
+    # Calculate total data points needed: we work backwards from end date
+    # We need: seq_length (input) + num_samples (sample positions) + model_forecast_horizon (future values)
+    total_days_needed = seq_length + num_samples + model_forecast_horizon
 
     all_values, all_dates = get_historical_data(
         symbol, signal_type, end_date, total_days_needed
     )
 
-    if len(all_values) < seq_length + forecast_horizon + num_samples:
+    if len(all_values) < seq_length + model_forecast_horizon + num_samples:
         return {
-            "error": f"Not enough data. Have {len(all_values)} points, need at least {seq_length + forecast_horizon + num_samples}"
+            "error": f"Not enough data. Have {len(all_values)} points, need at least {seq_length + model_forecast_horizon + num_samples}"
         }
 
     # Run predictions
@@ -296,7 +312,11 @@ def run_evaluation(
         print(f"Running {num_samples} predictions on {symbol} {signal_label}")
         print(f"Mode: {mode_label}")
         print(f"Neural Model: {architecture} ({engine_type})")
-        print(f"Input sequence: {seq_length} days, Forecast: {model_forecast_horizon} days")
+        print(f"Input sequence: {seq_length} days, Forecast: {model_forecast_horizon} days", end="")
+        if eval_forcast_horizon < model_forecast_horizon:
+            print(f" (evaluating on {eval_forcast_horizon} days)")
+        else:
+            print()
         if compare_arima:
             print(f"ARIMA parallel execution: 4 cores")
         print(f"{'='*90}\n")
@@ -380,6 +400,13 @@ def run_evaluation(
         # Get ARIMA result for this sample (from parallel execution)
         arima_pred = arima_results.get(i) if compare_arima else None
         
+        # Slice predictions and actuals to evaluation forecast horizon
+        neural_pred = neural_pred[:eval_forcast_horizon]
+        actual_values = actual_values[:eval_forcast_horizon]
+        actual_dates = actual_dates[:eval_forcast_horizon]
+        if arima_pred is not None:
+            arima_pred = arima_pred[:eval_forcast_horizon]
+        
         # Ensure same length
         min_len = min(len(neural_pred), len(actual_values))
         neural_pred = neural_pred[:min_len]
@@ -431,10 +458,10 @@ def run_evaluation(
                           f"Error={error:+.4f} ({pct_error:.1f}%) {direction_match}")
             print()
 
-    # Calculate metrics for neural
+    # Calculate metrics for neural (using evaluation forecast horizon)
     neural_metrics = _compute_metrics(
         all_values, neural_predictions, actuals,
-        num_samples, model_forecast_horizon, seq_length
+        num_samples, eval_forcast_horizon, seq_length
     )
 
     # Calculate metrics for ARIMA if comparing
@@ -451,7 +478,7 @@ def run_evaluation(
         if valid_arima:
             arima_metrics = _compute_metrics(
                 all_values, valid_arima, valid_actuals_for_arima,
-                num_samples, model_forecast_horizon, seq_length
+                num_samples, eval_forcast_horizon, seq_length
             )
 
     # Print summary
@@ -461,7 +488,14 @@ def run_evaluation(
             print("COMPARISON SUMMARY")
             print("=" * 90)
             print(f"Symbol:              {symbol}")
+            print(f"Architecture:        {architecture}")
             print(f"Signal Type:         {signal_label}")
+            print(f"Forecast Horizon:    {model_forecast_horizon} days", end="")
+            if eval_forcast_horizon < model_forecast_horizon:
+                print(f" (evaluating on {eval_forcast_horizon} days)")
+            else:
+                print()
+            print(f"Input Days:          {seq_length} days")
             print(f"Samples Evaluated:   {num_samples}")
             print()
             print(f"{'Metric':<35} {'Neural (' + architecture + ')':>20} {'ARIMA':>20} {'Winner':>10}")
@@ -511,8 +545,14 @@ def run_evaluation(
             print("EVALUATION SUMMARY")
             print("=" * 90)
             print(f"Symbol:              {symbol}")
-            print(f"Signal Type:         {signal_label}")
             print(f"Architecture:        {architecture}")
+            print(f"Signal Type:         {signal_label}")
+            print(f"Forecast Horizon:    {model_forecast_horizon} days", end="")
+            if eval_forcast_horizon < model_forecast_horizon:
+                print(f" (evaluating on {eval_forcast_horizon} days)")
+            else:
+                print()
+            print(f"Input Days:          {seq_length} days")
             print(f"Inference Engine:    {engine_type.upper()}")
             print(f"Samples Evaluated:   {num_samples}")
             print(f"Total Predictions:   {neural_metrics['total_predictions']}")
@@ -548,19 +588,28 @@ def run_watchlist_evaluation(
     architecture: str,
     input_days: int,
     num_samples: int,
-    forecast_horizon: int = 5,
-    compare_arima: bool = False
+    forecast_horizon: int = None,
+    inference_forcast_horizon: int = None,
+    compare_arima: bool = False,
+    exclude_list: List[str] = None
 ) -> Dict[str, Any]:
     """Run model evaluation for an entire watchlist."""
     from db_utils import get_watchlist_symbols
 
     try:
-        symbols = get_watchlist_symbols(watchlist_name)
+        symbols = sorted(get_watchlist_symbols(watchlist_name))
     except ValueError as e:
         return {"error": str(e)}
 
     if not symbols:
         return {"error": f"Watchlist '{watchlist_name}' is empty."}
+
+    # Filter symbols based on exclude_list
+    if exclude_list:
+        exclude_set = {s.upper().strip() for s in exclude_list}
+        symbols = [s for s in symbols if s.upper() not in exclude_set]
+        if not symbols:
+            return {"error": "All symbols in watchlist were excluded."}
 
     signal_label = "MACD" if signal_type == "macd" else "Signal Line"
     
@@ -572,6 +621,8 @@ def run_watchlist_evaluation(
     print(f"Signal Type:  {signal_label}")
     print(f"Architecture: {architecture}")
     print(f"Samples:      {num_samples} per symbol")
+    if exclude_list:
+        print(f"Excluded:     {', '.join(exclude_list)}")
     if compare_arima:
         print(f"Mode:         Neural vs ARIMA Comparison")
     print(f"{'='*90}\n")
@@ -586,13 +637,23 @@ def run_watchlist_evaluation(
             input_days=input_days,
             num_samples=num_samples,
             forecast_horizon=forecast_horizon,
+            inference_forcast_horizon=inference_forcast_horizon,
             compare_arima=compare_arima,
             verbose=False,
             cached_model=cached_model
         )
         if "error" not in res:
             all_res.append(res)
-            print(f" DONE (DA: {res['neural_metrics']['directional_accuracy']:.1%}, MAE: {res['neural_metrics']['mae']:.4f})")
+            n_da = res['neural_metrics']['directional_accuracy']
+            n_mae = res['neural_metrics']['mae']
+            n_rmse = res['neural_metrics']['rmse']
+            if compare_arima and 'arima_metrics' in res:
+                a_da = res['arima_metrics']['directional_accuracy']
+                a_mae = res['arima_metrics']['mae']
+                a_rmse = res['arima_metrics']['rmse']
+                print(f" DONE (Neural: DA {n_da:.1%}, MAE {n_mae:.4f}, RMSE {n_rmse:.4f} | ARIMA: DA {a_da:.1%}, MAE {a_mae:.4f}, RMSE {a_rmse:.4f})")
+            else:
+                print(f" DONE (DA: {n_da:.1%}, MAE: {n_mae:.4f}, RMSE: {n_rmse:.4f})")
         else:
             print(f" FAILED: {res['error']}")
 
@@ -625,12 +686,32 @@ def run_watchlist_evaluation(
                 "directional_accuracy": arima_da
             }
 
+    # Determine effective forecast horizons for display
+    # Load model to get defaults if not specified
+    if forecast_horizon is None or inference_forcast_horizon is None:
+        _, temp_model = load_model(architecture, signal_type)
+        model_default_fh = temp_model.forecast_horizon if temp_model else 5
+    else:
+        model_default_fh = forecast_horizon
+    
+    display_fh = forecast_horizon if forecast_horizon is not None else model_default_fh
+    display_eval_fh = inference_forcast_horizon if inference_forcast_horizon is not None else display_fh
+    
     # Print Summary
     print("\n" + "=" * 90)
     if compare_arima and arima_metrics:
         print(f"WATCHLIST COMPARISON SUMMARY: {watchlist_name}")
         print("=" * 90)
         print(f"Symbols Evaluated:   {len(all_res)} / {len(symbols)}")
+        print(f"Architecture:        {architecture}")
+        print(f"Signal Type:         {signal_label}")
+        print(f"Forecast Horizon:    {display_fh} days", end="")
+        if display_eval_fh < display_fh:
+            print(f" (evaluating on {display_eval_fh} days)")
+        else:
+            print()
+        print(f"Input Days:          {input_days} days")
+        print(f"Samples/Symbol:      {num_samples}")
         print()
         print(f"{'Metric':<35} {'Neural (' + architecture + ')':>20} {'ARIMA':>20} {'Winner':>10}")
         print(f"{'-'*85}")
@@ -678,6 +759,15 @@ def run_watchlist_evaluation(
         print(f"WATCHLIST EVALUATION SUMMARY: {watchlist_name}")
         print("=" * 90)
         print(f"Symbols Evaluated:   {len(all_res)} / {len(symbols)}")
+        print(f"Architecture:        {architecture}")
+        print(f"Signal Type:         {signal_label}")
+        print(f"Forecast Horizon:    {display_fh} days", end="")
+        if display_eval_fh < display_fh:
+            print(f" (evaluating on {display_eval_fh} days)")
+        else:
+            print()
+        print(f"Input Days:          {input_days} days")
+        print(f"Samples/Symbol:      {num_samples}")
         print(f"Total Predictions:   {neural_total_dirs}")
         print()
         print(f"MAE  (Mean Absolute Error):    {neural_mae:.6f}")
@@ -732,6 +822,11 @@ Examples:
         help="Watchlist name to evaluate"
     )
     parser.add_argument(
+        "--exclude",
+        type=str,
+        help="Comma-separated list of symbols to exclude from evaluation"
+    )
+    parser.add_argument(
         "--signal-type",
         type=str,
         choices=["macd", "signal_line"],
@@ -760,8 +855,14 @@ Examples:
     parser.add_argument(
         "--forecast-horizon",
         type=int,
-        default=5,
-        help="Number of days to forecast (default: 5)"
+        default=None,
+        help="Number of days to forecast (default: uses model's trained forecast horizon)"
+    )
+    parser.add_argument(
+        "--inference-forcast-horizon",
+        type=int,
+        default=None,
+        help="Number of forecasted days to use for evaluation (default: same as forecast-horizon, must be <= forecast-horizon)"
     )
     parser.add_argument(
         "--compare",
@@ -813,6 +914,8 @@ Examples:
     if not args.symbol and not args.watchlist:
         args.symbol = "MSFT" # Default back to MSFT if none provided
     
+    exclude_list = [s.strip().upper() for s in args.exclude.split(",")] if args.exclude else []
+
     if args.watchlist:
         results = run_watchlist_evaluation(
             watchlist_name=args.watchlist,
@@ -821,7 +924,9 @@ Examples:
             input_days=args.input_days,
             num_samples=args.samples,
             forecast_horizon=args.forecast_horizon,
-            compare_arima=args.compare
+            inference_forcast_horizon=args.inference_forcast_horizon,
+            compare_arima=args.compare,
+            exclude_list=exclude_list
         )
     else:
         # Run evaluation for single symbol
@@ -844,6 +949,7 @@ Examples:
             input_days=args.input_days,
             num_samples=args.samples,
             forecast_horizon=args.forecast_horizon,
+            inference_forcast_horizon=args.inference_forcast_horizon,
             compare_arima=args.compare,
             verbose=True
         )

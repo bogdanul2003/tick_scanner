@@ -19,7 +19,7 @@ def sanitize_data(data):
         return data
 
 
-def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days: int = 3, end_date=None, skip_cache: bool = False):
+def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days: int = 3, end_date=None, skip_cache: bool = False, verbose: bool = True):
     """
     Uses ARIMA (with dynamic window and grid search) to forecast if MACD will become positive in the next `forecast_days` days
     based on the past `days_past` days of MACD data.
@@ -31,6 +31,7 @@ def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days
         end_date: End date for data retrieval. If None, uses latest market date.
         skip_cache: If True, skip loading/saving ARIMA grid cache. Useful for
                     historical evaluation where cached models don't match the date range.
+        verbose: If True, print status messages.
 
     Returns:
         {
@@ -50,8 +51,9 @@ def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days
         from statsmodels.tsa.arima.model import ARIMA
     except ImportError as e:
         import traceback
-        print(f"ImportError in arima_macd_positive_forecast for {symbol}: {e}")
-        traceback.print_exc()
+        if verbose:
+            print(f"ImportError in arima_macd_positive_forecast for {symbol}: {e}")
+            traceback.print_exc()
         return {
             "will_become_positive": False,
             "forecasted_macd": [],
@@ -73,12 +75,14 @@ def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days
     # Normalize to datetime.date to match DB and get_latest_market_date() return type
     if hasattr(end_date, 'date') and callable(end_date.date):
         end_date = end_date.date()
-    print(f"Latest market date for {symbol}: {end_date}")
+    if verbose:
+        print(f"Latest market date for {symbol}: {end_date}")
     start_date = end_date - timedelta(days=days_past-1)
     # get_macd_for_date([symbol], end_date)  # Ensure we have data for the start date
     macd_data = get_macd_for_range(symbol, start_date, end_date)
     macd_series = [d["macd"] for d in macd_data if "macd" in d and d["macd"] is not None]
-    print(f"MACD data for {symbol} from {start_date} to {end_date} with length {len(macd_series)}")
+    if verbose:
+        print(f"MACD data for {symbol} from {start_date} to {end_date} with length {len(macd_series)}")
 
     if len(macd_series) < 10:
         return {
@@ -90,7 +94,8 @@ def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days
     # Dynamic window
     window_size = dynamic_window(macd_series)
     train_data = pd.Series(macd_series[-window_size:])
-    print(f"Using dynamic window size: {window_size} for symbol {symbol}")
+    if verbose:
+        print(f"Using dynamic window size: {window_size} for symbol {symbol}")
 
     # Try to load ARIMA grid search from cache (forecast_util table)
     cached = None if skip_cache else get_arima_grid_cache(symbol, window_size, cache_days=1, with_model=True, model_type="MACD_MODEL")
@@ -99,12 +104,14 @@ def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days
     if cached:
         best_order = tuple(cached["best_order"])
         best_aic = cached["best_aic"]
-        print(f"Loaded ARIMA grid search from cache for {symbol}: order={best_order}, aic={best_aic}, window={window_size}, date= {cached['search_date']}")
+        if verbose:
+            print(f"Loaded ARIMA grid search from cache for {symbol}: order={best_order}, aic={best_aic}, window={window_size}, date= {cached['search_date']}")
         # Try to load model from blob
         if cached.get("model_blob"):
             try:
                 best_model = get_cached_arima_model(symbol, window_size, cache_days=1, model_type="MACD_MODEL")
-                print(f"Loaded ARIMA model from DB blob for {symbol}")
+                if verbose:
+                    print(f"Loaded ARIMA model from DB blob for {symbol}")
                 # If model loaded, append missing data since search_date
                 search_date = cached.get("search_date")
                 # Ensure search_date is not in the future compared to latest market date
@@ -114,7 +121,8 @@ def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days
                     search_date_pd = pd.Timestamp(search_date)
                     latest_market_date_pd = pd.Timestamp(latest_market_date)
                     if search_date_pd > latest_market_date_pd:
-                        print(f"search_date {search_date} is after latest market date {latest_market_date}, skipping append/refit for {symbol}")
+                        if verbose:
+                            print(f"search_date {search_date} is after latest market date {latest_market_date}, skipping append/refit for {symbol}")
                         search_date = get_latest_market_date()
                 if search_date:
                     # Find index of search_date in train_data
@@ -127,7 +135,8 @@ def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days
                         # Data after search_date
                         missing_data = train_data.iloc[idx+1:]
                         if not missing_data.empty:
-                            print(f"Appending {len(missing_data)} new data points to ARIMA model for {symbol} dates: {missing_data}")
+                            if verbose:
+                                print(f"Appending {len(missing_data)} new data points to ARIMA model for {symbol} dates: {missing_data}")
                             
                             # Fix: Safely handle different index types
                             try:
@@ -155,7 +164,8 @@ def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days
                                 
                                 best_model = best_model.append(missing_data_indexed, refit=False)
                             except Exception as e:
-                                print(f"Failed to append new data to model for {symbol}: {e}")
+                                if verbose:
+                                    print(f"Failed to append new data to model for {symbol}: {e}")
                                 # Fallback to refit if append fails
                                 from statsmodels.tsa.arima.model import ARIMA
                                 best_model = ARIMA(train_data, order=best_order).fit()
@@ -165,14 +175,17 @@ def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days
                         # Check if search_date is a weekday (0=Monday,...,4=Friday)
                         if hasattr(search_date_pd, "weekday") and search_date_pd.weekday() < 5:
                             # search_date not in train_dates, fallback to refit only if missing date is not a weekend
-                            traceback.print_exc()
-                            print(f"search_date {search_date} not in train_dates for {symbol}, checking if refit needed. Exception: {ve}")
+                            if verbose:
+                                traceback.print_exc()
+                                print(f"search_date {search_date} not in train_dates for {symbol}, checking if refit needed. Exception: {ve}")
                             from statsmodels.tsa.arima.model import ARIMA
                             best_model = ARIMA(train_data, order=best_order).fit()
                         else:
-                            print(f"search_date {search_date} is a weekend, skipping refit for {symbol}")
+                            if verbose:
+                                print(f"search_date {search_date} is a weekend, skipping refit for {symbol}")
             except Exception as e:
-                print(f"Failed to load ARIMA model blob for {symbol}: {e}")
+                if verbose:
+                    print(f"Failed to load ARIMA model blob for {symbol}: {e}")
         if best_model is None:
             from statsmodels.tsa.arima.model import ARIMA
             best_model = ARIMA(train_data, order=best_order).fit()
@@ -188,7 +201,8 @@ def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days
                         warnings.simplefilter("ignore")
                         model = ARIMA(train_data, order=(p, 0, q))
                         results = model.fit()
-                    print(f"Fitting ARIMA({p},0,{q}) for {symbol} with AIC: {results.aic}")
+                    if verbose:
+                        print(f"Fitting ARIMA({p},0,{q}) for {symbol} with AIC: {results.aic}")
                     if results.aic < best_aic:
                         best_aic = results.aic
                         best_order = (p, 0, q)
@@ -201,7 +215,8 @@ def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days
             best_order = (1, 0, 0)
             best_model = ARIMA(train_data, order=best_order).fit()
 
-        print(f"Best ARIMA order for {symbol}: {best_order} with AIC: {best_aic}")
+        if verbose:
+            print(f"Best ARIMA order for {symbol}: {best_order} with AIC: {best_aic}")
 
         # Save grid search result and model to cache
         if not skip_cache:
@@ -210,7 +225,8 @@ def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days
     # Forecast
     forecast = best_model.forecast(steps=forecast_days)
     forecasted_macd_values = forecast.tolist()
-    print(f"Forecasted MACD for {symbol} over the next {forecast_days} days: {forecasted_macd_values}")
+    if verbose:
+        print(f"Forecasted MACD for {symbol} over the next {forecast_days} days: {forecasted_macd_values}")
 
     last_macd = float(macd_series[-1])
     # will_become_positive: only if macd was negative and forecasted values become positive,

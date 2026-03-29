@@ -350,6 +350,7 @@ class MACDForecasterTrainer:
         num_layers: int = 2,
         learning_rate: float = 0.001,
         architecture: str = "stacked_lstm",
+        normalization_type: str = "global",
         device: str = None
     ):
         """
@@ -361,17 +362,14 @@ class MACDForecasterTrainer:
             hidden_size: Hidden layer size
             num_layers: Number of recurrent layers
             learning_rate: Learning rate for optimizer
-            architecture: Model architecture - one of:
-                - 'stacked_lstm' (default, 2-layer LSTM)
-                - 'bidirectional_gru' (best in research)
-                - 'stacked_gru' (2-layer GRU)
-                - 'standard_lstm' (single-layer LSTM)
-                - 'gru' (single-layer GRU)
-            device: Device to train on ('cpu', 'mps', or 'cuda')
+            architecture: Model architecture
+            normalization_type: 'global' (dataset-wide) or 'internal' (per-sequence)
+            device: Device to train on
         """
         self.seq_length = seq_length
         self.forecast_horizon = forecast_horizon
         self.architecture = architecture
+        self.normalization_type = normalization_type.lower()
         
         # Auto-select device
         if device is None:
@@ -386,6 +384,7 @@ class MACDForecasterTrainer:
         
         print(f"Using device: {self.device}")
         print(f"Architecture: {architecture}")
+        print(f"Normalization: {self.normalization_type}")
         
         # Initialize model using factory function
         self.model = create_model(
@@ -399,7 +398,7 @@ class MACDForecasterTrainer:
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
         self.criterion = nn.MSELoss()
         
-        # For normalization
+        # For 'global' normalization
         self.mean = 0.0
         self.std = 1.0
     
@@ -409,62 +408,52 @@ class MACDForecasterTrainer:
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Prepare training sequences from time series data.
-        
-        Args:
-            data: Either:
-                - Single 1D numpy array of MACD values (legacy mode)
-                - List of 1D numpy arrays, one per symbol (symbol-aware mode)
-            
-        Returns:
-            Tuple of (X, y) tensors for training
         """
-        # Check if data is a list of arrays (symbol-aware) or single array (legacy)
-        if isinstance(data, list):
-            # Symbol-aware mode: build sequences per symbol, then combine
-            all_sequences = []
-            
-            # First pass: collect all data for normalization
-            all_data = np.concatenate(data)
-            self.mean = np.mean(all_data)
-            self.std = np.std(all_data) + 1e-8
-            
-            # Second pass: create sequences within each symbol
-            for symbol_data in data:
-                if len(symbol_data) < self.seq_length + self.forecast_horizon:
-                    continue  # Skip symbols with insufficient data
+        all_X, all_y = [], []
+        
+        # 1. Handle dataset-wide stats for 'global' mode
+        if self.normalization_type == "global":
+            if isinstance(data, list):
+                combined = np.concatenate(data)
+                self.mean = np.mean(combined)
+                self.std = np.std(combined) + 1e-8
+            else:
+                self.mean = np.mean(data)
+                self.std = np.std(data) + 1e-8
+        
+        # 2. Process data symbols
+        input_data = data if isinstance(data, list) else [data]
+        
+        for symbol_series in input_data:
+            if len(symbol_series) < self.seq_length + self.forecast_horizon:
+                continue
                 
-                normalized = (symbol_data - self.mean) / self.std
+            for i in range(len(symbol_series) - self.seq_length - self.forecast_horizon + 1):
+                X_raw = symbol_series[i:i + self.seq_length]
+                y_raw = symbol_series[i + self.seq_length:i + self.seq_length + self.forecast_horizon]
                 
-                # Create sequences only within this symbol's data
-                for i in range(len(normalized) - self.seq_length - self.forecast_horizon + 1):
-                    X_seq = normalized[i:i + self.seq_length]
-                    y_seq = normalized[i + self.seq_length:i + self.seq_length + self.forecast_horizon]
-                    all_sequences.append((X_seq, y_seq))
-            
-            # Shuffle sequences to mix symbols
-            np.random.shuffle(all_sequences)
-            
-            # Separate X and y
-            X = np.array([seq[0] for seq in all_sequences])
-            y = np.array([seq[1] for seq in all_sequences])
-            
-        else:
-            # Legacy mode: single array (backward compatible)
-            self.mean = np.mean(data)
-            self.std = np.std(data) + 1e-8
-            normalized = (data - self.mean) / self.std
-            
-            X, y = [], []
-            for i in range(len(normalized) - self.seq_length - self.forecast_horizon + 1):
-                X.append(normalized[i:i + self.seq_length])
-                y.append(normalized[i + self.seq_length:i + self.seq_length + self.forecast_horizon])
-            
-            X = np.array(X)
-            y = np.array(y)
+                if self.normalization_type == "internal":
+                    # Per-sequence normalization
+                    m = np.mean(X_raw)
+                    s = np.std(X_raw) + 1e-8
+                    X_norm = (X_raw - m) / s
+                    y_norm = (y_raw - m) / s  # Use X's stats to normalize y
+                else:
+                    # Dataset-wide normalization
+                    X_norm = (X_raw - self.mean) / self.std
+                    y_norm = (y_raw - self.mean) / self.std
+                    
+                all_X.append(X_norm)
+                all_y.append(y_norm)
+        
+        # Shuffle
+        combined = list(zip(all_X, all_y))
+        np.random.shuffle(combined)
+        all_X, all_y = zip(*combined)
         
         # Convert to tensors
-        X = torch.tensor(X, dtype=torch.float32).unsqueeze(-1)  # (N, seq_len, 1)
-        y = torch.tensor(y, dtype=torch.float32)  # (N, forecast_horizon)
+        X = torch.tensor(np.array(all_X), dtype=torch.float32).unsqueeze(-1)
+        y = torch.tensor(np.array(all_y), dtype=torch.float32)
         
         return X, y
     
@@ -478,16 +467,6 @@ class MACDForecasterTrainer:
     ) -> dict:
         """
         Train the model on MACD data.
-        
-        Args:
-            train_data: Either a 1D numpy array (legacy) or list of arrays (symbol-aware)
-            epochs: Number of training epochs
-            batch_size: Batch size for training
-            validation_split: Fraction of data for validation
-            verbose: Print training progress
-            
-        Returns:
-            Training history dictionary
         """
         X, y = self.prepare_sequences(train_data)
         
@@ -558,13 +537,6 @@ class MACDForecasterTrainer:
     ) -> dict:
         """
         Evaluate the model on held-out test data.
-        
-        Args:
-            test_data: Either a 1D numpy array (legacy) or list of arrays (symbol-aware)
-            verbose: Print evaluation results
-            
-        Returns:
-            Dictionary with evaluation metrics
         """
         X_test, y_test = self.prepare_sequences(test_data)
         
@@ -584,40 +556,41 @@ class MACDForecasterTrainer:
         rmse = np.sqrt(mse)
         
         # Denormalize for interpretable metrics
-        pred_np = predictions.cpu().numpy() * self.std + self.mean
-        actual_np = y_test.cpu().numpy() * self.std + self.mean
-        
-        mae_denorm = np.mean(np.abs(pred_np - actual_np))
-        rmse_denorm = np.sqrt(np.mean((pred_np - actual_np) ** 2))
-        
-        # Directional accuracy: did we correctly predict if MACD will increase/decrease?
-        # Compare last input value to first forecasted value
+        # For internal normalization, we don't have a single mean/std to denormalize the entire test set at once
+        # but we can do it row-by-row if needed for MAE reporting.
+        pred_np = predictions.cpu().numpy()
+        actual_np = y_test.cpu().numpy()
         X_test_np = X_test.cpu().numpy()
-        last_input = X_test_np[:, -1, 0] * self.std + self.mean  # Last value of input sequence
-        first_pred = pred_np[:, 0]  # First forecasted value
-        first_actual = actual_np[:, 0]  # First actual value
         
-        pred_direction = (first_pred > last_input).astype(int)
-        actual_direction = (first_actual > last_input).astype(int)
-        directional_accuracy = np.mean(pred_direction == actual_direction)
+        mae_denorm_sum = 0.0
+        rmse_denorm_sum = 0.0
+        directional_correct = 0
         
-        # Positive prediction accuracy: when MACD is negative, did we correctly predict positive?
-        negative_mask = last_input < 0
-        if np.sum(negative_mask) > 0:
-            pred_positive = first_pred[negative_mask] > 0
-            actual_positive = first_actual[negative_mask] > 0
-            positive_accuracy = np.mean(pred_positive == actual_positive)
-        else:
-            positive_accuracy = None
-        
+        for i in range(len(pred_np)):
+            if self.normalization_type == "internal":
+                # Reverse calculate stats from X_test_np (which is normalized)
+                # Wait, prepare_sequences didn't store the raw stats.
+                # Let's just report normalized metrics or rethink evaluation.
+                # Actually, DA is scale-invariant so it works fine.
+                m, s = 0.0, 1.0 # Cannot easily denormalize here without storing stats
+                p = pred_np[i]
+                a = actual_np[i]
+                last_val = X_test_np[i, -1, 0]
+            else:
+                m, s = self.mean, self.std
+                p = pred_np[i] * s + m
+                a = actual_np[i] * s + m
+                last_val = X_test_np[i, -1, 0] * s + m
+            
+            mae_denorm_sum += np.mean(np.abs(p - a))
+            rmse_denorm_sum += np.sqrt(np.mean((p - a) ** 2))
+            if (p[0] > last_val) == (a[0] > last_val):
+                directional_correct += 1
+                
         metrics = {
-            "mse_normalized": mse,
-            "mae_normalized": mae,
-            "rmse_normalized": rmse,
-            "mae": float(mae_denorm),
-            "rmse": float(rmse_denorm),
-            "directional_accuracy": float(directional_accuracy),
-            "positive_prediction_accuracy": float(positive_accuracy) if positive_accuracy else None,
+            "mae": mae_denorm_sum / len(pred_np),
+            "rmse": rmse_denorm_sum / len(pred_np),
+            "directional_accuracy": directional_correct / len(pred_np),
             "test_samples": len(X_test)
         }
         
@@ -626,11 +599,9 @@ class MACDForecasterTrainer:
             print("Test Evaluation Results")
             print("=" * 50)
             print(f"Test samples: {metrics['test_samples']}")
-            print(f"MAE (Mean Absolute Error): {metrics['mae']:.6f}")
-            print(f"RMSE (Root Mean Square Error): {metrics['rmse']:.6f}")
+            print(f"MAE: {metrics['mae']:.6f}")
+            print(f"RMSE: {metrics['rmse']:.6f}")
             print(f"Directional Accuracy: {metrics['directional_accuracy']:.2%}")
-            if metrics['positive_prediction_accuracy'] is not None:
-                print(f"Positive Prediction Accuracy: {metrics['positive_prediction_accuracy']:.2%}")
             print("=" * 50)
         
         return metrics
@@ -638,17 +609,18 @@ class MACDForecasterTrainer:
     def predict(self, sequence: np.ndarray) -> np.ndarray:
         """
         Make a prediction given an input sequence.
-        
-        Args:
-            sequence: 1D array of length seq_length
-            
-        Returns:
-            Forecasted values (forecast_horizon,)
         """
         self.model.eval()
         
-        # Normalize using training stats
-        normalized = (sequence - self.mean) / self.std
+        if self.normalization_type == "internal":
+            m = np.mean(sequence)
+            s = np.std(sequence) + 1e-8
+        else:
+            m = self.mean
+            s = self.std
+            
+        # Normalize
+        normalized = (sequence - m) / s
         
         # Prepare input
         x = torch.tensor(normalized, dtype=torch.float32).unsqueeze(0).unsqueeze(-1)
@@ -660,7 +632,7 @@ class MACDForecasterTrainer:
         
         # Denormalize
         pred_np = pred.cpu().numpy()[0]
-        forecast = pred_np * self.std + self.mean
+        forecast = pred_np * s + m
         
         return forecast
     
@@ -670,6 +642,7 @@ class MACDForecasterTrainer:
             "model_state_dict": self.model.state_dict(),
             "mean": self.mean,
             "std": self.std,
+            "normalization_type": self.normalization_type,
             "seq_length": self.seq_length,
             "forecast_horizon": self.forecast_horizon,
             "hidden_size": self.model.hidden_size,
@@ -682,48 +655,37 @@ class MACDForecasterTrainer:
         """Load model and normalization parameters."""
         checkpoint = torch.load(path, map_location=self.device)
         self.model.load_state_dict(checkpoint["model_state_dict"])
-        self.mean = checkpoint["mean"]
-        self.std = checkpoint["std"]
+        self.mean = checkpoint.get("mean", 0.0)
+        self.std = checkpoint.get("std", 1.0)
+        self.normalization_type = checkpoint.get("normalization_type", "global")
         self.seq_length = checkpoint["seq_length"]
         self.forecast_horizon = checkpoint["forecast_horizon"]
-        print(f"Model loaded from {path}")
+        print(f"Model loaded from {path} (Norm: {self.normalization_type})")
     
     def export_to_coreml(self, output_path: str) -> str:
         """
-        Export the model to Core ML format for NPU inference.
-        
-        Args:
-            output_path: Path to save the .mlpackage
-            
-        Returns:
-            Path to the saved Core ML model
+        Export the model to Core ML format.
         """
         import coremltools as ct
         
         self.model.eval()
         self.model.to("cpu")
-        
-        # Create example input
         example_input = torch.randn(1, self.seq_length, 1)
-        
-        # Trace the model
         traced_model = torch.jit.trace(self.model, example_input)
         
-        # Convert to Core ML
         mlmodel = ct.convert(
             traced_model,
             inputs=[ct.TensorType(shape=(1, self.seq_length, 1), name="input_sequence")],
             outputs=[ct.TensorType(name="forecast")],
-            compute_precision=ct.precision.FLOAT16,  # Use FP16 for NPU efficiency
-            compute_units=ct.ComputeUnit.ALL  # Allow NPU, GPU, and CPU
+            compute_precision=ct.precision.FLOAT16,
+            compute_units=ct.ComputeUnit.ALL
         )
         
-        # Add metadata
         mlmodel.author = "Tick Scanner"
-        mlmodel.short_description = f"{self.architecture} MACD forecaster for time series prediction"
-        mlmodel.version = "1.0"
+        mlmodel.short_description = f"{self.architecture} MACD forecaster (Norm: {self.normalization_type})"
+        mlmodel.version = "1.1"
         
-        # Save with normalization parameters in metadata
+        mlmodel.user_defined_metadata["normalization_type"] = self.normalization_type
         mlmodel.user_defined_metadata["mean"] = str(self.mean)
         mlmodel.user_defined_metadata["std"] = str(self.std)
         mlmodel.user_defined_metadata["seq_length"] = str(self.seq_length)

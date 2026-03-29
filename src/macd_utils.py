@@ -10,7 +10,6 @@ from db_utils import (
     save_bulk_to_cache,
     fetch_from_cache
 )
-import yfinance as yf
 
 def get_macd_for_date(symbols: list, date):
     """

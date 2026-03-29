@@ -113,6 +113,13 @@ def main():
         help="Model architecture: stacked_lstm, bidirectional_gru, stacked_gru, standard_lstm, gru (default: stacked_lstm)"
     )
     parser.add_argument(
+        "--normalization-type",
+        type=str,
+        choices=["global", "internal"],
+        default="global",
+        help="Normalization method: 'global' (dataset-wide stats) or 'internal' (per-sequence stats) (default: global)"
+    )
+    parser.add_argument(
         "--epochs",
         type=int,
         default=100,
@@ -188,6 +195,7 @@ def main():
     print("=" * 60)
     print(f"Architecture: {args.architecture}")
     print(f"Signal type: {signal_label}")
+    print(f"Normalization: {args.normalization_type}")
     print(f"Output directory: {output_dir}")
     print(f"Sequence length: {args.seq_length}")
     print(f"Forecast horizon: {args.forecast_horizon}")
@@ -266,7 +274,8 @@ def main():
         forecast_horizon=args.forecast_horizon,
         hidden_size=args.hidden_size,
         learning_rate=args.learning_rate,
-        architecture=args.architecture
+        architecture=args.architecture,
+        normalization_type=args.normalization_type
     )
     
     print("\nTraining...")
@@ -280,6 +289,17 @@ def main():
     
     print(f"\nFinal train loss: {history['train_loss'][-1]:.6f}")
     print(f"Final val loss: {history['val_loss'][-1]:.6f}")
+    print()
+    print("Training Configuration:")
+    print(f"  Architecture:       {args.architecture}")
+    print(f"  Signal Type:        {signal_label}")
+    print(f"  Normalization:      {args.normalization_type}")
+    print(f"  Sequence Length:    {args.seq_length}")
+    print(f"  Forecast Horizon:   {args.forecast_horizon}")
+    print(f"  Hidden Size:        {args.hidden_size}")
+    print(f"  Epochs:             {args.epochs}")
+    print(f"  Batch Size:         {args.batch_size}")
+    print(f"  Learning Rate:      {args.learning_rate}")
     
     # Evaluate on held-out test set
     if test_data is not None and len(test_data) > 0:
@@ -313,9 +333,18 @@ def main():
             print("=" * 60)
             print(f"PyTorch model: {pytorch_path}")
             print(f"Core ML model: {coreml_path}")
+            print()
+            print("Model Parameters:")
+            print(f"  Architecture:       {args.architecture}")
+            print(f"  Signal Type:        {signal_label}")
+            print(f"  Normalization:      {args.normalization_type}")
+            print(f"  Sequence Length:    {args.seq_length}")
+            print(f"  Forecast Horizon:   {args.forecast_horizon}")
+            print(f"  Hidden Size:        {args.hidden_size}")
             if test_metrics:
-                print(f"\nTest MAE: {test_metrics['mae']:.6f}")
-                print(f"Test Directional Accuracy: {test_metrics['directional_accuracy']:.2%}")
+                print(f"\nTest Metrics:")
+                print(f"  MAE:                {test_metrics['mae']:.6f}")
+                print(f"  Directional Acc:    {test_metrics['directional_accuracy']:.2%}")
             print("\nThe Core ML model will run on Apple Neural Engine (NPU)")
             
         except ImportError:
@@ -323,11 +352,23 @@ def main():
             print("Install with: pip install coremltools")
             print(f"\nPyTorch model saved to: {pytorch_path}")
     else:
-        print(f"\nPyTorch model saved to: {pytorch_path}")
+        print("\n" + "=" * 60)
+        print("Training complete!")
+        print("=" * 60)
+        print(f"PyTorch model saved to: {pytorch_path}")
+        print()
+        print("Model Parameters:")
+        print(f"  Architecture:       {args.architecture}")
+        print(f"  Signal Type:        {signal_label}")
+        print(f"  Normalization:      {args.normalization_type}")
+        print(f"  Sequence Length:    {args.seq_length}")
+        print(f"  Forecast Horizon:   {args.forecast_horizon}")
+        print(f"  Hidden Size:        {args.hidden_size}")
         if test_metrics:
-            print(f"Test MAE: {test_metrics['mae']:.6f}")
-            print(f"Test Directional Accuracy: {test_metrics['directional_accuracy']:.2%}")
-        print("Core ML export skipped (--skip-coreml)")
+            print(f"\nTest Metrics:")
+            print(f"  MAE:                {test_metrics['mae']:.6f}")
+            print(f"  Directional Acc:    {test_metrics['directional_accuracy']:.2%}")
+        print("\nCore ML export skipped (--skip-coreml)")
 
 
 if __name__ == "__main__":
