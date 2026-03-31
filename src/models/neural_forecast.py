@@ -9,6 +9,7 @@ import numpy as np
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timedelta
 import logging
+import ast
 
 logger = logging.getLogger(__name__)
 
@@ -19,9 +20,6 @@ _model_cache: Dict[str, Any] = {}
 class CoreMLForecaster:
     """
     Core ML-based forecaster that runs on Apple Neural Engine (NPU).
-    
-    This class provides fast inference for MACD predictions using
-    a pre-trained LSTM model compiled for Core ML.
     """
     
     def __init__(self, model_path: Optional[str] = None, signal_type: str = "macd"):
@@ -30,7 +28,6 @@ class CoreMLForecaster:
         
         Args:
             model_path: Path to the .mlpackage model file.
-                       If None, uses the default model path based on signal_type.
             signal_type: Type of signal model - "macd" or "signal_line"
         """
         self.model = None
@@ -40,6 +37,8 @@ class CoreMLForecaster:
         self.forecast_horizon = 5
         self.normalization_type = "unknown"
         self.signal_type = signal_type
+        self.include_delta = False
+        self.input_size = 1
         
         if model_path is None:
             from models.lstm_forecaster import get_model_path
@@ -60,6 +59,8 @@ class CoreMLForecaster:
             self.seq_length = cached["seq_length"]
             self.forecast_horizon = cached["forecast_horizon"]
             self.normalization_type = cached.get("normalization_type", "unknown")
+            self.include_delta = cached.get("include_delta", False)
+            self.input_size = cached.get("input_size", 1)
             logger.info(f"Loaded Core ML model from cache")
             return
         
@@ -73,13 +74,25 @@ class CoreMLForecaster:
             # Load the model
             self.model = ct.models.MLModel(self.model_path)
             
-            # Load normalization parameters from metadata
+            # Load parameters from metadata
             metadata = self.model.user_defined_metadata
-            self.mean = float(metadata.get("mean", 0.0))
-            self.std = float(metadata.get("std", 1.0))
+            
+            # Handle list-based mean/std if multi-variate
+            mean_str = metadata.get("mean", "0.0")
+            std_str = metadata.get("std", "1.0")
+            
+            if mean_str.startswith("["):
+                self.mean = np.array(ast.literal_eval(mean_str), dtype=np.float32)
+                self.std = np.array(ast.literal_eval(std_str), dtype=np.float32)
+            else:
+                self.mean = float(mean_str)
+                self.std = float(std_str)
+                
             self.seq_length = int(metadata.get("seq_length", 30))
             self.forecast_horizon = int(metadata.get("forecast_horizon", 5))
             self.normalization_type = metadata.get("normalization_type", "global")
+            self.include_delta = metadata.get("include_delta", "False").lower() == "true"
+            self.input_size = 2 if self.include_delta else 1
             
             # Cache the model
             _model_cache[self.model_path] = {
@@ -88,13 +101,15 @@ class CoreMLForecaster:
                 "std": self.std,
                 "seq_length": self.seq_length,
                 "forecast_horizon": self.forecast_horizon,
-                "normalization_type": self.normalization_type
+                "normalization_type": self.normalization_type,
+                "include_delta": self.include_delta,
+                "input_size": self.input_size
             }
             
             logger.info(f"Loaded Core ML model from {self.model_path}")
+            logger.info(f"  - Features: {self.input_size} (Delta: {self.include_delta})")
             logger.info(f"  - Sequence length: {self.seq_length}")
             logger.info(f"  - Forecast horizon: {self.forecast_horizon}")
-            logger.info(f"  - Normalization: {self.normalization_type} (mean={self.mean:.4f}, std={self.std:.4f})")
             
         except ImportError:
             logger.error("coremltools not installed. Install with: pip install coremltools")
@@ -106,60 +121,61 @@ class CoreMLForecaster:
         """Check if the model is loaded and ready."""
         return self.model is not None
     
+    def _calculate_deltas(self, series: np.ndarray) -> np.ndarray:
+        """Calculate deltas (today - yesterday)."""
+        deltas = np.zeros_like(series)
+        deltas[1:] = series[1:] - series[:-1]
+        return deltas
+
     def predict(self, sequence: np.ndarray) -> np.ndarray:
         """
         Make a prediction using the Core ML model (runs on NPU).
-        
-        Args:
-            sequence: 1D array of MACD values (length = seq_length)
-            
-        Returns:
-            Forecasted values array (length = forecast_horizon)
         """
         if not self.is_available:
             raise RuntimeError("Core ML model not loaded")
         
         # Ensure correct length
         if len(sequence) < self.seq_length:
-            # Pad with the first value if too short
             padding = np.full(self.seq_length - len(sequence), sequence[0])
             sequence = np.concatenate([padding, sequence])
         elif len(sequence) > self.seq_length:
-            # Take the most recent values
             sequence = sequence[-self.seq_length:]
         
+        # Prepare input features
+        if self.include_delta:
+            deltas = self._calculate_deltas(sequence)
+            input_features = np.stack([sequence, deltas], axis=1)
+        else:
+            input_features = sequence.reshape(-1, 1)
+            
         # Determine normalization parameters
         if self.normalization_type == "internal":
-            m = np.mean(sequence)
-            s = np.std(sequence) + 1e-8
+            m = np.mean(input_features, axis=0)
+            s = np.std(input_features, axis=0) + 1e-8
         else:
             m = self.mean
             s = self.std
             
         # Normalize
-        normalized = (sequence - m) / s
+        normalized = (input_features - m) / s
         
-        # Reshape for model input: (1, seq_length, 1)
-        input_data = normalized.reshape(1, self.seq_length, 1).astype(np.float32)
+        # Reshape for model input: (1, seq_length, input_size)
+        input_data = normalized.reshape(1, self.seq_length, self.input_size).astype(np.float32)
         
         # Run inference on NPU
         output = self.model.predict({"input_sequence": input_data})
         
         # Get forecast and denormalize
-        forecast = output["forecast"][0]
-        forecast = forecast * s + m
+        # Output shape is (horizon * input_size)
+        forecast_raw = output["forecast"][0].reshape(self.forecast_horizon, self.input_size)
+        forecast_denorm = forecast_raw * s + m
         
-        return forecast
+        # Return all features (horizon, input_size)
+        return forecast_denorm
     
     def predict_batch(self, sequences: List[np.ndarray]) -> List[np.ndarray]:
         """
         Make predictions for multiple sequences (batch inference).
-        
-        Args:
-            sequences: List of 1D arrays of MACD values
-            
-        Returns:
-            List of forecasted value arrays
         """
         return [self.predict(seq) for seq in sequences]
 
@@ -167,9 +183,6 @@ class CoreMLForecaster:
 class NeuralForecastService:
     """
     Service for neural network-based MACD forecasting using NPU.
-    
-    This service provides a drop-in replacement for ARIMA-based forecasting,
-    using a pre-trained LSTM model running on Apple's Neural Engine.
     """
     
     def __init__(
@@ -180,11 +193,6 @@ class NeuralForecastService:
     ):
         """
         Initialize the neural forecast service.
-        
-        Args:
-            model_path: Path to Core ML model (uses default if None)
-            fallback_to_arima: If True, fall back to ARIMA when NPU unavailable
-            signal_type: Type of signal model - "macd" or "signal_line"
         """
         self.fallback_to_arima = fallback_to_arima
         self.signal_type = signal_type
@@ -208,14 +216,6 @@ class NeuralForecastService:
     ) -> Dict[str, Any]:
         """
         Forecast if MACD/Signal Line will become positive using neural network (NPU).
-        
-        Args:
-            symbol: Stock symbol
-            days_past: Number of historical days to use
-            forecast_days: Number of days to forecast
-            
-        Returns:
-            Forecast result dictionary compatible with ARIMA format
         """
         # Import here to avoid circular imports
         from macd_utils import get_macd_for_range, get_latest_market_date
@@ -246,7 +246,7 @@ class NeuralForecastService:
             series = np.array([
                 d[field_name] for d in macd_data 
                 if field_name in d and d[field_name] is not None
-            ])
+            ], dtype=np.float32)
             
             if len(series) < 10:
                 return {
@@ -278,7 +278,8 @@ class NeuralForecastService:
                     last_key: last_value,
                     "inference_engine": "Core ML NPU",
                     "model_type": "LSTM",
-                    "signal_type": self.signal_type
+                    "signal_type": self.signal_type,
+                    "features": self.forecaster.input_size
                 }
             }
             
@@ -305,14 +306,6 @@ class NeuralForecastService:
     ) -> Dict[str, Dict[str, Any]]:
         """
         Forecast for multiple symbols using neural network.
-        
-        Args:
-            symbols: List of stock symbols
-            days_past: Number of historical days to use
-            forecast_days: Number of days to forecast
-            
-        Returns:
-            Dictionary mapping symbols to forecast results
         """
         results = {}
         
@@ -327,9 +320,6 @@ class NeuralForecastService:
 def check_npu_availability() -> Dict[str, Any]:
     """
     Check if Apple Neural Engine (NPU) is available and get device info.
-    
-    Returns:
-        Dictionary with NPU availability info
     """
     info = {
         "npu_available": False,

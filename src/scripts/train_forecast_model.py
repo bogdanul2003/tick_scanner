@@ -179,6 +179,11 @@ def main():
         action="store_true",
         help="Skip Core ML conversion (useful for testing on non-Mac)"
     )
+    parser.add_argument(
+        "--include-delta",
+        action="store_true",
+        help="Include MACD delta (today - yesterday) as a feature and predict it"
+    )
     
     args = parser.parse_args()
     
@@ -195,7 +200,8 @@ def main():
     # Determine model name based on signal type and architecture
     signal_label = "MACD" if args.signal_type == "macd" else "Signal Line"
     arch_label = args.architecture.replace("_", " ").title()
-    model_name = f"{args.signal_type}_{args.architecture}"  # e.g., "macd_bidirectional_gru"
+    delta_suffix = "_with_delta" if args.include_delta else ""
+    model_name = f"{args.signal_type}_{args.architecture}{delta_suffix}"  # e.g., "macd_bidirectional_gru_with_delta"
     
     print("=" * 60)
     print(f"{arch_label} {signal_label} Forecaster Training")
@@ -203,6 +209,7 @@ def main():
     print(f"Architecture: {args.architecture}")
     print(f"Signal type: {signal_label}")
     print(f"Normalization: {args.normalization_type}")
+    print(f"Include Delta: {args.include_delta}")
     print(f"Output directory: {output_dir}")
     print(f"Sequence length: {args.seq_length}")
     print(f"Forecast horizon: {args.forecast_horizon}")
@@ -304,7 +311,8 @@ def main():
         hidden_size=args.hidden_size,
         learning_rate=args.learning_rate,
         architecture=args.architecture,
-        normalization_type=args.normalization_type
+        normalization_type=args.normalization_type,
+        include_delta=args.include_delta
     )
     
     print("\nTraining...")

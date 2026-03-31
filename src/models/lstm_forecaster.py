@@ -20,10 +20,10 @@ class LSTMForecaster(nn.Module):
     LSTM model for time series forecasting (MACD values).
     
     Architecture:
-    - Input: sequence of MACD values (batch, seq_len, 1)
+    - Input: sequence of MACD values (batch, seq_len, input_size)
     - LSTM layers with dropout
     - Fully connected output layer
-    - Output: forecasted values (batch, forecast_horizon)
+    - Output: forecasted values (batch, forecast_horizon * input_size)
     """
     
     def __init__(
@@ -38,7 +38,7 @@ class LSTMForecaster(nn.Module):
         Initialize the LSTM forecaster.
         
         Args:
-            input_size: Number of input features (1 for univariate MACD)
+            input_size: Number of input features (1 for univariate MACD, 2 for MACD + Delta)
             hidden_size: Number of LSTM hidden units
             num_layers: Number of LSTM layers
             dropout: Dropout rate between LSTM layers
@@ -46,9 +46,11 @@ class LSTMForecaster(nn.Module):
         """
         super(LSTMForecaster, self).__init__()
         
+        self.input_size = input_size
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.forecast_horizon = forecast_horizon
+        self.output_size = forecast_horizon * input_size
         
         # LSTM layers
         self.lstm = nn.LSTM(
@@ -64,7 +66,7 @@ class LSTMForecaster(nn.Module):
             nn.Linear(hidden_size, hidden_size // 2),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_size // 2, forecast_horizon)
+            nn.Linear(hidden_size // 2, self.output_size)
         )
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -75,7 +77,7 @@ class LSTMForecaster(nn.Module):
             x: Input tensor of shape (batch, seq_len, input_size)
             
         Returns:
-            Forecasted values of shape (batch, forecast_horizon)
+            Forecasted values of shape (batch, forecast_horizon * input_size)
         """
         # LSTM forward
         lstm_out, _ = self.lstm(x)
@@ -92,15 +94,6 @@ class LSTMForecaster(nn.Module):
 class BidirectionalGRUForecaster(nn.Module):
     """
     Bidirectional GRU model for time series forecasting.
-    
-    Based on research showing Bidirectional GRUs outperform LSTMs for
-    technical indicators like MACD (simpler gating + bidirectional processing).
-    
-    Architecture:
-    - Input: sequence of values (batch, seq_len, 1)
-    - Bidirectional GRU layers
-    - Fully connected output layer
-    - Output: forecasted values (batch, forecast_horizon)
     """
     
     def __init__(
@@ -113,9 +106,11 @@ class BidirectionalGRUForecaster(nn.Module):
     ):
         super(BidirectionalGRUForecaster, self).__init__()
         
+        self.input_size = input_size
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.forecast_horizon = forecast_horizon
+        self.output_size = forecast_horizon * input_size
         
         # Bidirectional GRU layers
         self.gru = nn.GRU(
@@ -124,7 +119,7 @@ class BidirectionalGRUForecaster(nn.Module):
             num_layers=num_layers,
             batch_first=True,
             dropout=dropout if num_layers > 1 else 0,
-            bidirectional=True  # Key difference: processes sequence both ways
+            bidirectional=True
         )
         
         # Output projection (hidden_size * 2 because bidirectional)
@@ -132,7 +127,7 @@ class BidirectionalGRUForecaster(nn.Module):
             nn.Linear(hidden_size * 2, hidden_size),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_size, forecast_horizon)
+            nn.Linear(hidden_size, self.output_size)
         )
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -163,9 +158,11 @@ class StackedGRUForecaster(nn.Module):
     ):
         super(StackedGRUForecaster, self).__init__()
         
+        self.input_size = input_size
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.forecast_horizon = forecast_horizon
+        self.output_size = forecast_horizon * input_size
         
         self.gru = nn.GRU(
             input_size=input_size,
@@ -179,7 +176,7 @@ class StackedGRUForecaster(nn.Module):
             nn.Linear(hidden_size, hidden_size // 2),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_size // 2, forecast_horizon)
+            nn.Linear(hidden_size // 2, self.output_size)
         )
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -198,15 +195,17 @@ class StandardGRUForecaster(nn.Module):
         self,
         input_size: int = 1,
         hidden_size: int = 64,
-        num_layers: int = 1,  # Single layer
+        num_layers: int = 1,
         dropout: float = 0.2,
         forecast_horizon: int = 5
     ):
         super(StandardGRUForecaster, self).__init__()
         
+        self.input_size = input_size
         self.hidden_size = hidden_size
         self.num_layers = 1
         self.forecast_horizon = forecast_horizon
+        self.output_size = forecast_horizon * input_size
         
         self.gru = nn.GRU(
             input_size=input_size,
@@ -219,7 +218,7 @@ class StandardGRUForecaster(nn.Module):
             nn.Linear(hidden_size, hidden_size // 2),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_size // 2, forecast_horizon)
+            nn.Linear(hidden_size // 2, self.output_size)
         )
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -238,15 +237,17 @@ class StandardLSTMForecaster(nn.Module):
         self,
         input_size: int = 1,
         hidden_size: int = 64,
-        num_layers: int = 1,  # Single layer
+        num_layers: int = 1,
         dropout: float = 0.2,
         forecast_horizon: int = 5
     ):
         super(StandardLSTMForecaster, self).__init__()
         
+        self.input_size = input_size
         self.hidden_size = hidden_size
         self.num_layers = 1
         self.forecast_horizon = forecast_horizon
+        self.output_size = forecast_horizon * input_size
         
         self.lstm = nn.LSTM(
             input_size=input_size,
@@ -259,7 +260,7 @@ class StandardLSTMForecaster(nn.Module):
             nn.Linear(hidden_size, hidden_size // 2),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_size // 2, forecast_horizon)
+            nn.Linear(hidden_size // 2, self.output_size)
         )
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -279,18 +280,6 @@ def create_model(
 ) -> nn.Module:
     """
     Factory function to create a forecaster model by architecture name.
-    
-    Args:
-        architecture: One of 'stacked_lstm', 'bidirectional_gru', 'stacked_gru',
-                     'standard_lstm', 'gru'
-        input_size: Number of input features
-        hidden_size: Hidden layer size
-        num_layers: Number of recurrent layers (ignored for standard variants)
-        dropout: Dropout rate
-        forecast_horizon: Number of steps to forecast
-        
-    Returns:
-        Instantiated model
     """
     architecture = architecture.lower()
     
@@ -351,6 +340,7 @@ class MACDForecasterTrainer:
         learning_rate: float = 0.001,
         architecture: str = "stacked_lstm",
         normalization_type: str = "global",
+        include_delta: bool = False,
         device: str = None
     ):
         """
@@ -364,12 +354,16 @@ class MACDForecasterTrainer:
             learning_rate: Learning rate for optimizer
             architecture: Model architecture
             normalization_type: 'global' (dataset-wide) or 'internal' (per-sequence)
+            include_delta: If True, include MACD delta as a feature and predict it
             device: Device to train on
         """
         self.seq_length = seq_length
         self.forecast_horizon = forecast_horizon
         self.architecture = architecture
         self.normalization_type = normalization_type.lower()
+        self.include_delta = include_delta
+        self.input_size = 2 if include_delta else 1
+        self.output_size = forecast_horizon * self.input_size
         
         # Auto-select device
         if device is None:
@@ -385,11 +379,12 @@ class MACDForecasterTrainer:
         print(f"Using device: {self.device}")
         print(f"Architecture: {architecture}")
         print(f"Normalization: {self.normalization_type}")
+        print(f"Include Delta: {self.include_delta}")
         
         # Initialize model using factory function
         self.model = create_model(
             architecture=architecture,
-            input_size=1,
+            input_size=self.input_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
             forecast_horizon=forecast_horizon
@@ -398,10 +393,16 @@ class MACDForecasterTrainer:
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
         self.criterion = nn.MSELoss()
         
-        # For 'global' normalization
-        self.mean = 0.0
-        self.std = 1.0
+        # For 'global' normalization (store as vectors for multi-variate support)
+        self.mean = np.zeros(self.input_size, dtype=np.float32)
+        self.std = np.ones(self.input_size, dtype=np.float32)
     
+    def _calculate_deltas(self, series: np.ndarray) -> np.ndarray:
+        """Calculate MACD delta (today - yesterday). First point is 0."""
+        deltas = np.zeros_like(series)
+        deltas[1:] = series[1:] - series[:-1]
+        return deltas
+
     def prepare_sequences(
         self, 
         data
@@ -411,40 +412,49 @@ class MACDForecasterTrainer:
         """
         all_X, all_y = [], []
         
-        # 1. Handle dataset-wide stats for 'global' mode
-        if self.normalization_type == "global":
-            if isinstance(data, list):
-                combined = np.concatenate(data)
-                self.mean = np.mean(combined)
-                self.std = np.std(combined) + 1e-8
-            else:
-                self.mean = np.mean(data)
-                self.std = np.std(data) + 1e-8
-        
-        # 2. Process data symbols
+        # Process each symbol into (raw, delta) pairs if needed
+        processed_symbols = []
         input_data = data if isinstance(data, list) else [data]
         
         for symbol_series in input_data:
-            if len(symbol_series) < self.seq_length + self.forecast_horizon:
+            if self.include_delta:
+                deltas = self._calculate_deltas(symbol_series)
+                # Stack to shape (points, 2)
+                stacked = np.stack([symbol_series, deltas], axis=1)
+                processed_symbols.append(stacked)
+            else:
+                # Shape (points, 1)
+                processed_symbols.append(symbol_series.reshape(-1, 1))
+        
+        # 1. Handle dataset-wide stats for 'global' mode
+        if self.normalization_type == "global":
+            combined = np.concatenate(processed_symbols, axis=0)
+            self.mean = np.mean(combined, axis=0)
+            self.std = np.std(combined, axis=0) + 1e-8
+        
+        # 2. Process processed symbols into windows
+        for symbol_data in processed_symbols:
+            if len(symbol_data) < self.seq_length + self.forecast_horizon:
                 continue
                 
-            for i in range(len(symbol_series) - self.seq_length - self.forecast_horizon + 1):
-                X_raw = symbol_series[i:i + self.seq_length]
-                y_raw = symbol_series[i + self.seq_length:i + self.seq_length + self.forecast_horizon]
+            for i in range(len(symbol_data) - self.seq_length - self.forecast_horizon + 1):
+                X_raw = symbol_data[i:i + self.seq_length]
+                y_raw = symbol_data[i + self.seq_length:i + self.seq_length + self.forecast_horizon]
                 
                 if self.normalization_type == "internal":
-                    # Per-sequence normalization
-                    m = np.mean(X_raw)
-                    s = np.std(X_raw) + 1e-8
+                    # Per-sequence normalization (per feature)
+                    m = np.mean(X_raw, axis=0)
+                    s = np.std(X_raw, axis=0) + 1e-8
                     X_norm = (X_raw - m) / s
-                    y_norm = (y_raw - m) / s  # Use X's stats to normalize y
+                    y_norm = (y_raw - m) / s
                 else:
                     # Dataset-wide normalization
                     X_norm = (X_raw - self.mean) / self.std
                     y_norm = (y_raw - self.mean) / self.std
                     
                 all_X.append(X_norm)
-                all_y.append(y_norm)
+                # Flatten target if multi-variate: (horizon, input_size) -> (horizon * input_size)
+                all_y.append(y_norm.flatten())
         
         # Shuffle
         combined = list(zip(all_X, all_y))
@@ -452,7 +462,7 @@ class MACDForecasterTrainer:
         all_X, all_y = zip(*combined)
         
         # Convert to tensors
-        X = torch.tensor(np.array(all_X), dtype=torch.float32).unsqueeze(-1)
+        X = torch.tensor(np.array(all_X), dtype=torch.float32)
         y = torch.tensor(np.array(all_y), dtype=torch.float32)
         
         return X, y
@@ -550,48 +560,42 @@ class MACDForecasterTrainer:
         with torch.no_grad():
             predictions = self.model(X_test)
         
-        # Compute metrics
-        mse = torch.mean((predictions - y_test) ** 2).item()
-        mae = torch.mean(torch.abs(predictions - y_test)).item()
-        rmse = np.sqrt(mse)
-        
-        # Denormalize for interpretable metrics
-        # For internal normalization, we don't have a single mean/std to denormalize the entire test set at once
-        # but we can do it row-by-row if needed for MAE reporting.
-        pred_np = predictions.cpu().numpy()
-        actual_np = y_test.cpu().numpy()
+        # Reshape to (samples, horizon, features)
+        pred_reshaped = predictions.cpu().numpy().reshape(-1, self.forecast_horizon, self.input_size)
+        actual_reshaped = y_test.cpu().numpy().reshape(-1, self.forecast_horizon, self.input_size)
         X_test_np = X_test.cpu().numpy()
         
-        mae_denorm_sum = 0.0
-        rmse_denorm_sum = 0.0
-        directional_correct = 0
-        
-        for i in range(len(pred_np)):
-            if self.normalization_type == "internal":
-                # Reverse calculate stats from X_test_np (which is normalized)
-                # Wait, prepare_sequences didn't store the raw stats.
-                # Let's just report normalized metrics or rethink evaluation.
-                # Actually, DA is scale-invariant so it works fine.
-                m, s = 0.0, 1.0 # Cannot easily denormalize here without storing stats
-                p = pred_np[i]
-                a = actual_np[i]
-                last_val = X_test_np[i, -1, 0]
-            else:
-                m, s = self.mean, self.std
-                p = pred_np[i] * s + m
-                a = actual_np[i] * s + m
-                last_val = X_test_np[i, -1, 0] * s + m
+        # Compute metrics for each feature
+        feature_metrics = []
+        for f in range(self.input_size):
+            p_f = pred_reshaped[:, :, f]
+            a_f = actual_reshaped[:, :, f]
             
-            mae_denorm_sum += np.mean(np.abs(p - a))
-            rmse_denorm_sum += np.sqrt(np.mean((p - a) ** 2))
-            if (p[0] > last_val) == (a[0] > last_val):
-                directional_correct += 1
+            mse = np.mean((p_f - a_f) ** 2)
+            mae = np.mean(np.abs(p_f - a_f))
+            rmse = np.sqrt(mse)
+            
+            # Directional Accuracy (relative to last input of that feature)
+            directional_correct = 0
+            for i in range(len(p_f)):
+                last_val = X_test_np[i, -1, f]
+                if (p_f[i, 0] > last_val) == (a_f[i, 0] > last_val):
+                    directional_correct += 1
+            
+            da = directional_correct / len(p_f)
+            
+            feature_metrics.append({
+                "mae": mae,
+                "rmse": rmse,
+                "directional_accuracy": da
+            })
                 
         metrics = {
-            "mae": mae_denorm_sum / len(pred_np),
-            "rmse": rmse_denorm_sum / len(pred_np),
-            "directional_accuracy": directional_correct / len(pred_np),
-            "test_samples": len(X_test)
+            "mae": feature_metrics[0]["mae"], # MACD
+            "rmse": feature_metrics[0]["rmse"],
+            "directional_accuracy": feature_metrics[0]["directional_accuracy"],
+            "test_samples": len(pred_reshaped),
+            "features": feature_metrics
         }
         
         if verbose:
@@ -599,9 +603,14 @@ class MACDForecasterTrainer:
             print("Test Evaluation Results")
             print("=" * 50)
             print(f"Test samples: {metrics['test_samples']}")
-            print(f"MAE: {metrics['mae']:.6f}")
-            print(f"RMSE: {metrics['rmse']:.6f}")
-            print(f"Directional Accuracy: {metrics['directional_accuracy']:.2%}")
+            
+            labels = ["MACD", "Delta"] if self.input_size > 1 else ["Signal"]
+            for i, label in enumerate(labels):
+                m = feature_metrics[i]
+                print(f"\n{label} Metrics:")
+                print(f"  MAE (Normalized): {m['mae']:.6f}")
+                print(f"  RMSE (Normalized): {m['rmse']:.6f}")
+                print(f"  Directional Acc: {m['directional_accuracy']:.2%}")
             print("=" * 50)
         
         return metrics
@@ -609,32 +618,41 @@ class MACDForecasterTrainer:
     def predict(self, sequence: np.ndarray) -> np.ndarray:
         """
         Make a prediction given an input sequence.
+        Input sequence shape: (seq_length,)
+        Returns: forecasted values (forecast_horizon, input_size)
         """
         self.model.eval()
         
+        # Prepare features
+        if self.include_delta:
+            deltas = self._calculate_deltas(sequence)
+            input_features = np.stack([sequence, deltas], axis=1)
+        else:
+            input_features = sequence.reshape(-1, 1)
+            
         if self.normalization_type == "internal":
-            m = np.mean(sequence)
-            s = np.std(sequence) + 1e-8
+            m = np.mean(input_features, axis=0)
+            s = np.std(input_features, axis=0) + 1e-8
         else:
             m = self.mean
             s = self.std
             
         # Normalize
-        normalized = (sequence - m) / s
+        normalized = (input_features - m) / s
         
         # Prepare input
-        x = torch.tensor(normalized, dtype=torch.float32).unsqueeze(0).unsqueeze(-1)
+        x = torch.tensor(normalized, dtype=torch.float32).unsqueeze(0) # (1, seq_len, features)
         x = x.to(self.device)
         
         # Predict
         with torch.no_grad():
             pred = self.model(x)
         
-        # Denormalize
-        pred_np = pred.cpu().numpy()[0]
-        forecast = pred_np * s + m
+        # Denormalize and reshape
+        pred_np = pred.cpu().numpy()[0].reshape(self.forecast_horizon, self.input_size)
+        forecast_all = pred_np * s + m
         
-        return forecast
+        return forecast_all
     
     def save(self, path: str):
         """Save model and normalization parameters."""
@@ -647,20 +665,36 @@ class MACDForecasterTrainer:
             "forecast_horizon": self.forecast_horizon,
             "hidden_size": self.model.hidden_size,
             "num_layers": self.model.num_layers,
-            "architecture": self.architecture
+            "architecture": self.architecture,
+            "include_delta": self.include_delta,
+            "input_size": self.input_size
         }, path)
         print(f"Model saved to {path}")
     
     def load(self, path: str):
         """Load model and normalization parameters."""
         checkpoint = torch.load(path, map_location=self.device)
+        
+        self.include_delta = checkpoint.get("include_delta", False)
+        self.input_size = checkpoint.get("input_size", 1)
+        self.seq_length = checkpoint["seq_length"]
+        self.forecast_horizon = checkpoint["forecast_horizon"]
+        self.normalization_type = checkpoint.get("normalization_type", "global")
+        
+        # Re-initialize model with correct input size
+        self.model = create_model(
+            architecture=checkpoint.get("architecture", self.architecture),
+            input_size=self.input_size,
+            hidden_size=checkpoint.get("hidden_size", 64),
+            num_layers=checkpoint.get("num_layers", 2),
+            forecast_horizon=self.forecast_horizon
+        ).to(self.device)
+        
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.mean = checkpoint.get("mean", 0.0)
         self.std = checkpoint.get("std", 1.0)
-        self.normalization_type = checkpoint.get("normalization_type", "global")
-        self.seq_length = checkpoint["seq_length"]
-        self.forecast_horizon = checkpoint["forecast_horizon"]
-        print(f"Model loaded from {path} (Norm: {self.normalization_type})")
+        
+        print(f"Model loaded from {path} (Features: {self.input_size}, Norm: {self.normalization_type})")
     
     def export_to_coreml(self, output_path: str) -> str:
         """
@@ -670,26 +704,27 @@ class MACDForecasterTrainer:
         
         self.model.eval()
         self.model.to("cpu")
-        example_input = torch.randn(1, self.seq_length, 1)
+        example_input = torch.randn(1, self.seq_length, self.input_size)
         traced_model = torch.jit.trace(self.model, example_input)
         
         mlmodel = ct.convert(
             traced_model,
-            inputs=[ct.TensorType(shape=(1, self.seq_length, 1), name="input_sequence")],
+            inputs=[ct.TensorType(shape=(1, self.seq_length, self.input_size), name="input_sequence")],
             outputs=[ct.TensorType(name="forecast")],
             compute_precision=ct.precision.FLOAT16,
             compute_units=ct.ComputeUnit.ALL
         )
         
         mlmodel.author = "Tick Scanner"
-        mlmodel.short_description = f"{self.architecture} MACD forecaster (Norm: {self.normalization_type})"
-        mlmodel.version = "1.1"
+        mlmodel.short_description = f"{self.architecture} MACD forecaster (Features: {self.input_size}, Norm: {self.normalization_type})"
+        mlmodel.version = "1.2"
         
         mlmodel.user_defined_metadata["normalization_type"] = self.normalization_type
-        mlmodel.user_defined_metadata["mean"] = str(self.mean)
-        mlmodel.user_defined_metadata["std"] = str(self.std)
+        mlmodel.user_defined_metadata["mean"] = str(self.mean.tolist())
+        mlmodel.user_defined_metadata["std"] = str(self.std.tolist())
         mlmodel.user_defined_metadata["seq_length"] = str(self.seq_length)
         mlmodel.user_defined_metadata["forecast_horizon"] = str(self.forecast_horizon)
+        mlmodel.user_defined_metadata["include_delta"] = str(self.include_delta)
         
         mlmodel.save(output_path)
         print(f"Core ML model saved to {output_path}")
@@ -700,13 +735,6 @@ class MACDForecasterTrainer:
 def get_model_path(signal_type: str = "macd", architecture: str = "stacked_lstm") -> str:
     """
     Get the path to the Core ML model.
-    
-    Args:
-        signal_type: Type of signal model - "macd" or "signal_line"
-        architecture: Model architecture name
-        
-    Returns:
-        Path to the .mlpackage file
     """
     base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
     return os.path.join(base_dir, "models", f"{signal_type}_{architecture}_forecaster.mlpackage")
@@ -715,13 +743,6 @@ def get_model_path(signal_type: str = "macd", architecture: str = "stacked_lstm"
 def get_pytorch_model_path(signal_type: str = "macd", architecture: str = "stacked_lstm") -> str:
     """
     Get the path to the PyTorch model checkpoint.
-    
-    Args:
-        signal_type: Type of signal model - "macd" or "signal_line"
-        architecture: Model architecture name
-        
-    Returns:
-        Path to the .pt file
     """
     base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
     return os.path.join(base_dir, "models", f"{signal_type}_{architecture}_forecaster.pt")
