@@ -133,13 +133,17 @@ class BidirectionalGRUForecaster(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # GRU forward (bidirectional)
         gru_out, _ = self.gru(x)
-        
-        # Take the last timestep's output (contains both directions)
-        last_output = gru_out[:, -1, :]
-        
+
+        # Correctly combine both directions:
+        # - forward direction at last position  → has processed all inputs left-to-right
+        # - backward direction at first position → has processed all inputs right-to-left
+        forward_last   = gru_out[:, -1, :self.hidden_size]
+        backward_first = gru_out[:, 0, self.hidden_size:]
+        last_output = torch.cat([forward_last, backward_first], dim=1)
+
         # Project to forecast horizon
         forecast = self.fc(last_output)
-        
+
         return forecast
 
 
@@ -529,7 +533,7 @@ class MACDForecasterTrainer:
             
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                best_state = self.model.state_dict().copy()
+                best_state = {k: v.clone() for k, v in self.model.state_dict().items()}
             
             if verbose and (epoch + 1) % 10 == 0:
                 print(f"Epoch {epoch + 1}/{epochs} - Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}")
@@ -548,7 +552,9 @@ class MACDForecasterTrainer:
         """
         Evaluate the model on held-out test data.
         """
+        saved_mean, saved_std = self.mean.copy(), self.std.copy()
         X_test, y_test = self.prepare_sequences(test_data)
+        self.mean, self.std = saved_mean, saved_std
         
         if len(X_test) == 0:
             return {"error": "Not enough test data"}
@@ -615,17 +621,21 @@ class MACDForecasterTrainer:
         
         return metrics
     
-    def predict(self, sequence: np.ndarray) -> np.ndarray:
+    def predict(self, sequence: np.ndarray, prev_value: float = None) -> np.ndarray:
         """
         Make a prediction given an input sequence.
         Input sequence shape: (seq_length,)
+        prev_value: the data point immediately before sequence[0], used to compute
+                    the correct delta for position 0 (matches training behaviour).
         Returns: forecasted values (forecast_horizon, input_size)
         """
         self.model.eval()
-        
+
         # Prepare features
         if self.include_delta:
             deltas = self._calculate_deltas(sequence)
+            if prev_value is not None:
+                deltas[0] = sequence[0] - prev_value
             input_features = np.stack([sequence, deltas], axis=1)
         else:
             input_features = sequence.reshape(-1, 1)

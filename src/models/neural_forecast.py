@@ -127,23 +127,27 @@ class CoreMLForecaster:
         deltas[1:] = series[1:] - series[:-1]
         return deltas
 
-    def predict(self, sequence: np.ndarray) -> np.ndarray:
+    def predict(self, sequence: np.ndarray, prev_value: float = None) -> np.ndarray:
         """
         Make a prediction using the Core ML model (runs on NPU).
+        prev_value: the data point immediately before sequence[0], used to compute
+                    the correct delta for position 0 (matches training behaviour).
         """
         if not self.is_available:
             raise RuntimeError("Core ML model not loaded")
-        
+
         # Ensure correct length
         if len(sequence) < self.seq_length:
             padding = np.full(self.seq_length - len(sequence), sequence[0])
             sequence = np.concatenate([padding, sequence])
         elif len(sequence) > self.seq_length:
             sequence = sequence[-self.seq_length:]
-        
+
         # Prepare input features
         if self.include_delta:
             deltas = self._calculate_deltas(sequence)
+            if prev_value is not None:
+                deltas[0] = sequence[0] - prev_value
             input_features = np.stack([sequence, deltas], axis=1)
         else:
             input_features = sequence.reshape(-1, 1)
@@ -257,8 +261,10 @@ class NeuralForecastService:
             
             # Run neural prediction on NPU
             forecast = self.forecaster.predict(series)
-            forecasted_values = forecast.tolist()
-            
+            # forecast shape is (horizon, input_size); extract MACD column (index 0)
+            macd_forecast = forecast[:, 0] if forecast.ndim > 1 else forecast.flatten()
+            forecasted_values = macd_forecast.tolist()
+
             # Determine if signal will become positive
             last_value = float(series[-1])
             will_become_positive = (
