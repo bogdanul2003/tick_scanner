@@ -168,6 +168,13 @@ def main():
         help="Fraction of data to hold out for testing (default: 0.15)"
     )
     parser.add_argument(
+        "--split-strategy",
+        type=str,
+        choices=["symbol", "time"],
+        default="symbol",
+        help="How to split data into train/test sets: 'symbol' (separate stocks) or 'time' (past vs future for all stocks) (default: symbol)"
+    )
+    parser.add_argument(
         "--skip-coreml",
         action="store_true",
         help="Skip Core ML conversion (useful for testing on non-Mac)"
@@ -236,19 +243,41 @@ def main():
             print("Error: Not enough data for training")
             sys.exit(1)
     
-    # Split symbols into train and test sets (keeps symbol boundaries intact)
-    test_size = int(len(per_symbol_data) * args.test_split)
-    train_data = per_symbol_data[:-test_size] if test_size > 0 else per_symbol_data
-    test_data = per_symbol_data[-test_size:] if test_size > 0 else None
+    # Split data based on strategy
+    if args.split_strategy == "time":
+        train_data = []
+        test_data = []
+        for i, symbol_array in enumerate(per_symbol_data):
+            # Each symbol is split temporally: first 85% for train, last 15% for test
+            split_idx = int(len(symbol_array) * (1 - args.test_split))
+            
+            # Ensure each part is long enough for model sequence + forecast requirements
+            if split_idx >= args.seq_length + args.forecast_horizon and \
+               (len(symbol_array) - split_idx) >= args.seq_length + args.forecast_horizon:
+                train_data.append(symbol_array[:split_idx])
+                test_data.append(symbol_array[split_idx:])
+            else:
+                # If symbol doesn't have enough data to split, add it all to training
+                train_data.append(symbol_array)
+    else:
+        # Default 'symbol' strategy: split by whole symbols (keeps symbol boundaries intact)
+        test_size = int(len(per_symbol_data) * args.test_split)
+        train_data = per_symbol_data[:-test_size] if test_size > 0 else per_symbol_data
+        test_data = per_symbol_data[-test_size:] if test_size > 0 else None
     
     train_points = sum(len(data) for data in train_data)
     test_points = sum(len(data) for data in test_data) if test_data else 0
     
-    print(f"\nData split (by symbols to maintain boundaries):")
-    print(f"  Total: {len(per_symbol_data)} symbols, {total_points} data points")
-    print(f"  Train: {len(train_data)} symbols, {train_points} data points")
-    if test_data is not None:
-        print(f"  Test:  {len(test_data)} symbols, {test_points} data points")
+    print(f"\nData split (strategy: {args.split_strategy}):")
+    if args.split_strategy == "time":
+        print(f"  Total: {len(per_symbol_data)} symbols, {total_points} data points")
+        print(f"  Train: {len(train_data)} symbols (part 1), {train_points} data points")
+        print(f"  Test:  {len(test_data)} symbols (part 2), {test_points} data points")
+    else:
+        print(f"  Total: {len(per_symbol_data)} symbols, {total_points} data points")
+        print(f"  Train: {len(train_data)} symbols, {train_points} data points")
+        if test_data is not None:
+            print(f"  Test:  {len(test_data)} symbols, {test_points} data points")
     
     # Check for PyTorch
     try:
@@ -294,6 +323,7 @@ def main():
     print(f"  Architecture:       {args.architecture}")
     print(f"  Signal Type:        {signal_label}")
     print(f"  Normalization:      {args.normalization_type}")
+    print(f"  Split Strategy:     {args.split_strategy}")
     print(f"  Sequence Length:    {args.seq_length}")
     print(f"  Forecast Horizon:   {args.forecast_horizon}")
     print(f"  Hidden Size:        {args.hidden_size}")

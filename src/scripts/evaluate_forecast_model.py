@@ -376,6 +376,7 @@ def run_evaluation(
     forecast_horizon: int = None,
     inference_forcast_horizon: int = None,
     compare_arima: bool = False,
+    arima_only: bool = False,
     verbose: bool = True,
     cached_model: Any = None,
     breakdown_by_day: bool = False,
@@ -393,6 +394,7 @@ def run_evaluation(
         forecast_horizon: Number of days to forecast (if None, uses model's default)
         inference_forcast_horizon: Number of forecasted days to use for evaluation (if None, uses forecast_horizon)
         compare_arima: If True, also run ARIMA on each sample and compare
+        arima_only: If True, only run ARIMA forecast (no neural model required)
         verbose: If True, print detailed output
         cached_model: Optional tuple of (engine_type, model) to reuse
         breakdown_by_day: If True, show metrics for each forecast day
@@ -404,12 +406,14 @@ def run_evaluation(
     from macd_utils import get_latest_market_date
 
     # Load model (or use cached one)
-    if cached_model is not None:
+    if arima_only:
+        engine_type, model, normalization_type = "statsmodels", None, "N/A"
+    elif cached_model is not None:
         engine_type, model, normalization_type = cached_model
     else:
         engine_type, model, normalization_type = load_model(architecture, signal_type)
 
-    if model is None:
+    if not arima_only and model is None:
         return {
             "error": f"No model found for {signal_type}_{architecture}",
             "searched_paths": {
@@ -419,9 +423,14 @@ def run_evaluation(
         }
 
     # Get model parameters
-    seq_length = model.seq_length
-    # Use the passed forecast_horizon parameter if specified, otherwise use model's default
-    model_forecast_horizon = forecast_horizon if forecast_horizon is not None else model.forecast_horizon
+    if arima_only:
+        seq_length = input_days
+        model_forecast_horizon = forecast_horizon if forecast_horizon is not None else 5
+    else:
+        seq_length = model.seq_length
+        # Use the passed forecast_horizon parameter if specified, otherwise use model's default
+        model_forecast_horizon = forecast_horizon if forecast_horizon is not None else model.forecast_horizon
+    
     # Use the passed inference_forcast_horizon if specified, otherwise use forecast_horizon
     eval_forcast_horizon = inference_forcast_horizon if inference_forcast_horizon is not None else model_forecast_horizon
     
@@ -447,32 +456,38 @@ def run_evaluation(
         }
 
     # Run predictions
-    neural_predictions = []
+    primary_predictions = []
     arima_predictions = []
     actuals = []
     input_end_dates = []
     input_baselines = []  # Store the last input value for DA calculation
 
     signal_label = "MACD" if signal_type == "macd" else "Signal Line"
-    mode_label = "COMPARISON: Neural vs ARIMA" if compare_arima else f"Neural ({engine_type})"
+    
+    if arima_only:
+        mode_label = "ARIMA Evaluation"
+    elif compare_arima:
+        mode_label = "COMPARISON: Neural vs ARIMA"
+    else:
+        mode_label = f"Neural ({engine_type})"
 
     if verbose:
         print(f"\n{'='*90}")
         print(f"Running {num_samples} predictions on {symbol} {signal_label}")
         print(f"Mode: {mode_label}")
-        print(f"Neural Model: {architecture} ({engine_type})")
-        print(f"Normalization: {normalization_type}")
+        if not arima_only:
+            print(f"Neural Model: {architecture} ({engine_type})")
+            print(f"Normalization: {normalization_type}")
         print(f"Input sequence: {seq_length} days, Forecast: {model_forecast_horizon} days", end="")
         if eval_forcast_horizon < model_forecast_horizon:
             print(f" (evaluating on {eval_forcast_horizon} days)")
         else:
             print()
-        if compare_arima:
+        if compare_arima or arima_only:
             print(f"ARIMA parallel execution: 4 cores")
         print(f"{'='*90}\n")
 
-    # Prepare data for ARIMA forecasts (if comparing) to enable parallel execution
-    arima_tasks = {}  # Maps task index to (i, input_end_date) for later reassembly
+    # Prepare data for ARIMA forecasts (if comparing or arima_only) to enable parallel execution
     sample_data = []  # Collect all sample data first
     
     for i in range(num_samples):
@@ -495,22 +510,26 @@ def run_evaluation(
 
         sample_data.append((i, input_sequence, input_end_date, actual_values, actual_dates))
     
-    # Pre-compute neural predictions and collect ARIMA tasks
+    # Pre-compute neural predictions (if not arima_only)
     neural_all = []
     for i, input_sequence, input_end_date, actual_values, actual_dates in sample_data:
-        neural_pred = model.predict(input_sequence).tolist()
+        if not arima_only:
+            neural_pred = model.predict(input_sequence).tolist()
+        else:
+            neural_pred = None
         neural_all.append((i, input_sequence, input_end_date, actual_values, actual_dates, neural_pred))
     
-    if compare_arima and not verbose:
+    if (compare_arima or arima_only) and not verbose:
         # Silent - let watchlist see final DONE message
         pass
-    elif verbose and compare_arima:
-        print(f"  ✓ Neural predictions complete ({len(neural_all)} samples)")
+    elif verbose and (compare_arima or arima_only):
+        if not arima_only:
+            print(f"  ✓ Neural predictions complete ({len(neural_all)} samples)")
         print(f"  → Starting ARIMA forecasts in parallel (4 cores)...\n")
     
     # Collect ARIMA forecast parameters for parallel execution
     arima_forecast_params = []
-    if compare_arima:
+    if compare_arima or arima_only:
         for i, input_sequence, input_end_date, actual_values, actual_dates, neural_pred in neural_all:
             arima_forecast_params.append((
                 i,
@@ -522,7 +541,7 @@ def run_evaluation(
     
     # Execute ARIMA forecasts in parallel (4 cores)
     arima_results = {}  # Maps i to arima_pred
-    if compare_arima and arima_forecast_params:
+    if (compare_arima or arima_only) and arima_forecast_params:
         with ProcessPoolExecutor(max_workers=4) as executor:
             futures = {}
             for task_idx, (i, sym, sig_type, end_date_str, fh) in enumerate(arima_forecast_params):
@@ -548,70 +567,81 @@ def run_evaluation(
     for i, input_sequence, input_end_date, actual_values, actual_dates, neural_pred in neural_all:
 
         # Get ARIMA result for this sample (from parallel execution)
-        arima_pred = arima_results.get(i) if compare_arima else None
+        arima_pred = arima_results.get(i) if (compare_arima or arima_only) else None
         
+        if arima_only:
+            primary_pred = arima_pred
+        else:
+            primary_pred = neural_pred
+            
         # Slice predictions and actuals to evaluation forecast horizon
-        neural_pred = neural_pred[:eval_forcast_horizon]
+        if primary_pred is not None:
+            primary_pred = primary_pred[:eval_forcast_horizon]
         actual_values = actual_values[:eval_forcast_horizon]
         actual_dates = actual_dates[:eval_forcast_horizon]
-        if arima_pred is not None:
+        if compare_arima and arima_pred is not None:
             arima_pred = arima_pred[:eval_forcast_horizon]
         
         # Ensure same length
-        min_len = min(len(neural_pred), len(actual_values))
-        neural_pred = neural_pred[:min_len]
-        actual_values = actual_values[:min_len]
-        if arima_pred is not None:
-            arima_pred = arima_pred[:min_len]
-
-        neural_predictions.append(neural_pred)
-        if arima_pred is not None:
-            arima_predictions.append(arima_pred)
-        actuals.append(actual_values)
-        input_end_dates.append(input_end_date)
-        input_baselines.append(float(input_sequence[-1]))  # Store baseline for DA calculation
-
-        # Print sample
-        sample_num = len(neural_predictions)  # Current sample count
-        if verbose:
-            print(f"Sample {sample_num}: Input ends {input_end_date.strftime('%Y-%m-%d')}")
-            print(f"  Last input value: {input_sequence[-1]:.4f}")
-
+        if primary_pred is not None:
+            min_len = min(len(primary_pred), len(actual_values))
+            primary_pred = primary_pred[:min_len]
+            actual_values = actual_values[:min_len]
             if compare_arima and arima_pred is not None:
-                # Side-by-side output
-                header = f"  {'Day':<22} {'Actual':>10} {'Neural':>10} {'Err':>9} {'ARIMA':>10} {'Err':>9} {'Winner':>8}"
-                print(header)
-                print(f"  {'-'*len(header.strip())}")
+                arima_pred = arima_pred[:min_len]
 
-                for j, date in enumerate(actual_dates[:min_len]):
-                    act = actual_values[j]
-                    n_pred = neural_pred[j]
-                    a_pred = arima_pred[j]
-                    n_err = abs(n_pred - act)
-                    a_err = abs(a_pred - act) if a_pred is not None else float('inf')
+            primary_predictions.append(primary_pred)
+            if compare_arima and arima_pred is not None:
+                arima_predictions.append(arima_pred)
+            actuals.append(actual_values)
+            input_end_dates.append(input_end_date)
+            input_baselines.append(float(input_sequence[-1]))  # Store baseline for DA calculation
 
-                    if a_pred is not None:
-                        winner = "Neural" if n_err < a_err else ("ARIMA" if a_err < n_err else "Tie")
-                    else:
-                        winner = "Neural"
+            # Print sample
+            sample_num = len(primary_predictions)  # Current sample count
+            if verbose:
+                print(f"Sample {sample_num}: Input ends {input_end_date.strftime('%Y-%m-%d')}")
+                print(f"  Last input value: {input_sequence[-1]:.4f}")
 
-                    a_pred_str = f"{a_pred:10.4f}" if a_pred is not None else "     N/A  "
-                    a_err_str = f"{a_err:+9.4f}" if a_pred is not None else "     N/A "
+                if compare_arima and arima_pred is not None:
+                    # Side-by-side output
+                    header = f"  {'Day':<22} {'Actual':>10} {'Neural':>10} {'Err':>9} {'ARIMA':>10} {'Err':>9} {'Winner':>8}"
+                    print(header)
+                    print(f"  {'-'*len(header.strip())}")
 
-                    print(f"  Day {j+1} ({date.strftime('%Y-%m-%d')}) {act:10.4f} {n_pred:10.4f} {n_err:+9.4f} {a_pred_str} {a_err_str} {winner:>8}")
-            else:
-                # Original neural-only output
-                for j, (pred, act, date) in enumerate(zip(neural_pred, actual_values, actual_dates)):
-                    error = pred - act
-                    pct_error = abs(error / act) * 100 if act != 0 else 0
-                    direction_match = "✓" if (pred > input_sequence[-1]) == (act > input_sequence[-1]) else "✗"
-                    print(f"  Day {j+1} ({date.strftime('%Y-%m-%d')}): Pred={pred:8.4f}, Actual={act:8.4f}, "
-                          f"Error={error:+.4f} ({pct_error:.1f}%) {direction_match}")
-            print()
+                    for j, date in enumerate(actual_dates[:min_len]):
+                        act = actual_values[j]
+                        n_pred = primary_pred[j]
+                        a_pred = arima_pred[j]
+                        n_err = abs(n_pred - act)
+                        a_err = abs(a_pred - act) if a_pred is not None else float('inf')
 
-    # Calculate metrics for neural (using evaluation forecast horizon)
-    neural_metrics = _compute_metrics(
-        all_values, neural_predictions, actuals,
+                        if a_pred is not None:
+                            winner = "Neural" if n_err < a_err else ("ARIMA" if a_err < n_err else "Tie")
+                        else:
+                            winner = "Neural"
+
+                        a_pred_str = f"{a_pred:10.4f}" if a_pred is not None else "     N/A  "
+                        a_err_str = f"{a_err:+9.4f}" if a_pred is not None else "     N/A "
+
+                        print(f"  Day {j+1} ({date.strftime('%Y-%m-%d')}) {act:10.4f} {n_pred:10.4f} {n_err:+9.4f} {a_pred_str} {a_err_str} {winner:>8}")
+                else:
+                    # Original single-model output
+                    pred_label = "ARIMA" if arima_only else "Pred"
+                    for j, (pred, act, date) in enumerate(zip(primary_pred, actual_values, actual_dates)):
+                        error = pred - act
+                        pct_error = abs(error / act) * 100 if act != 0 else 0
+                        direction_match = "✓" if (pred > input_sequence[-1]) == (act > input_sequence[-1]) else "✗"
+                        print(f"  Day {j+1} ({date.strftime('%Y-%m-%d')}): {pred_label}={pred:8.4f}, Actual={act:8.4f}, "
+                              f"Error={error:+.4f} ({pct_error:.1f}%) {direction_match}")
+                print()
+
+    if not primary_predictions:
+        return {"error": "No predictions were successfully generated."}
+
+    # Calculate metrics (using evaluation forecast horizon)
+    primary_metrics = _compute_metrics(
+        all_values, primary_predictions, actuals,
         num_samples, eval_forcast_horizon, seq_length,
         full_model_horizon=model_forecast_horizon
     )
@@ -620,7 +650,7 @@ def run_evaluation(
     per_day_metrics = None
     if breakdown_by_day:
         per_day_metrics = _compute_per_day_metrics(
-            all_values, neural_predictions, actuals,
+            all_values, primary_predictions, actuals,
             num_samples, eval_forcast_horizon, seq_length,
             full_model_horizon=model_forecast_horizon
         )
@@ -676,7 +706,7 @@ def run_evaluation(
             arima_wins = 0
 
             for label, key, higher_is_better in comparisons:
-                n_val = neural_metrics[key]
+                n_val = primary_metrics[key]
                 a_val = arima_metrics[key]
 
                 if higher_is_better:
@@ -709,30 +739,33 @@ def run_evaluation(
             print("EVALUATION SUMMARY")
             print("=" * 90)
             print(f"Symbol:              {symbol}")
-            print(f"Architecture:        {architecture}")
+            if not arima_only:
+                print(f"Architecture:        {architecture}")
+                print(f"Normalization:       {normalization_type}")
+                print(f"Inference Engine:    {engine_type.upper()}")
+            else:
+                print(f"Model:               ARIMA (statsmodels)")
             print(f"Signal Type:         {signal_label}")
-            print(f"Normalization:       {normalization_type}")
             print(f"Forecast Horizon:    {model_forecast_horizon} days", end="")
             if eval_forcast_horizon < model_forecast_horizon:
                 print(f" (evaluating on {eval_forcast_horizon} days)")
             else:
                 print()
             print(f"Input Days:          {seq_length} days")
-            print(f"Inference Engine:    {engine_type.upper()}")
             print(f"Samples Evaluated:   {num_samples}")
-            print(f"Total Predictions:   {neural_metrics['total_predictions']}")
+            print(f"Total Predictions:   {primary_metrics['total_predictions']}")
             print()
-            print(f"MAE  (Mean Absolute Error):    {neural_metrics['mae']:.6f}")
-            print(f"RMSE (Root Mean Square Error): {neural_metrics['rmse']:.6f}")
-            print(f"MAPE (Mean Absolute % Error):  {neural_metrics['mape']:.2f}%")
-            print(f"WAPE (Weighted Abs % Error):   {neural_metrics['wape']:.2f}%")
-            print(f"Directional Accuracy:          {neural_metrics['directional_accuracy']:.2%}")
+            print(f"MAE  (Mean Absolute Error):    {primary_metrics['mae']:.6f}")
+            print(f"RMSE (Root Mean Square Error): {primary_metrics['rmse']:.6f}")
+            print(f"MAPE (Mean Absolute % Error):  {primary_metrics['mape']:.2f}%")
+            print(f"WAPE (Weighted Abs % Error):   {primary_metrics['wape']:.2f}%")
+            print(f"Directional Accuracy:          {primary_metrics['directional_accuracy']:.2%}")
         
         # Lag Analysis (Shift Evaluation)
         if lag_test:
-            lag_metrics = _compute_lag_metrics(neural_predictions, actuals, input_baselines)
-            mae_ratio = lag_metrics["mae"] / neural_metrics["mae"]
-            wape_ratio = lag_metrics["wape"] / neural_metrics["wape"]
+            lag_metrics = _compute_lag_metrics(primary_predictions, actuals, input_baselines)
+            mae_ratio = lag_metrics["mae"] / primary_metrics["mae"]
+            wape_ratio = lag_metrics["wape"] / primary_metrics["wape"]
             
             print()
             print("LAG ANALYSIS (SHIFT EVALUATION)")
@@ -771,15 +804,16 @@ def run_evaluation(
         "engine": engine_type,
         "normalization_type": normalization_type,
         "samples": num_samples,
-        "total_predictions": neural_metrics["total_predictions"],
-        "neural_metrics": neural_metrics,
-        "predictions": neural_predictions,
+        "total_predictions": primary_metrics["total_predictions"],
+        "neural_metrics": primary_metrics, # Keep key for compatibility
+        "primary_metrics": primary_metrics,
+        "predictions": primary_predictions,
         "actuals": actuals,
         "input_baselines": input_baselines
     }
 
     if lag_test:
-        result["lag_metrics"] = _compute_lag_metrics(neural_predictions, actuals, input_baselines)
+        result["lag_metrics"] = _compute_lag_metrics(primary_predictions, actuals, input_baselines)
 
     if per_day_metrics:
         result["per_day_metrics"] = per_day_metrics
@@ -800,6 +834,7 @@ def run_watchlist_evaluation(
     forecast_horizon: int = None,
     inference_forcast_horizon: int = None,
     compare_arima: bool = False,
+    arima_only: bool = False,
     exclude_list: List[str] = None,
     breakdown_by_day: bool = False,
     lag_test: bool = False,
@@ -826,14 +861,21 @@ def run_watchlist_evaluation(
     signal_label = "MACD" if signal_type == "macd" else "Signal Line"
     
     # Load model once for reuse and to get metadata
-    cached_model = load_model(architecture, signal_type)
-    _, _, normalization_type = cached_model
+    if not arima_only:
+        cached_model = load_model(architecture, signal_type)
+        _, _, normalization_type = cached_model
+    else:
+        cached_model = None
+        normalization_type = "N/A"
     
     print(f"\n{'='*90}")
     print(f"EVALUATING WATCHLIST: {watchlist_name} ({len(symbols)} symbols)")
     print(f"Signal Type:  {signal_label}")
-    print(f"Architecture: {architecture}")
-    print(f"Normalization: {normalization_type}")
+    if arima_only:
+        print(f"Model:        ARIMA")
+    else:
+        print(f"Architecture: {architecture}")
+        print(f"Normalization: {normalization_type}")
     print(f"Samples:      {num_samples} per symbol")
     if exclude_list:
         print(f"Excluded:     {', '.join(exclude_list)}")
@@ -858,6 +900,7 @@ def run_watchlist_evaluation(
             forecast_horizon=forecast_horizon,
             inference_forcast_horizon=inference_forcast_horizon,
             compare_arima=compare_arima,
+            arima_only=arima_only,
             verbose=verbose,
             cached_model=cached_model,
             breakdown_by_day=breakdown_by_day,
@@ -865,17 +908,19 @@ def run_watchlist_evaluation(
         )
         if "error" not in res:
             all_res.append(res)
-            n_da = res['neural_metrics']['directional_accuracy']
-            n_mae = res['neural_metrics']['mae']
-            n_wape = res['neural_metrics']['wape']
+            p_da = res['primary_metrics']['directional_accuracy']
+            p_mae = res['primary_metrics']['mae']
+            p_wape = res['primary_metrics']['wape']
             
             if not verbose:
                 if compare_arima and 'arima_metrics' in res:
                     a_da = res['arima_metrics']['directional_accuracy']
                     a_mae = res['arima_metrics']['mae']
-                    print(f" DONE (Neural: DA {n_da:.1%}, WAPE {n_wape:.2f}% | ARIMA: DA {a_da:.1%})")
+                    print(f" DONE (Neural: DA {p_da:.1%}, WAPE {p_wape:.2f}% | ARIMA: DA {a_da:.1%})")
+                elif arima_only:
+                    print(f" DONE (ARIMA: DA {p_da:.1%}, MAE {p_mae:.4f}, WAPE {p_wape:.2f}%)")
                 else:
-                    print(f" DONE (DA: {n_da:.1%}, MAE: {n_mae:.4f}, WAPE: {n_wape:.2f}%)")
+                    print(f" DONE (DA: {p_da:.1%}, MAE: {p_mae:.4f}, WAPE: {p_wape:.2f}%)")
         else:
             if not verbose:
                 print(f" FAILED: {res['error']}")
@@ -885,14 +930,14 @@ def run_watchlist_evaluation(
     if not all_res:
         return {"error": "No symbols could be evaluated."}
 
-    # Aggregate Neural Metrics
-    neural_mae = np.mean([r["neural_metrics"]["mae"] for r in all_res])
-    neural_rmse = np.mean([r["neural_metrics"]["rmse"] for r in all_res])
-    neural_mape = np.mean([r["neural_metrics"]["mape"] for r in all_res])
-    neural_wape = np.mean([r["neural_metrics"]["wape"] for r in all_res])
-    neural_total_correct = sum([r["neural_metrics"]["correct_directions"] for r in all_res])
-    neural_total_dirs = sum([r["neural_metrics"]["total_directions"] for r in all_res])
-    neural_da = neural_total_correct / neural_total_dirs if neural_total_dirs > 0 else 0
+    # Aggregate Primary Metrics
+    primary_mae = np.mean([r["primary_metrics"]["mae"] for r in all_res])
+    primary_rmse = np.mean([r["primary_metrics"]["rmse"] for r in all_res])
+    primary_mape = np.mean([r["primary_metrics"]["mape"] for r in all_res])
+    primary_wape = np.mean([r["primary_metrics"]["wape"] for r in all_res])
+    primary_total_correct = sum([r["primary_metrics"]["correct_directions"] for r in all_res])
+    primary_total_dirs = sum([r["primary_metrics"]["total_directions"] for r in all_res])
+    primary_da = primary_total_correct / primary_total_dirs if primary_total_dirs > 0 else 0
 
     # Aggregate ARIMA Metrics (if applicable)
     arima_metrics = None
@@ -928,18 +973,17 @@ def run_watchlist_evaluation(
                 "wape": lag_wape
             }
 
-    # Determine effective forecast horizons for display and get normalization type
-    # Load model to get defaults if not specified
-    normalization_type = "unknown"
-    if forecast_horizon is None or inference_forcast_horizon is None:
-        _, temp_model, normalization_type = load_model(architecture, signal_type)
-        model_default_fh = temp_model.forecast_horizon if temp_model else 5
+    # Determine effective forecast horizons for display
+    if arima_only:
+        display_fh = forecast_horizon if forecast_horizon is not None else 5
     else:
-        model_default_fh = forecast_horizon
-        # Still need to get normalization_type
-        _, _, normalization_type = load_model(architecture, signal_type)
+        # Load model to get defaults if not specified
+        if forecast_horizon is None:
+            _, temp_model, _ = load_model(architecture, signal_type)
+            display_fh = temp_model.forecast_horizon if temp_model else 5
+        else:
+            display_fh = forecast_horizon
     
-    display_fh = forecast_horizon if forecast_horizon is not None else model_default_fh
     display_eval_fh = inference_forcast_horizon if inference_forcast_horizon is not None else display_fh
     
     # Print Summary
@@ -974,11 +1018,11 @@ def run_watchlist_evaluation(
         arima_wins = 0
 
         for label, key, higher_is_better in comparisons:
-            if key == "mae": n_val = neural_mae
-            elif key == "rmse": n_val = neural_rmse
-            elif key == "mape": n_val = neural_mape
-            elif key == "wape": n_val = neural_wape
-            else: n_val = neural_da
+            if key == "mae": n_val = primary_mae
+            elif key == "rmse": n_val = primary_rmse
+            elif key == "mape": n_val = primary_mape
+            elif key == "wape": n_val = primary_wape
+            else: n_val = primary_da
             
             a_val = arima_metrics[key]
 
@@ -1011,9 +1055,12 @@ def run_watchlist_evaluation(
         print(f"WATCHLIST EVALUATION SUMMARY: {watchlist_name}")
         print("=" * 90)
         print(f"Symbols Evaluated:   {len(all_res)} / {len(symbols)}")
-        print(f"Architecture:        {architecture}")
+        if arima_only:
+            print(f"Model:               ARIMA")
+        else:
+            print(f"Architecture:        {architecture}")
+            print(f"Normalization:       {normalization_type}")
         print(f"Signal Type:         {signal_label}")
-        print(f"Normalization:       {normalization_type}")
         print(f"Forecast Horizon:    {display_fh} days", end="")
         if display_eval_fh < display_fh:
             print(f" (evaluating on {display_eval_fh} days)")
@@ -1021,18 +1068,18 @@ def run_watchlist_evaluation(
             print()
         print(f"Input Days:          {input_days} days")
         print(f"Samples/Symbol:      {num_samples}")
-        print(f"Total Predictions:   {neural_total_dirs}")
+        print(f"Total Predictions:   {primary_total_dirs}")
         print()
-        print(f"MAE  (Mean Absolute Error):    {neural_mae:.6f}")
-        print(f"RMSE (Root Mean Square Error): {neural_rmse:.6f}")
-        print(f"MAPE (Mean Absolute % Error):  {neural_mape:.2f}%")
-        print(f"WAPE (Weighted Abs % Error):   {neural_wape:.2f}%")
-        print(f"Directional Accuracy:          {neural_da:.2%}")
+        print(f"MAE  (Mean Absolute Error):    {primary_mae:.6f}")
+        print(f"RMSE (Root Mean Square Error): {primary_rmse:.6f}")
+        print(f"MAPE (Mean Absolute % Error):  {primary_mape:.2f}%")
+        print(f"WAPE (Weighted Abs % Error):   {primary_wape:.2f}%")
+        print(f"Directional Accuracy:          {primary_da:.2%}")
     
     # Lag Analysis Summary
     if lag_test and lag_metrics:
-        mae_ratio = lag_metrics["mae"] / neural_mae
-        wape_ratio = lag_metrics["wape"] / neural_wape
+        mae_ratio = lag_metrics["mae"] / primary_mae
+        wape_ratio = lag_metrics["wape"] / primary_wape
         
         print()
         print(f"LAG ANALYSIS (Watchlist Average)")
@@ -1119,12 +1166,19 @@ def run_watchlist_evaluation(
     result = {
         "watchlist": watchlist_name,
         "symbols_evaluated": len(all_res),
-        "neural_metrics": {
-            "mae": neural_mae,
-            "rmse": neural_rmse,
-            "mape": neural_mape,
-            "wape": neural_wape,
-            "directional_accuracy": neural_da
+        "primary_metrics": {
+            "mae": primary_mae,
+            "rmse": primary_rmse,
+            "mape": primary_mape,
+            "wape": primary_wape,
+            "directional_accuracy": primary_da
+        },
+        "neural_metrics": { # Compatibility
+            "mae": primary_mae,
+            "rmse": primary_rmse,
+            "mape": primary_mape,
+            "wape": primary_wape,
+            "directional_accuracy": primary_da
         },
         "arima_metrics": arima_metrics,
         "lag_metrics": lag_metrics
@@ -1153,6 +1207,9 @@ Examples:
 
   # Compare with more samples for better statistics
   python evaluate_forecast_model.py --symbol MSFT --compare --samples 30
+
+  # Run only ARIMA evaluation with lag test
+  python evaluate_forecast_model.py --symbol AAPL --arima-only --lag-test
 
   # Evaluate on signal line with more samples
   python evaluate_forecast_model.py --symbol MSFT --signal-type signal_line --samples 30
@@ -1215,6 +1272,11 @@ Examples:
         "--compare",
         action="store_true",
         help="Compare neural model predictions against ARIMA on the same data"
+    )
+    parser.add_argument(
+        "--arima-only",
+        action="store_true",
+        help="Run evaluation only for ARIMA model (no neural model required)"
     )
     parser.add_argument(
         "--breakdown-by-day",
@@ -1288,6 +1350,7 @@ Examples:
             forecast_horizon=args.forecast_horizon,
             inference_forcast_horizon=args.inference_forcast_horizon,
             compare_arima=args.compare,
+            arima_only=args.arima_only,
             exclude_list=exclude_list,
             breakdown_by_day=args.breakdown_by_day,
             lag_test=args.lag_test,
@@ -1295,17 +1358,20 @@ Examples:
         )
     else:
         # Run evaluation for single symbol
-        mode_label = "Neural vs ARIMA Comparison" if args.compare else "MACD Forecaster Model Evaluation"
+        mode_label = "ARIMA Evaluation" if args.arima_only else ("Neural vs ARIMA Comparison" if args.compare else "MACD Forecaster Model Evaluation")
         print(f"\n{'='*70}")
         print(mode_label)
         print(f"{'='*70}")
         print(f"Symbol:       {args.symbol.upper()}")
         print(f"Signal Type:  {args.signal_type}")
-        print(f"Architecture: {args.architecture}")
+        if not args.arima_only:
+            print(f"Architecture: {args.architecture}")
         print(f"Input Days:   {args.input_days}")
         print(f"Samples:      {args.samples}")
         if args.compare:
             print(f"Compare:      Neural ({args.architecture}) vs ARIMA")
+        elif args.arima_only:
+            print(f"Model:        ARIMA")
         if args.lag_test:
             print(f"Lag Analysis: Enabled")
         if args.verbose:
@@ -1320,6 +1386,7 @@ Examples:
             forecast_horizon=args.forecast_horizon,
             inference_forcast_horizon=args.inference_forcast_horizon,
             compare_arima=args.compare,
+            arima_only=args.arima_only,
             verbose=args.verbose or not args.watchlist, # Default to verbose for single symbol
             breakdown_by_day=args.breakdown_by_day,
             lag_test=args.lag_test
