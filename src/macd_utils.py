@@ -533,52 +533,63 @@ def get_closing_prices_bulk(symbols: list, start_date, end_date):
     """
     Fetches closing prices for a list of symbols between start_date and end_date (inclusive).
     Returns a dict: {symbol: [{date: ..., open: ..., high: ..., low: ..., close: ...}, ...]}
+    Symbols are fetched in batches to avoid yfinance failures on large requests.
     """
     import yfinance as yf
     import pandas as pd
 
-    yf_tickers = yf.Tickers(" ".join(symbols))
-    print(f"Fetching bulk data from {start_date} to {end_date + timedelta(days=1)} for symbols: {symbols}")
-    history = yf_tickers.history(start=start_date, end=end_date + timedelta(days=1), interval="1d", group_by='ticker')
+    BATCH_SIZE = 50
     results = {}
+    batches = [symbols[i:i + BATCH_SIZE] for i in range(0, len(symbols), BATCH_SIZE)]
 
-    for symbol in symbols:
-        symbol_data = None
-        if isinstance(history.columns, pd.MultiIndex):
-            try:
-                # Select Open, High, Low, Close, and Volume columns for the symbol
-                symbol_data = history.xs(symbol, level=1 if history.columns.names[0] == 'Price' else 0, axis=1)[['Open', 'High', 'Low', 'Close', 'Volume']]
-            except Exception:
+    for batch in batches:
+        print(f"Fetching bulk data from {start_date} to {end_date + timedelta(days=1)} for {len(batch)} symbols: {batch}")
+        try:
+            yf_tickers = yf.Tickers(" ".join(batch))
+            history = yf_tickers.history(start=start_date, end=end_date + timedelta(days=1), interval="1d", group_by='ticker')
+        except Exception as e:
+            print(f"Batch download failed: {e}")
+            for symbol in batch:
+                results[symbol] = []
+            continue
+
+        for symbol in batch:
+            symbol_data = None
+            if isinstance(history.columns, pd.MultiIndex):
                 try:
-                    symbol_data = history[symbol][['Open', 'High', 'Low', 'Close', 'Volume']]
+                    # Select Open, High, Low, Close, and Volume columns for the symbol
+                    symbol_data = history.xs(symbol, level=1 if history.columns.names[0] == 'Price' else 0, axis=1)[['Open', 'High', 'Low', 'Close', 'Volume']]
                 except Exception:
+                    try:
+                        symbol_data = history[symbol][['Open', 'High', 'Low', 'Close', 'Volume']]
+                    except Exception:
+                        results[symbol] = []
+                        continue
+            else:
+                if 'Close' in history.columns:
+                    cols = [c for c in ['Open', 'High', 'Low', 'Close', 'Volume'] if c in history.columns]
+                    symbol_data = history[cols]
+                else:
                     results[symbol] = []
                     continue
-        else:
-            if 'Close' in history.columns:
-                cols = [c for c in ['Open', 'High', 'Low', 'Close', 'Volume'] if c in history.columns]
-                symbol_data = history[cols]
-            else:
-                results[symbol] = []
-                continue
 
-        # Remove timezone and normalize index
-        if symbol_data.index.tz is not None:
-            symbol_data.index = symbol_data.index.tz_convert(None)
-        symbol_data.index = symbol_data.index.normalize()
+            # Remove timezone and normalize index
+            if symbol_data.index.tz is not None:
+                symbol_data.index = symbol_data.index.tz_convert(None)
+            symbol_data.index = symbol_data.index.normalize()
 
-        # Prepare output as list of dicts
-        symbol_results = []
-        for idx, row in symbol_data.iterrows():
-            symbol_results.append({
-                "date": idx.date().isoformat(),
-                "open": float(row['Open']) if 'Open' in row and not pd.isna(row['Open']) else None,
-                "high": float(row['High']) if 'High' in row and not pd.isna(row['High']) else None,
-                "low": float(row['Low']) if 'Low' in row and not pd.isna(row['Low']) else None,
-                "close": float(row['Close']) if not pd.isna(row['Close']) else None,
-                "volume": int(row['Volume']) if 'Volume' in row and not pd.isna(row['Volume']) else None
-            })
-        results[symbol] = symbol_results
+            # Prepare output as list of dicts
+            symbol_results = []
+            for idx, row in symbol_data.iterrows():
+                symbol_results.append({
+                    "date": idx.date().isoformat(),
+                    "open": float(row['Open']) if 'Open' in row and not pd.isna(row['Open']) else None,
+                    "high": float(row['High']) if 'High' in row and not pd.isna(row['High']) else None,
+                    "low": float(row['Low']) if 'Low' in row and not pd.isna(row['Low']) else None,
+                    "close": float(row['Close']) if not pd.isna(row['Close']) else None,
+                    "volume": int(row['Volume']) if 'Volume' in row and not pd.isna(row['Volume']) else None
+                })
+            results[symbol] = symbol_results
 
     return results
 
