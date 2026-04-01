@@ -175,8 +175,9 @@ def run_evaluation(symbol: str, signal_type: str, architecture: str, input_days:
             s_idx = len(all_vals) - num_samples - fh + i - seq_len
             prev_val = float(all_vals[s_idx - 1]) if inc_delta and s_idx > 0 else None
             p = model.predict(seq, prev_value=prev_val)
-            if inc_delta and in_size > 1: neural_macd.append(p[:efh, 0].tolist()); neural_delta.append(p[:efh, 1].tolist())
-            else: neural_macd.append(p[:efh].tolist()); neural_delta.append(None)
+            neural_macd.append(p[:efh, 0].tolist())
+            if inc_delta and in_size > 1: neural_delta.append(p[:efh, 1].tolist())
+            else: neural_delta.append(None)
         else: neural_macd.append(None); neural_delta.append(None)
 
     arima_res = {}

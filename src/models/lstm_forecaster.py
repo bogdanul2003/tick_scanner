@@ -408,18 +408,24 @@ class MACDForecasterTrainer:
         return deltas
 
     def prepare_sequences(
-        self, 
-        data
+        self,
+        data,
+        fit: bool = True
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Prepare training sequences from time series data.
+
+        Args:
+            data: List of 1D numpy arrays (one per symbol) or a single array
+            fit: If True (training), compute and store normalization stats.
+                 If False (evaluation), reuse existing self.mean/self.std.
         """
         all_X, all_y = [], []
-        
+
         # Process each symbol into (raw, delta) pairs if needed
         processed_symbols = []
         input_data = data if isinstance(data, list) else [data]
-        
+
         for symbol_series in input_data:
             if self.include_delta:
                 deltas = self._calculate_deltas(symbol_series)
@@ -429,9 +435,9 @@ class MACDForecasterTrainer:
             else:
                 # Shape (points, 1)
                 processed_symbols.append(symbol_series.reshape(-1, 1))
-        
+
         # 1. Handle dataset-wide stats for 'global' mode
-        if self.normalization_type == "global":
+        if self.normalization_type == "global" and fit:
             combined = np.concatenate(processed_symbols, axis=0)
             self.mean = np.mean(combined, axis=0)
             self.std = np.std(combined, axis=0) + 1e-8
@@ -552,9 +558,7 @@ class MACDForecasterTrainer:
         """
         Evaluate the model on held-out test data.
         """
-        saved_mean, saved_std = self.mean.copy(), self.std.copy()
-        X_test, y_test = self.prepare_sequences(test_data)
-        self.mean, self.std = saved_mean, saved_std
+        X_test, y_test = self.prepare_sequences(test_data, fit=False)
         
         if len(X_test) == 0:
             return {"error": "Not enough test data"}
