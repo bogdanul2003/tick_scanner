@@ -1,7 +1,6 @@
 import multiprocessing
 import pandas as pd
 from datetime import datetime, time, timedelta
-from fastapi import HTTPException
 import pytz
 from db_utils import (
     fetch_bulk_from_cache,
@@ -237,11 +236,9 @@ def process_symbols(args):
         for col in ['EMA12', 'EMA26', 'MA20', 'MA50', 'MACD', 'Signal_Line']:
             all_data[col] = all_data_for_indicators[col]
 
-        # Cache only the missing dates for this symbol
+        # Collect data to cache (saved by the main process, not the worker)
         missing_dates_set = set(missing_dates_dict[symbol])
         to_cache = all_data[all_data.index.map(lambda x: x.date() in missing_dates_set)]
-        if not to_cache.empty:
-            save_bulk_to_cache(symbol, to_cache)
 
         # Prepare result for the requested date
         date_data = all_data[all_data.index.map(lambda x: x.date() == date)]
@@ -253,15 +250,18 @@ def process_symbols(args):
             actual_date = date
             note = None
         chunk_results[symbol] = {
-            "symbol": symbol,
-            "date": actual_date.isoformat(),
-            "open": float(date_data['Open'].iloc[0]) if 'Open' in date_data.columns and not pd.isna(date_data['Open'].iloc[0]) else None,
-            "high": float(date_data['High'].iloc[0]) if 'High' in date_data.columns and not pd.isna(date_data['High'].iloc[0]) else None,
-            "low": float(date_data['Low'].iloc[0]) if 'Low' in date_data.columns and not pd.isna(date_data['Low'].iloc[0]) else None,
-            "close": float(date_data['Close'].iloc[0]),
-            "macd": float(date_data['MACD'].iloc[0]),
-            "signal_line": float(date_data['Signal_Line'].iloc[0]),
-            "note": note
+            "result": {
+                "symbol": symbol,
+                "date": actual_date.isoformat(),
+                "open": float(date_data['Open'].iloc[0]) if 'Open' in date_data.columns and not pd.isna(date_data['Open'].iloc[0]) else None,
+                "high": float(date_data['High'].iloc[0]) if 'High' in date_data.columns and not pd.isna(date_data['High'].iloc[0]) else None,
+                "low": float(date_data['Low'].iloc[0]) if 'Low' in date_data.columns and not pd.isna(date_data['Low'].iloc[0]) else None,
+                "close": float(date_data['Close'].iloc[0]),
+                "macd": float(date_data['MACD'].iloc[0]),
+                "signal_line": float(date_data['Signal_Line'].iloc[0]),
+                "note": note
+            },
+            "to_cache": to_cache if not to_cache.empty else None
         }
     return chunk_results
 
@@ -281,7 +281,7 @@ def calculate_macd_and_signal_bulk(symbols: list, date: pd.Timestamp, cached_dat
         if dates:
             interval_info.append((symbol, min(dates), max(dates)))
     if not interval_info:
-        raise HTTPException(status_code=400, detail="No missing dates for any symbol.")
+        raise ValueError("No missing dates for any symbol.")
 
     # Sort intervals by start date
     interval_info.sort(key=lambda x: x[1])
@@ -317,33 +317,40 @@ def calculate_macd_and_signal_bulk(symbols: list, date: pd.Timestamp, cached_dat
 
     # print(f"Total partitions created: {len(partitions)} partitions: {partitions}")
     results = {}
-    for partition, partition_start, partition_end in partitions:
-        partition_symbols = [item[0] for item in partition]
-        # Add lookback buffer
-        lookback_buffer = 10
-        fetch_start = partition_start - timedelta(days=lookback_buffer)
-        fetch_end = partition_end
+    num_chunks = 4
+    with multiprocessing.Pool(processes=num_chunks) as pool:
+        for partition, partition_start, partition_end in partitions:
+            partition_symbols = [item[0] for item in partition]
+            # Add lookback buffer
+            lookback_buffer = 60
+            fetch_start = partition_start - timedelta(days=lookback_buffer)
+            fetch_end = partition_end
 
-        # Fetch bulk closing prices using get_closing_prices_bulk
-        closing_prices_bulk = get_closing_prices_bulk(partition_symbols, fetch_start, fetch_end)
-        # print("closing_prices_bulk:", closing_prices_bulk)
+            # Fetch bulk closing prices using get_closing_prices_bulk
+            closing_prices_bulk = get_closing_prices_bulk(partition_symbols, fetch_start, fetch_end)
+            # print("closing_prices_bulk:", closing_prices_bulk)
 
-        # Split partition_symbols into 4 chunks
-        num_chunks = 4
-        chunks = [partition_symbols[i::num_chunks] for i in range(num_chunks)]
+            # Split partition_symbols into 4 chunks
+            chunks = [partition_symbols[i::num_chunks] for i in range(num_chunks)]
 
-        # Prepare arguments for each chunk
-        pool_args = [
-            (chunk, closing_prices_bulk, cached_data_dict, missing_dates_dict, date)
-            for chunk in chunks
-        ]
+            # Prepare arguments for each chunk
+            pool_args = [
+                (chunk, closing_prices_bulk, cached_data_dict, missing_dates_dict, date)
+                for chunk in chunks
+            ]
 
-        with multiprocessing.Pool(processes=num_chunks) as pool:
             chunk_results_list = pool.map(process_symbols, pool_args)
 
-        # Merge results from all chunks
-        for chunk_results in chunk_results_list:
-            results.update(chunk_results)
+            # Save to DB from main process and merge results
+            for chunk_results in chunk_results_list:
+                for symbol, data in chunk_results.items():
+                    if isinstance(data, dict) and "result" in data:
+                        if data.get("to_cache") is not None:
+                            save_bulk_to_cache(symbol, data["to_cache"])
+                        results[symbol] = data["result"]
+                    else:
+                        # Error case (e.g., {"error": "No data found..."})
+                        results[symbol] = data
     return results
 
 def macd_crossover_signal(
