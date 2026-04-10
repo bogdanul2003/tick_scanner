@@ -155,9 +155,8 @@ def run_evaluation(symbol: str, signal_type: str, architecture: str, input_days:
     }
 
     # Use evaluation horizon for sampling constraints if smaller than model's trained horizon
-    # Fetch a bit extra to catch any data beyond 'latest market date' if available in DB
     total_needed = seq_len + num_samples + efh + (1 if inc_delta else 0)
-    fetch_until = get_latest_market_date() + timedelta(days=2)
+    fetch_until = get_latest_market_date()
     all_vals, all_dates = get_historical_data(symbol, signal_type, fetch_until, total_needed + 10)
     
     if len(all_vals) < total_needed: return {"error": f"Not enough data: {len(all_vals)} < {total_needed}"}
