@@ -154,25 +154,35 @@ def run_evaluation(symbol: str, signal_type: str, architecture: str, input_days:
         "eval_horizon": efh
     }
 
-    total_needed = seq_len + num_samples + fh + (1 if inc_delta else 0)
-    all_vals, all_dates = get_historical_data(symbol, signal_type, get_latest_market_date(), total_needed)
+    # Use evaluation horizon for sampling constraints if smaller than model's trained horizon
+    # Fetch a bit extra to catch any data beyond 'latest market date' if available in DB
+    total_needed = seq_len + num_samples + efh + (1 if inc_delta else 0)
+    fetch_until = get_latest_market_date() + timedelta(days=2)
+    all_vals, all_dates = get_historical_data(symbol, signal_type, fetch_until, total_needed + 10)
+    
     if len(all_vals) < total_needed: return {"error": f"Not enough data: {len(all_vals)} < {total_needed}"}
 
     sample_data = []
     for i in range(num_samples):
-        s_idx = len(all_vals) - num_samples - fh + i - seq_len
+        # We want to end the last sample exactly when we have efh days of actual data left.
+        # Adding +1 to offset ensures we use the most recent available data window.
+        s_idx = len(all_vals) - num_samples - efh + i - seq_len + 1
         e_idx = s_idx + seq_len
         if s_idx < 0: continue
         in_seq = np.array(all_vals[s_idx:e_idx])
         dt = all_dates[e_idx-1]
-        act_v = all_vals[e_idx:e_idx+fh]
+        
+        # We try to get up to fh days of actuals for the model's output comparison,
+        # but we only require at least efh days to be present.
+        act_v = all_vals[e_idx : min(e_idx + fh, len(all_vals))]
         act_d = [act_v[j] - (in_seq[-1] if j==0 else act_v[j-1]) for j in range(len(act_v))]
-        sample_data.append((i, in_seq, dt, act_v, act_d, all_dates[e_idx:e_idx+fh]))
+        sample_data.append((i, in_seq, dt, act_v, act_d, all_dates[e_idx : min(e_idx + fh, len(all_vals))]))
 
     neural_macd, neural_delta = [], []
     for i, seq, dt, av, ad, ads in sample_data:
         if not arima_only:
-            s_idx = len(all_vals) - num_samples - fh + i - seq_len
+            # Recalculate s_idx for prev_val consistency
+            s_idx = len(all_vals) - num_samples - efh + i - seq_len + 1
             prev_val = float(all_vals[s_idx - 1]) if inc_delta and s_idx > 0 else None
             p = model.predict(seq, prev_value=prev_val)
             neural_macd.append(p[:efh, 0].tolist())

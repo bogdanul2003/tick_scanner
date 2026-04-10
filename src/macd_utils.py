@@ -2,6 +2,7 @@ import multiprocessing
 import pandas as pd
 from datetime import datetime, time, timedelta
 import pytz
+import time as time_module
 from db_utils import (
     fetch_bulk_from_cache,
     load_cached_data,
@@ -542,7 +543,9 @@ def get_closing_prices_bulk(symbols: list, start_date, end_date):
     results = {}
     batches = [symbols[i:i + BATCH_SIZE] for i in range(0, len(symbols), BATCH_SIZE)]
 
-    for batch in batches:
+    for i, batch in enumerate(batches):
+        if i > 0:
+            time_module.sleep(1)
         print(f"Fetching bulk data from {start_date} to {end_date + timedelta(days=1)} for {len(batch)} symbols: {batch}")
         try:
             yf_tickers = yf.Tickers(" ".join(batch))
@@ -601,6 +604,7 @@ def get_closing_prices(symbol: str, start_date, end_date):
     import yfinance as yf
     import pandas as pd
 
+    time_module.sleep(1)
     ticker = yf.Ticker(symbol)
     history = ticker.history(start=start_date, end=end_date + timedelta(days=1), interval="1d")
     results = []

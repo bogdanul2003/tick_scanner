@@ -239,6 +239,11 @@ def get_missing_ohlcv_dates(symbols, days_back=365):
     return result
 
 def get_missing_dates(symbol, start_date, end_date, cached_dates):
+    from datetime import datetime
+    today = datetime.now().date()
+    # Cap end_date at today to avoid requesting future dates as "missing"
+    effective_end_date = min(end_date, today)
+    
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -255,7 +260,7 @@ def get_missing_dates(symbol, start_date, end_date, cached_dates):
 
         all_missing_dates = []
         d = first_missing_date
-        while d <= end_date:
+        while d <= effective_end_date:
             if d.weekday() < 5:
                 all_missing_dates.append(d)
             d += timedelta(days=1)
