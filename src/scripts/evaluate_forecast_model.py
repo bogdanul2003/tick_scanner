@@ -64,22 +64,42 @@ def load_model(architecture: str, signal_type: str):
     from models.lstm_forecaster import get_model_path, get_pytorch_model_path
     coreml_path = get_model_path(signal_type, architecture)
     pytorch_path = get_pytorch_model_path(signal_type, architecture)
+    
     if os.path.exists(coreml_path):
         try:
             from models.neural_forecast import CoreMLForecaster
             f = CoreMLForecaster(coreml_path, signal_type)
-            if f.is_available: return ("coreml", f, f.normalization_type)
+            if f.is_available:
+                details = {
+                    "hidden_size": getattr(f, "hidden_size", None),
+                    "num_layers": getattr(f, "num_layers", None),
+                    "batch_size": getattr(f, "batch_size", None)
+                }
+                return ("coreml", f, f.normalization_type, details)
         except Exception as e: print(f"Warning: CoreML load failed: {e}")
+        
     if os.path.exists(pytorch_path):
         try:
             import torch
             from models.lstm_forecaster import MACDForecasterTrainer
             cp = torch.load(pytorch_path, map_location="cpu")
-            trainer = MACDForecasterTrainer(seq_length=cp.get("seq_length", 30), forecast_horizon=cp.get("forecast_horizon", 5), hidden_size=cp.get("hidden_size", 64), architecture=cp.get("architecture", architecture))
+            trainer = MACDForecasterTrainer(
+                seq_length=cp.get("seq_length", 30), 
+                forecast_horizon=cp.get("forecast_horizon", 5), 
+                hidden_size=cp.get("hidden_size", 64), 
+                num_layers=cp.get("num_layers", 2),
+                architecture=cp.get("architecture", architecture)
+            )
             trainer.load(pytorch_path)
-            return ("pytorch", trainer, cp.get("normalization_type", "global"))
+            details = {
+                "hidden_size": cp.get("hidden_size"),
+                "num_layers": cp.get("num_layers"),
+                "batch_size": cp.get("batch_size")
+            }
+            return ("pytorch", trainer, cp.get("normalization_type", "global"), details)
         except Exception as e: print(f"Warning: PyTorch load failed: {e}")
-    return (None, None, "unknown")
+        
+    return (None, None, "unknown", {})
 
 
 def _compute_metrics(predictions: List[List[float]], actuals: List[List[float]], baselines: List[float]) -> Dict[str, float]:
@@ -93,10 +113,11 @@ def _compute_metrics(predictions: List[List[float]], actuals: List[List[float]],
     wape = float(np.sum(np.abs(a_flat - p_flat)) / (np.sum(np.abs(a_flat)) + 1e-8) * 100)
     correct, total = 0, 0
     for i, (p_seq, a_seq) in enumerate(zip(predictions, actuals)):
-        base = baselines[i]
+        prev_a = baselines[i]
         for p, a in zip(p_seq, a_seq):
-            if (p > base) == (a > base): correct += 1
+            if (p > prev_a) == (a > prev_a): correct += 1
             total += 1
+            prev_a = a
     return {"mae": mae, "rmse": rmse, "mape": mape, "wape": wape, "directional_accuracy": correct/total if total > 0 else 0, "correct_directions": correct, "total_directions": total}
 
 
@@ -110,7 +131,8 @@ def _compute_per_day_metrics(predictions: List[List[float]], actuals: List[List[
         for i, (p_seq, a_seq) in enumerate(zip(predictions, actuals)):
             if day_idx < len(p_seq):
                 d_preds.append(p_seq[day_idx]); d_actuals.append(a_seq[day_idx])
-                if (p_seq[day_idx] > baselines[i]) == (a_seq[day_idx] > baselines[i]): correct += 1
+                prev_val = baselines[i] if day_idx == 0 else a_seq[day_idx-1]
+                if (p_seq[day_idx] > prev_val) == (a_seq[day_idx] > prev_val): correct += 1
                 total += 1
         if d_preds:
             dp, da = np.array(d_preds), np.array(d_actuals)
@@ -133,9 +155,9 @@ def _compute_lag_metrics(predictions: List[List[float]], actuals: List[List[floa
 def run_evaluation(symbol: str, signal_type: str, architecture: str, input_days: int, num_samples: int, forecast_horizon: int = None, inference_forcast_horizon: int = None, compare_arima: bool = False, arima_only: bool = False, verbose: bool = True, cached_model: Any = None, breakdown_by_day: bool = False, lag_test: bool = False) -> Dict[str, Any]:
     """Run model evaluation for a single symbol."""
     from macd_utils import get_latest_market_date
-    if arima_only: engine_type, model, normalization_type = "statsmodels", None, "N/A"
-    elif cached_model: engine_type, model, normalization_type = cached_model
-    else: engine_type, model, normalization_type = load_model(architecture, signal_type)
+    if arima_only: engine_type, model, normalization_type, details = "statsmodels", None, "N/A", {}
+    elif cached_model: engine_type, model, normalization_type, details = cached_model
+    else: engine_type, model, normalization_type, details = load_model(architecture, signal_type)
     if not arima_only and not model: return {"error": f"No model found for {signal_type}_{architecture}"}
     
     inc_delta = getattr(model, "include_delta", False) if model else False
@@ -151,7 +173,10 @@ def run_evaluation(symbol: str, signal_type: str, architecture: str, input_days:
         "features": "MACD" if arima_only else ("MACD + Delta" if inc_delta else "MACD"),
         "seq_len": seq_len,
         "forecast_horizon": fh,
-        "eval_horizon": efh
+        "eval_horizon": efh,
+        "hidden_size": details.get("hidden_size"),
+        "num_layers": details.get("num_layers"),
+        "batch_size": details.get("batch_size")
     }
 
     # Use evaluation horizon for sampling constraints if smaller than model's trained horizon
@@ -241,6 +266,11 @@ def run_evaluation(symbol: str, signal_type: str, architecture: str, input_days:
         print(f"Features:      {model_info['features']}")
         print(f"Normalization: {model_info['normalization']}")
         print(f"Horizons:      Seq={model_info['seq_len']}, Forecast={model_info['forecast_horizon']}, Eval={model_info['eval_horizon']}")
+        
+        h, l, b = model_info.get("hidden_size"), model_info.get("num_layers"), model_info.get("batch_size")
+        params = [f"Hidden={h if h else '?'}", f"Layers={l if l else '?'}", f"Batch={b if b else '?'}"]
+        print(f"Parameters:    {', '.join(params)}")
+            
         print(f"Samples:       {num_samples}")
         print("-" * 90)
         print(f"MACD:  MAE={m_macd['mae']:.6f}, RMSE={m_macd['rmse']:.6f}, DirAcc={m_macd['directional_accuracy']:.2%}")
@@ -297,6 +327,11 @@ def run_watchlist_evaluation(watchlist_name: str, signal_type: str, architecture
     print(f"Features:      {m_info['features']}")
     print(f"Normalization: {m_info['normalization']}")
     print(f"Horizons:      Seq={m_info['seq_len']}, Forecast={m_info['forecast_horizon']}, Eval={m_info['eval_horizon']}")
+    
+    h, l, b = m_info.get("hidden_size"), m_info.get("num_layers"), m_info.get("batch_size")
+    params = [f"Hidden={h if h else '?'}", f"Layers={l if l else '?'}", f"Batch={b if b else '?'}"]
+    print(f"Parameters:    {', '.join(params)}")
+        
     print(f"Symbols:       {len(all_res)} / {len(symbols)} (Samples/Symbol: {num_samples})")
     print("-" * 90)
     print(f"MACD:  MAE={p_mae:.6f}, RMSE={p_rmse:.6f}, DA={p_da:.2%}")

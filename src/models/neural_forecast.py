@@ -39,6 +39,9 @@ class CoreMLForecaster:
         self.signal_type = signal_type
         self.include_delta = False
         self.input_size = 1
+        self.hidden_size = None
+        self.num_layers = None
+        self.batch_size = None
         
         if model_path is None:
             from models.lstm_forecaster import get_model_path
@@ -94,6 +97,17 @@ class CoreMLForecaster:
             self.include_delta = metadata.get("include_delta", "False").lower() == "true"
             self.input_size = 2 if self.include_delta else 1
             
+            # Load additional model details if present
+            try:
+                self.hidden_size = int(metadata.get("hidden_size", 0))
+                self.num_layers = int(metadata.get("num_layers", 0))
+                batch_size_str = metadata.get("batch_size")
+                self.batch_size = int(batch_size_str) if batch_size_str else None
+            except (ValueError, TypeError):
+                self.hidden_size = None
+                self.num_layers = None
+                self.batch_size = None
+            
             # Cache the model
             _model_cache[self.model_path] = {
                 "model": self.model,
@@ -103,7 +117,10 @@ class CoreMLForecaster:
                 "forecast_horizon": self.forecast_horizon,
                 "normalization_type": self.normalization_type,
                 "include_delta": self.include_delta,
-                "input_size": self.input_size
+                "input_size": self.input_size,
+                "hidden_size": self.hidden_size,
+                "num_layers": self.num_layers,
+                "batch_size": self.batch_size
             }
             
             logger.info(f"Loaded Core ML model from {self.model_path}")

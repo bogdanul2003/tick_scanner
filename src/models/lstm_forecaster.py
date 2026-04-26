@@ -368,6 +368,7 @@ class MACDForecasterTrainer:
         self.include_delta = include_delta
         self.input_size = 2 if include_delta else 1
         self.output_size = forecast_horizon * self.input_size
+        self.batch_size = None # Set during training
         
         # Auto-select device
         if device is None:
@@ -488,6 +489,8 @@ class MACDForecasterTrainer:
         """
         Train the model on MACD data.
         """
+        self.batch_size = batch_size
+        X, y = self.prepare_sequences(train_data)
         X, y = self.prepare_sequences(train_data)
         
         # Split into train/val
@@ -679,6 +682,7 @@ class MACDForecasterTrainer:
             "forecast_horizon": self.forecast_horizon,
             "hidden_size": self.model.hidden_size,
             "num_layers": self.model.num_layers,
+            "batch_size": self.batch_size,
             "architecture": self.architecture,
             "include_delta": self.include_delta,
             "input_size": self.input_size
@@ -739,6 +743,10 @@ class MACDForecasterTrainer:
         mlmodel.user_defined_metadata["seq_length"] = str(self.seq_length)
         mlmodel.user_defined_metadata["forecast_horizon"] = str(self.forecast_horizon)
         mlmodel.user_defined_metadata["include_delta"] = str(self.include_delta)
+        mlmodel.user_defined_metadata["hidden_size"] = str(self.model.hidden_size)
+        mlmodel.user_defined_metadata["num_layers"] = str(self.model.num_layers)
+        if self.batch_size:
+            mlmodel.user_defined_metadata["batch_size"] = str(self.batch_size)
         
         mlmodel.save(output_path)
         print(f"Core ML model saved to {output_path}")
