@@ -548,8 +548,16 @@ def get_closing_prices_bulk(symbols: list, start_date, end_date):
             time_module.sleep(1)
         print(f"Fetching bulk data from {start_date} to {end_date + timedelta(days=1)} for {len(batch)} symbols: {batch}")
         try:
-            yf_tickers = yf.Tickers(" ".join(batch))
-            history = yf_tickers.history(start=start_date, end=end_date + timedelta(days=1), interval="1d", group_by='ticker')
+            history = yf.download(
+                batch,
+                start=start_date,
+                end=end_date + timedelta(days=1),
+                interval="1d",
+                group_by='ticker',
+                threads=False,
+                auto_adjust=False,
+                progress=False,
+            )
         except Exception as e:
             print(f"Batch download failed: {e}")
             for symbol in batch:

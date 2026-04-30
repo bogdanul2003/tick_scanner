@@ -91,15 +91,12 @@ def get_company_names_for_symbols(symbols):
 
     # Step 2: For missing, fetch from yfinance and upsert
     if missing:
-        tickers = yf.Tickers(list(missing))
         infos = {}
-        try:
-            infos = tickers.get_info()
-        except AttributeError:
-            # fallback for older yfinance versions
-            infos = {sym: tickers.tickers[sym].info for sym in missing if sym in tickers.tickers}
-        except Exception:
-            infos = {}
+        for sym in missing:
+            try:
+                infos[sym] = yf.Ticker(sym).info or {}
+            except Exception:
+                infos[sym] = {}
 
         for sym in missing:
             info = infos.get(sym, {})
