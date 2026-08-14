@@ -58,6 +58,27 @@ class PatternDetectionError(TickScannerError):
         super().__init__(f"Pattern detection failed for '{symbol}': {reason}")
 
 
+class InvalidImageError(TickScannerError):
+    """Raised when an uploaded file is not a usable image."""
+
+    def __init__(self, filename: str, reason: str = "Unsupported or corrupt image"):
+        self.filename = filename
+        self.reason = reason
+        super().__init__(f"Invalid image '{filename}': {reason}")
+
+
+class ImageTooLargeError(TickScannerError):
+    """Raised when an uploaded image exceeds the configured size limit."""
+
+    def __init__(self, filename: str, byte_size: int, max_bytes: int):
+        self.filename = filename
+        self.byte_size = byte_size
+        self.max_bytes = max_bytes
+        super().__init__(
+            f"Image '{filename}' is {byte_size} bytes, over the {max_bytes} byte limit"
+        )
+
+
 class ChartGenerationError(TickScannerError):
     """Raised when chart generation fails."""
     

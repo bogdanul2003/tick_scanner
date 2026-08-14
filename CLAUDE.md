@@ -19,15 +19,21 @@ Tick Scanner is a stock market technical analysis platform that identifies bulli
 ```
 src/
   api.py                      # FastAPI entry point
-  routers/                    # API route modules (macd, watchlist, chart, forecast, pattern, price)
+  routers/                    # API route modules (macd, watchlist, chart, forecast, pattern, price, notes)
   services/                   # Business logic (forecast_service, chart_service)
   models/                     # Pydantic DTOs + ML models (lstm_forecaster, neural_forecast)
   core/                       # Config, database, middleware, dependencies
   utils/                      # Sanitization, exceptions, date helpers
   scripts/                    # train_forecast_model.py, evaluate_forecast_model.py
   macd_utils.py, db_utils.py, forecast_utils.py, pattern_utils.py, charts_generator.py, picks.py
+  notes_db.py                 # Notes Dashboard tables + CRUD
 chart_scan/                   # YOLO pattern detection (detector_neural.py, detector_gpu.py)
-frontend/src/                 # React app (App.jsx is the main component)
+frontend/src/
+  App.jsx                     # Shell: hash-routed dashboard switch (#/, #/macd, #/notes)
+  api.js                      # Shared API base URL + fetch helpers
+  pages/HomePage.jsx          # Start page
+  dashboards/MacdDashboard.jsx  # MACD/forecast/pattern UI
+  dashboards/notes/           # Notes Dashboard components
 watchlists/                   # Stock symbol lists (sp500.txt, etc.)
 models/                       # Trained Core ML / PyTorch model files
 ```
@@ -74,6 +80,8 @@ python scripts/evaluate_forecast_model.py --symbol AAPL --samples 10
 ## Database
 
 PostgreSQL with main table `stock_cache` (symbol, date, OHLC, volume, EMA/MA indicators, MACD, signal_line, forecast flags, chart_patterns JSONB). Supporting tables: `watchlists`, `watchlist_symbols`, `symbol_picks`, `forecast_util`, `company_names`.
+
+Notes Dashboard tables (independent of the market-data tables): `note_watchlists`, `note_watchlist_symbols`, `symbol_notes`, `note_images` (image bytes as BYTEA plus a WEBP thumbnail).
 
 Default connection: `postgres://postgres:postgres@localhost:5432/postgres`
 

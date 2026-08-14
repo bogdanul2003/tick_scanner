@@ -80,8 +80,12 @@ The platform scans watchlists of stocks and prioritizes opportunities based on b
 
 | File | Purpose |
 |------|---------|
-| `App.jsx` | Main React components (~500 lines) |
-| `index.jsx` / `main.jsx` | React entry points |
+| `App.jsx` | Shell: hash-routed switch between dashboards (`#/`, `#/macd`, `#/notes`) |
+| `pages/HomePage.jsx` | Start page with a card per dashboard |
+| `dashboards/MacdDashboard.jsx` | MACD, forecast and pattern UI (formerly `App.jsx`) |
+| `dashboards/notes/` | Notes Dashboard: notes watchlists, dated notes, images |
+| `api.js` | Shared API base URL and fetch/error helpers |
+| `main.jsx` | React entry point |
 | `vite.config.js` | Vite development server config |
 
 ---
@@ -141,6 +145,16 @@ The platform scans watchlists of stocks and prioritizes opportunities based on b
 - `forecast_util` - Trained ARIMA model cache
 - `company_names` - Company metadata
 
+### Notes Dashboard Tables
+
+Deliberately independent of `stock_cache` and `watchlists` - they hold only the
+research notes, not market data.
+
+- `note_watchlists` - Named collections of symbols to write notes about
+- `note_watchlist_symbols` - Symbol membership of a notes watchlist
+- `symbol_notes` - One dated markdown note for a symbol (composite FK to the symbol row, so removing a symbol cascades its notes)
+- `note_images` - Images attached to a note, stored as `BYTEA` with a WEBP thumbnail
+
 ---
 
 ## Technology Stack
@@ -184,6 +198,20 @@ The platform scans watchlists of stocks and prioritizes opportunities based on b
 ### Chart Endpoints
 - `GET /watchlist/{name}/available_dates` - Get available dates
 - `POST /watchlist/{name}/generate_charts` - Generate & scan charts
+
+### Notes Endpoints
+
+Addressed by id rather than name, so renaming a notes watchlist keeps links valid.
+
+- `GET|POST /notes/watchlists` - List / create notes watchlists
+- `GET|PATCH|DELETE /notes/watchlists/{id}` - Detail / rename / delete (cascades)
+- `POST /notes/watchlists/{id}/symbols` - Add symbols
+- `DELETE /notes/watchlists/{id}/symbols/{symbol}` - Remove a symbol and its notes
+- `GET|POST /notes/watchlists/{id}/symbols/{symbol}/notes` - List / create notes
+- `PATCH|DELETE /notes/entries/{note_id}` - Edit / delete a note
+- `POST /notes/entries/{note_id}/images` - Attach images (multipart, validated all-or-nothing)
+- `GET /notes/images/{id}` and `/notes/images/{id}/thumb` - Serve image bytes
+- `DELETE /notes/images/{id}` - Delete one image
 
 ---
 

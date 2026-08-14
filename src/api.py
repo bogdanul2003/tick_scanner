@@ -7,6 +7,7 @@ This is the main FastAPI application entry point. The API provides endpoints for
 - Chart pattern detection (using neural networks)
 - ARIMA-based forecasting
 - Closing price retrieval
+- Research notes per symbol (Notes Dashboard)
 
 The application uses a modular router-based architecture for better maintainability.
 """
@@ -36,6 +37,7 @@ from routers import (
     chart_router,
     price_router,
     forecast_router,
+    notes_router,
 )
 
 # Import core modules
@@ -50,6 +52,7 @@ from db_utils import (
     create_watchlist_tables,
     create_forecast_util_table,
 )
+from notes_db import create_note_tables
 
 
 # Initialize database tables
@@ -61,6 +64,7 @@ def init_database():
     create_forecast_util_table()
     create_symbol_picks_table()
     create_symbol_properties_table()
+    create_note_tables()
     logger.info("Database initialization complete")
 
 
@@ -116,6 +120,7 @@ def create_app() -> FastAPI:
     app.include_router(chart_router)
     app.include_router(price_router)
     app.include_router(forecast_router)
+    app.include_router(notes_router)
     
     # Mount static files for generated charts at a different path to avoid API route conflicts
     charts_dir = os.path.join(os.path.dirname(__file__), "..", "generated_charts")
