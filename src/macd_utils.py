@@ -486,6 +486,13 @@ def macd_crossover_signal(
                 except Exception:
                     pass
 
+            macd_is_positive = False
+            if "macd" in last and last["macd"] is not None:
+                try:
+                    macd_is_positive = float(last["macd"]) > 0
+                except Exception:
+                    pass
+
             result_dict = {
                 "about_to_cross": bool(about_to_cross),
                 "recent_crossover": recent_crossover,
@@ -493,10 +500,12 @@ def macd_crossover_signal(
                 "about_to_become_positive": about_to_become_positive,
                 "about_to_become_negative": about_to_become_negative,
                 "macd_just_became_positive": macd_just_became_positive,
+                "macd_is_positive": bool(macd_is_positive),
                 "ma20_just_became_above_ma50": ma20_just_became_above_ma50,
                 "ma20_just_became_above_ma50_date": ma20_just_became_above_ma50_date,
                 "ma20_is_above_ma50": ma20_is_above_ma50
             }
+
             if with_details:
                 result_dict["details"] = {
                     "last_macd": float(last["macd"]),

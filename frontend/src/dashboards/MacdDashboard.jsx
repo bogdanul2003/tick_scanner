@@ -315,32 +315,93 @@ function WatchlistBullishSignal({ watchlist, onClose }) {
     setHoveredSymbol(null);
   };
 
-  // Updated color logic and hover explanations
-  const getSymbolColor = (signal) => {
-    if (!signal || typeof signal !== "object") return undefined;
-    if (signal.about_to_cross && signal.recent_crossover) return "purple";
-    if (signal.about_to_cross) return "green";
-    if (signal.recent_crossover) return "magenta";
-    return undefined;
-  };
+  // Compute symbols categorized into the 4 columns
+  const columns = React.useMemo(() => {
+    if (!result || !result.results) {
+      return {
+        getsPositive: [],
+        alreadyCrossed: [],
+        underSignalPositive: [],
+        underSignalNegative: []
+      };
+    }
 
-  const getSymbolTitle = (signal) => {
-    if (!signal || typeof signal !== "object") return "";
-    if (signal.about_to_cross && signal.recent_crossover)
-      return "Both bullish signals: about to cross AND recent crossover (purple)";
-    if (signal.about_to_cross)
-      return "Bullish: MACD is about to cross above the signal line (green)";
-    if (signal.recent_crossover)
-      return "Bullish: Recent MACD crossover above the signal line (magenta)";
-    return "";
-  };
+    const getsPositive = [];
+    const alreadyCrossed = [];
+    const underSignalPositive = [];
+    const underSignalNegative = [];
 
-  // Blinking state for macd_just_became_positive and ma20_just_became_above_ma50
-  const [blinkOn, setBlinkOn] = React.useState(true);
-  React.useEffect(() => {
-    const interval = setInterval(() => setBlinkOn(b => !b), 500);
-    return () => clearInterval(interval);
-  }, []);
+    Object.entries(result.results).forEach(([symbol, signal]) => {
+      if (!signal || typeof signal !== "object") return;
+
+      const isMacdPositive = Boolean(signal.macd_is_positive);
+      const isAboveSignal = Boolean(signal.bullish_macd_above_signal);
+      const justBecamePositive = Boolean(signal.macd_just_became_positive);
+      const hasRecentCrossover = Boolean(signal.recent_crossover);
+
+      // 1. "MACD gets positive": both "MACD just became positive" and "MACD is currently above signal line"
+      if (justBecamePositive && isAboveSignal) {
+        getsPositive.push(symbol);
+      }
+
+      // 2. "Already crossed": (recent crossover OR both about to cross & recent crossover) AND MACD is already positive
+      if (hasRecentCrossover && isMacdPositive) {
+        alreadyCrossed.push(symbol);
+      }
+
+      // 3. "MACD under signal positive": MACD below signal line but still positive
+      if (!isAboveSignal && isMacdPositive) {
+        underSignalPositive.push(symbol);
+      }
+
+      // 4. "MACD under signal negative": MACD below signal line and negative
+      if (!isAboveSignal && !isMacdPositive) {
+        underSignalNegative.push(symbol);
+      }
+    });
+
+    return {
+      getsPositive,
+      alreadyCrossed,
+      underSignalPositive,
+      underSignalNegative
+    };
+  }, [result]);
+
+  const columnDefs = [
+    {
+      key: "getsPositive",
+      title: "MACD gets positive",
+      symbols: columns.getsPositive,
+      badgeColor: "#27ae60",
+      headerBg: "#eef9f2",
+      borderColor: "#a3e0b8"
+    },
+    {
+      key: "alreadyCrossed",
+      title: "Already crossed",
+      symbols: columns.alreadyCrossed,
+      badgeColor: "#8e44ad",
+      headerBg: "#f5eefb",
+      borderColor: "#d2b4de"
+    },
+    {
+      key: "underSignalPositive",
+      title: "MACD under signal positive",
+      symbols: columns.underSignalPositive,
+      badgeColor: "#2980b9",
+      headerBg: "#ebf5fb",
+      borderColor: "#aed6f1"
+    },
+    {
+      key: "underSignalNegative",
+      title: "MACD under signal negative",
+      symbols: columns.underSignalNegative,
+      badgeColor: "#7f8c8d",
+      headerBg: "#f2f4f4",
+      borderColor: "#d5dbdb"
+    }
+  ];
 
   // Download CSV handler
   const handleDownloadCSV = async () => {
@@ -386,7 +447,7 @@ function WatchlistBullishSignal({ watchlist, onClose }) {
   };
 
   return (
-    <div style={{ border: "1px solid #ccc", margin: "10px 0", padding: 10, position: "relative" }}>
+    <div style={{ border: "1px solid #ccc", margin: "10px 0", padding: 12, borderRadius: "6px", position: "relative" }}>
       <h4>Bullish MACD Signal for "{watchlist}"</h4>
       <button onClick={onClose} style={{ marginBottom: 10 }}>Close</button>
       <button onClick={handleDownloadCSV} style={{ marginLeft: 10, marginBottom: 10 }} disabled={downloading}>
@@ -395,122 +456,92 @@ function WatchlistBullishSignal({ watchlist, onClose }) {
       {loading && <div>Loading...</div>}
       {error && <div style={{ color: "red" }}>{error}</div>}
       {result && result.results && (
-        <div style={{ marginTop: 10 }}>
-          {Object.entries(result.results).map(([symbol, signal]) => (
-            <span
-              key={symbol}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+            gap: "14px",
+            marginTop: "12px",
+            alignItems: "start"
+          }}
+        >
+          {columnDefs.map((col) => (
+            <div
+              key={col.key}
               style={{
-                color: getSymbolColor(signal),
-                fontWeight: "bold",
-                marginRight: 18,
-                fontSize: "1.1em",
-                display: "inline-flex",
-                alignItems: "center",
-                cursor: "pointer"
+                border: `1px solid ${col.borderColor}`,
+                borderRadius: "8px",
+                background: "#fff",
+                overflow: "hidden",
+                boxShadow: "0 1px 3px rgba(0,0,0,0.05)"
               }}
-              title={getSymbolTitle(signal)}
-              onMouseEnter={(e) => handleMouseEnter(symbol, e)}
-              onMouseLeave={handleMouseLeave}
             >
-              <a
-                href={getChartUrl(symbol)}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{ color: "inherit", textDecoration: "underline", fontWeight: "bold", marginRight: 2 }}
-                onClick={e => e.stopPropagation()}
+              <div
+                style={{
+                  background: col.headerBg,
+                  padding: "9px 12px",
+                  borderBottom: `1px solid ${col.borderColor}`,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: "8px"
+                }}
               >
-                {symbol}
-              </a>
-              {signal && signal.bullish_macd_above_signal && (
-                <span
-                  style={{
-                    display: "inline-block",
-                    width: 10,
-                    height: 10,
-                    borderRadius: "50%",
-                    background: "green",
-                    marginLeft: 6
-                  }}
-                  title="MACD is currently above the signal line"
-                />
-              )}
-              {signal && signal.about_to_become_positive && (
-                <span
-                  style={{
-                    display: "inline-block",
-                    width: 10,
-                    height: 10,
-                    borderRadius: "50%",
-                    background: "blue",
-                    marginLeft: 6
-                  }}
-                  title="MACD or Signal Line is about to become positive"
-                />
-              )}
-              {signal && signal.about_to_become_negative && (
-                <span
-                  style={{
-                    display: "inline-block",
-                    width: 10,
-                    height: 10,
-                    borderRadius: "50%",
-                    background: "red",
-                    marginLeft: 6
-                  }}
-                  title="MACD or Signal Line is about to become negative"
-                />
-              )}
-              {signal && signal.macd_just_became_positive && (
-                <span
-                  style={{
-                    display: "inline-block",
-                    width: 12,
-                    height: 12,
-                    borderRadius: "50%",
-                    background: blinkOn ? "green" : "yellow",
-                    marginLeft: 6,
-                    boxShadow: blinkOn ? "0 0 8px 2px yellow" : "0 0 8px 2px green"
-                  }}
-                  title="MACD just became positive (recently crossed from negative)"
-                />
-              )}
-              {/* Blinking cross for ma20_just_became_above_ma50 */}
-              {signal && signal.ma20_just_became_above_ma50 && (
-                <span
-                  style={{
-                    display: "inline-block",
-                    width: 14,
-                    height: 14,
-                    marginLeft: 6,
-                    position: "relative"
-                  }}
-                  title={
-                    `MA20 just became above MA50 (bullish cross)` +
-                    (signal.ma20_just_became_above_ma50_date
-                      ? ` on ${signal.ma20_just_became_above_ma50_date}`
-                      : "")
-                  }
-                >
-                  <svg width="14" height="14" style={{ display: "block" }}>
-                    <line
-                      x1="2" y1="2" x2="12" y2="12"
-                      stroke={blinkOn ? "green" : "yellow"}
-                      strokeWidth="2"
-                      style={{ filter: blinkOn ? "drop-shadow(0 0 4px yellow)" : "drop-shadow(0 0 4px green)" }}
-                    />
-                    <line
-                      x1="12" y1="2" x2="2" y2="12"
-                      stroke={blinkOn ? "green" : "yellow"}
-                      strokeWidth="2"
-                      style={{ filter: blinkOn ? "drop-shadow(0 0 4px yellow)" : "drop-shadow(0 0 4px green)" }}
-                    />
-                  </svg>
+                <span style={{ fontWeight: "bold", fontSize: "0.9em", color: "#2c3e50" }}>
+                  {col.title}
                 </span>
-              )}
-            </span>
+                <span
+                  style={{
+                    background: col.badgeColor,
+                    color: "#fff",
+                    borderRadius: "12px",
+                    padding: "2px 8px",
+                    fontSize: "0.78em",
+                    fontWeight: "bold"
+                  }}
+                >
+                  {col.symbols.length}
+                </span>
+              </div>
+              <div style={{ padding: "10px 12px", minHeight: "70px", maxHeight: "360px", overflowY: "auto" }}>
+                {col.symbols.length === 0 ? (
+                  <div style={{ color: "#888", fontStyle: "italic", fontSize: "0.85em", padding: "6px 0" }}>
+                    No symbols
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                    {col.symbols.map((symbol) => (
+                      <a
+                        key={symbol}
+                        href={getChartUrl(symbol)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{
+                          display: "inline-block",
+                          padding: "3px 7px",
+                          borderRadius: "4px",
+                          background: "#f8f9fa",
+                          border: "1px solid #e2e6ea",
+                          color: "#2c3e50",
+                          textDecoration: "underline",
+                          fontWeight: "bold",
+                          fontSize: "0.92em",
+                          cursor: "pointer"
+                        }}
+                        onMouseEnter={(e) => handleMouseEnter(symbol, e)}
+                        onMouseLeave={handleMouseLeave}
+                      >
+                        {symbol}
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
           ))}
         </div>
       )}
+
       
       {/* Chart tooltip */}
       {hoveredSymbol && (

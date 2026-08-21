@@ -42,7 +42,7 @@ def get_watchlist_bullish_signal(watchlist_name, days=30, threshold=0.05):
         print(f"Fetched {len(symbols)} symbols for {watchlist_name} on {today} cached: {cached}")
         results = {}
 
-        if cached is not None:
+        if cached is not None and "macd_is_positive" in cached:
             # Rebuild the output format from the cached filter_results
             # cached: {signal_name: [symbols]}
             # We want: {symbol: {signal_name: True/False, ...}}
@@ -53,10 +53,11 @@ def get_watchlist_bullish_signal(watchlist_name, days=30, threshold=0.05):
                     symbol_signals[signal_name] = symbol in symbol_list
                 results[symbol] = symbol_signals
         else:
-            # If not cached, compute and store
-            print(f"No cached results for {watchlist_name} on {today}, computing...")
+            # If not cached or older cache missing macd_is_positive, compute and store
+            print(f"Computing fresh results for {watchlist_name} on {today}...")
             results = macd_crossover_signal(symbols, days, threshold)
             store_symbol_picks(today, watchlist_name, results)
+
 
         # --- Order results as requested ---
         ordered_symbols = sorted(
