@@ -354,6 +354,146 @@ def calculate_macd_and_signal_bulk(symbols: list, date: pd.Timestamp, cached_dat
                         results[symbol] = data
     return results
 
+def compute_signals_for_symbol_data(macd_data: list, threshold: float = 0.05, days: int = 30, with_details: bool = False):
+    """
+    Computes MACD and MA signals given a sorted list of daily records up to a target date.
+    Each record must have: date, macd, signal_line, and optionally ma20, ma50.
+    """
+    macd_data = [d for d in macd_data if d.get("macd") is not None and d.get("signal_line") is not None]
+    if not macd_data or len(macd_data) < 2:
+        res = {
+            "about_to_cross": False,
+            "recent_crossover": False,
+            "bullish_macd_above_signal": False,
+            "about_to_become_positive": False,
+            "about_to_become_negative": False,
+            "macd_just_became_positive": False,
+            "macd_is_positive": False,
+            "ma20_just_became_above_ma50": False,
+            "ma20_just_became_above_ma50_date": None,
+            "ma20_is_above_ma50": False
+        }
+        if with_details:
+            res["details"] = {"error": "Not enough data"}
+        return res
+
+    last = macd_data[-1]
+    prev = macd_data[-2]
+    macd_diff = float(abs(last["macd"] - last["signal_line"]))
+    about_to_cross = (
+        bool(prev["macd"] < prev["signal_line"])
+        and bool(last["macd"] > prev["macd"])
+        and bool(last["macd"] < last["signal_line"])
+        and macd_diff <= float(threshold)
+    )
+
+    about_to_become_positive = (
+        (float(last["macd"]) < 0 and abs(float(last["macd"])) <= float(threshold))
+        or (float(last["signal_line"]) < 0 and abs(float(last["signal_line"])) <= float(threshold))
+    )
+
+    about_to_become_negative = (
+        (float(last["macd"]) > 0 and abs(float(last["macd"])) <= float(threshold))
+        or (float(last["signal_line"]) > 0 and abs(float(last["signal_line"])) <= float(threshold))
+    )
+
+    macd_above_signal = float(last["macd"]) > float(last["signal_line"])
+
+    lookback = max(2, days // 2)
+    crossover_dates = []
+    for i in range(1, min(lookback, len(macd_data))):
+        prev_row = macd_data[-i-1]
+        curr_row = macd_data[-i]
+        if prev_row["macd"] < prev_row["signal_line"] and curr_row["macd"] >= curr_row["signal_line"]:
+            crossover_dates.append(curr_row["date"])
+    recent_crossover = bool(len(crossover_dates) > 0)
+
+    # --- Add macd_just_became_positive signal ---
+    macd_just_became_positive = False
+    recent_positive_dates = []
+    if len(macd_data) >= 2:
+        if prev["macd"] < 0 and last["macd"] > 0:
+            macd_just_became_positive = True
+        elif len(macd_data) >= 3:
+            prev2 = macd_data[-3]
+            if prev2["macd"] < 0 and prev["macd"] < 0 and last["macd"] > 0:
+                macd_just_became_positive = True
+    for i in range(1, min(3, len(macd_data))):
+        curr = macd_data[-i]
+        if i >= 2:
+            p = macd_data[-i-1]
+            if p["macd"] < 0 and curr["macd"] > 0:
+                recent_positive_dates.append(curr["date"])
+            elif i >= 3:
+                p2 = macd_data[-i-2]
+                if p2["macd"] < 0 and p["macd"] < 0 and curr["macd"] > 0:
+                    recent_positive_dates.append(curr["date"])
+    if recent_positive_dates:
+        macd_just_became_positive = True
+
+    # --- Add ma20_just_became_above_ma50 signal ---
+    ma20_just_became_above_ma50 = False
+    ma20_just_became_above_ma50_date = None
+    lookback_days = 8
+    if len(macd_data) >= 2:
+        for i in range(1, min(lookback_days + 1, len(macd_data))):
+            curr = macd_data[-i]
+            p = macd_data[-i-1] if (len(macd_data) > i) else None
+            if p and curr.get("ma20") is not None and curr.get("ma50") is not None and p.get("ma20") is not None and p.get("ma50") is not None:
+                try:
+                    if float(p["ma20"]) <= float(p["ma50"]) and float(curr["ma20"]) > float(curr["ma50"]):
+                        ma20_just_became_above_ma50 = True
+                        ma20_just_became_above_ma50_date = curr.get("date")
+                        break
+                except Exception:
+                    pass
+
+    # --- Add ma20_is_above_ma50 signal ---
+    ma20_is_above_ma50 = False
+    if last.get("ma20") is not None and last.get("ma50") is not None:
+        try:
+            if float(last["ma20"]) > float(last["ma50"]):
+                ma20_is_above_ma50 = True
+        except Exception:
+            pass
+
+    macd_is_positive = False
+    if last.get("macd") is not None:
+        try:
+            macd_is_positive = float(last["macd"]) > 0
+        except Exception:
+            pass
+
+    result_dict = {
+        "about_to_cross": bool(about_to_cross),
+        "recent_crossover": recent_crossover,
+        "bullish_macd_above_signal": macd_above_signal,
+        "about_to_become_positive": about_to_become_positive,
+        "about_to_become_negative": about_to_become_negative,
+        "macd_just_became_positive": macd_just_became_positive,
+        "macd_is_positive": bool(macd_is_positive),
+        "ma20_just_became_above_ma50": ma20_just_became_above_ma50,
+        "ma20_just_became_above_ma50_date": ma20_just_became_above_ma50_date,
+        "ma20_is_above_ma50": ma20_is_above_ma50
+    }
+
+    if with_details:
+        result_dict["details"] = {
+            "last_macd": float(last["macd"]),
+            "last_signal": float(last["signal_line"]),
+            "prev_macd": float(prev["macd"]),
+            "prev_signal": float(prev["signal_line"]),
+            "crossover_dates": crossover_dates,
+            "macd_just_became_positive_dates": recent_positive_dates,
+            "last_ma20": last.get("ma20"),
+            "last_ma50": last.get("ma50"),
+            "prev_ma20": prev.get("ma20"),
+            "prev_ma50": prev.get("ma50"),
+            "ma20_just_became_above_ma50_date": ma20_just_became_above_ma50_date
+        }
+
+    return result_dict
+
 def macd_crossover_signal(
     symbols: list,
     days: int,
@@ -367,160 +507,28 @@ def macd_crossover_signal(
     """
     end_date = get_latest_market_date()
     start_date = datetime.now().date() - timedelta(days=days)
-    # Ensure we have data for the end date for all symbols
-    # get_macd_for_date(symbols, end_date)
-    # Get MACD data for the range for all symbols
     macd_bulk_data = get_macd_for_range_bulk(symbols, end_date - timedelta(days=365), end_date)
     print(f"Got MACD data for {len(macd_bulk_data)} symbols from {end_date - timedelta(days=365)} to {end_date}")
 
-    # Extract from macd_bulk_data just the dates between start_date and end_date and assign it back to macd_bulk_data
     for symbol in macd_bulk_data:
         macd_bulk_data[symbol] = [
             entry for entry in macd_bulk_data[symbol]
             if "date" in entry and start_date <= datetime.fromisoformat(entry["date"]).date() <= end_date
         ]
 
-    print(f"Exrtacted MACD data for {len(macd_bulk_data)} symbols from {start_date} to {end_date}")
+    print(f"Extracted MACD data for {len(macd_bulk_data)} symbols from {start_date} to {end_date}")
 
     results = {}
 
     for symbol in symbols:
         try:
             macd_data = macd_bulk_data.get(symbol, [])
-            # Filter out entries with errors
-            macd_data = [d for d in macd_data if "macd" in d and "signal_line" in d]
-            if not macd_data or len(macd_data) < 2:
-                results[symbol] = {
-                    "about_to_cross": False,
-                    "recent_crossover": False,
-                    "about_to_become_positive": False,
-                    "details": {"error": "Not enough data"}
-                }
-                continue
-
-            last = macd_data[-1]
-            prev = macd_data[-2]
-            macd_diff = float(abs(last["macd"] - last["signal_line"]))
-            about_to_cross = (
-                bool(prev["macd"] < prev["signal_line"])
-                and bool(last["macd"] > prev["macd"])
-                and bool(last["macd"] < last["signal_line"])
-                and macd_diff <= float(threshold)
+            results[symbol] = compute_signals_for_symbol_data(
+                macd_data,
+                threshold=threshold,
+                days=days,
+                with_details=with_details
             )
-
-            about_to_become_positive = (
-                (float(last["macd"]) < 0 and abs(float(last["macd"])) <= float(threshold))
-                or (float(last["signal_line"]) < 0 and abs(float(last["signal_line"])) <= float(threshold))
-            )
-
-            about_to_become_negative = (
-                (float(last["macd"]) > 0 and abs(float(last["macd"])) <= float(threshold))
-                or (float(last["signal_line"]) > 0 and abs(float(last["signal_line"])) <= float(threshold))
-            )
-
-            macd_above_signal = False
-            if "macd" in last and "signal_line" in last:
-                macd_above_signal = float(last["macd"]) > float(last["signal_line"])
-
-            lookback = max(2, days // 2)
-            crossover_dates = []
-            for i in range(1, min(lookback, len(macd_data))):
-                prev_row = macd_data[-i-1]
-                curr_row = macd_data[-i]
-                if prev_row["macd"] < prev_row["signal_line"] and curr_row["macd"] >= curr_row["signal_line"]:
-                    crossover_dates.append(curr_row["date"])
-            recent_crossover = bool(len(crossover_dates) > 0)
-
-            # --- Add macd_just_became_positive signal ---
-            macd_just_became_positive = False
-            recent_positive_dates = []
-            # Check today
-            if len(macd_data) >= 2:
-                last = macd_data[-1]
-                prev = macd_data[-2]
-                if prev["macd"] < 0 and last["macd"] > 0:
-                    macd_just_became_positive = True
-                elif len(macd_data) >= 3:
-                    prev2 = macd_data[-3]
-                    if prev2["macd"] < 0 and prev["macd"] < 0 and last["macd"] > 0:
-                        macd_just_became_positive = True
-            # Check last 5 days for the pattern
-            for i in range(1, min(3, len(macd_data))):
-                curr = macd_data[-i]
-                if i >= 2:
-                    prev = macd_data[-i-1]
-                    if prev["macd"] < 0 and curr["macd"] > 0:
-                        recent_positive_dates.append(curr["date"])
-                    elif i >= 3:
-                        prev2 = macd_data[-i-2]
-                        if prev2["macd"] < 0 and prev["macd"] < 0 and curr["macd"] > 0:
-                            recent_positive_dates.append(curr["date"])
-            if recent_positive_dates:
-                macd_just_became_positive = True
-
-            # --- Add ma20_just_became_above_ma50 signal ---
-            # print(f"Checking MA20/MA50 crossover for {symbol} with data {macd_data}")
-            ma20_just_became_above_ma50 = False
-            ma20_just_became_above_ma50_date = None
-            lookback_days = 8
-            if len(macd_data) >= 2:
-                for i in range(1, min(lookback_days + 1, len(macd_data))):
-                    curr = macd_data[-i]
-                    prev = macd_data[-i-1] if (len(macd_data) > i) else None
-                    if prev and "ma20" in curr and "ma50" in curr and "ma20" in prev and "ma50" in prev:
-                        try:
-                            if prev["ma20"] is not None and prev["ma50"] is not None and curr["ma20"] is not None and curr["ma50"] is not None:
-                                if float(prev["ma20"]) <= float(prev["ma50"]) and float(curr["ma20"]) > float(curr["ma50"]):
-                                    ma20_just_became_above_ma50 = True
-                                    ma20_just_became_above_ma50_date = curr.get("date")
-                                    break
-                        except Exception:
-                            pass
-
-            # --- Add ma20_is_above_ma50 signal ---
-            ma20_is_above_ma50 = False
-            if "ma20" in last and "ma50" in last and last["ma20"] is not None and last["ma50"] is not None:
-                try:
-                    if float(last["ma20"]) > float(last["ma50"]):
-                        ma20_is_above_ma50 = True
-                except Exception:
-                    pass
-
-            macd_is_positive = False
-            if "macd" in last and last["macd"] is not None:
-                try:
-                    macd_is_positive = float(last["macd"]) > 0
-                except Exception:
-                    pass
-
-            result_dict = {
-                "about_to_cross": bool(about_to_cross),
-                "recent_crossover": recent_crossover,
-                "bullish_macd_above_signal": macd_above_signal,
-                "about_to_become_positive": about_to_become_positive,
-                "about_to_become_negative": about_to_become_negative,
-                "macd_just_became_positive": macd_just_became_positive,
-                "macd_is_positive": bool(macd_is_positive),
-                "ma20_just_became_above_ma50": ma20_just_became_above_ma50,
-                "ma20_just_became_above_ma50_date": ma20_just_became_above_ma50_date,
-                "ma20_is_above_ma50": ma20_is_above_ma50
-            }
-
-            if with_details:
-                result_dict["details"] = {
-                    "last_macd": float(last["macd"]),
-                    "last_signal": float(last["signal_line"]),
-                    "prev_macd": float(prev["macd"]),
-                    "prev_signal": float(prev["signal_line"]),
-                    "crossover_dates": crossover_dates,
-                    "macd_just_became_positive_dates": recent_positive_dates,
-                    "last_ma20": last.get("ma20"),
-                    "last_ma50": last.get("ma50"),
-                    "prev_ma20": prev.get("ma20"),
-                    "prev_ma50": prev.get("ma50"),
-                    "ma20_just_became_above_ma50_date": ma20_just_became_above_ma50_date
-                }
-            results[symbol] = result_dict
         except Exception as e:
             print(f"Error processing symbol {symbol}: {e}")
             continue
@@ -533,6 +541,7 @@ def macd_crossover_signal(
             not results[sym].get("ma20_just_became_above_ma50", False),
             not results[sym].get("bullish_macd_above_signal", False),
             not results[sym].get("about_to_cross", False),
+
             not results[sym].get("about_to_become_positive", False)
         )
     )
@@ -645,44 +654,164 @@ def get_closing_prices(symbol: str, start_date, end_date):
 
     return results
 
+def backfill_symbol_picks_for_watchlist(watchlist_name: str, days_back: int = 180, threshold: float = 0.05) -> int:
+    """
+    Backfills symbol_picks rows for any missing dates where stock_cache has data for the watchlist symbols.
+    Only computes for dates that are missing in symbol_picks for this watchlist.
+    """
+    from db_utils import get_connection, put_connection, get_watchlist_symbols
+    from picks import store_symbol_picks
+    from datetime import date as dt_date, timedelta
+    from collections import defaultdict
+    import bisect
+
+    try:
+        symbols = get_watchlist_symbols(watchlist_name)
+    except Exception:
+        return 0
+
+    if not symbols:
+        return 0
+
+    conn = get_connection()
+    try:
+        start_date = dt_date.today() - timedelta(days=days_back)
+
+        with conn.cursor() as cur:
+            # 1. Find existing dates in symbol_picks for this watchlist that have modern schema (with macd_is_positive)
+            cur.execute("""
+                SELECT applied_date FROM symbol_picks
+                WHERE watchlist_name = %s AND applied_date >= %s
+                  AND filter_results ? 'macd_is_positive'
+            """, (watchlist_name, start_date))
+            existing_dates = set(row[0] for row in cur.fetchall())
+
+
+            # 2. Fetch all historical stock_cache records for these symbols
+            # Buffer 60 days before start_date so we have enough lookback to compute crossovers
+            buffer_start = start_date - timedelta(days=60)
+            cur.execute("""
+                SELECT symbol, date, ma20, ma50, macd, signal_line
+                FROM stock_cache
+                WHERE symbol = ANY(%s) AND date >= %s
+                ORDER BY symbol, date ASC
+            """, (symbols, buffer_start))
+            rows = cur.fetchall()
+
+        if not rows:
+            return 0
+
+        # Group data by symbol
+        symbol_data_by_sym = defaultdict(list)
+        dates_in_cache = set()
+
+        for sym, d, ma20, ma50, macd, signal_line in rows:
+            if d >= start_date:
+                dates_in_cache.add(d)
+            symbol_data_by_sym[sym].append({
+                "date": d.isoformat() if hasattr(d, "isoformat") else str(d),
+                "d_obj": d,
+                "ma20": ma20,
+                "ma50": ma50,
+                "macd": macd,
+                "signal_line": signal_line
+            })
+
+        # Dates to backfill: in cache within days_back window, but missing from symbol_picks
+        missing_dates = sorted(list(dates_in_cache - existing_dates))
+        if not missing_dates:
+            return 0
+
+        print(f"Backfilling {len(missing_dates)} missing dates for watchlist '{watchlist_name}'...")
+
+        symbol_date_lists = {}
+        for sym, records in symbol_data_by_sym.items():
+            symbol_date_lists[sym] = [r["d_obj"] for r in records]
+
+        backfilled_count = 0
+        for target_date in missing_dates:
+            results_for_date = {}
+            for sym in symbols:
+                records = symbol_data_by_sym.get(sym, [])
+                date_list = symbol_date_lists.get(sym, [])
+                if not records or not date_list:
+                    continue
+
+                idx = bisect.bisect_right(date_list, target_date)
+                if idx < 2:
+                    continue
+
+                # Ensure symbol has data on target_date
+                if date_list[idx - 1] != target_date:
+                    continue
+
+                # Take up to 45 records up to target_date
+                slice_data = records[max(0, idx - 45):idx]
+                signals = compute_signals_for_symbol_data(slice_data, threshold=threshold, days=30)
+                results_for_date[sym] = signals
+
+            if results_for_date:
+                store_symbol_picks(target_date, watchlist_name, results_for_date)
+                backfilled_count += 1
+
+        print(f"Completed backfill: saved {backfilled_count} dates to symbol_picks for '{watchlist_name}'")
+        return backfilled_count
+    finally:
+        put_connection(conn)
+
 def refresh_watchlist_data(watchlist_name, days_back=365):
     """
-    Identifies symbols in a watchlist with missing/null OHLCV data and refetches from yfinance.
+    Identifies symbols in a watchlist with missing/null OHLCV data, refetches from yfinance,
+    and backfills missing daily records in symbol_picks for all dates present in stock_cache.
     """
     from db_utils import get_watchlist_symbols, get_missing_ohlcv_dates, load_cached_data
     
     symbols = get_watchlist_symbols(watchlist_name)
     if not symbols:
-        return {"message": f"No symbols found in watchlist '{watchlist_name}'", "refetched": []}
+        return {"message": f"No symbols found in watchlist '{watchlist_name}'", "refetched": [], "backfilled_days": 0}
     
     # 1. Identify missing data/dates
     missing_dates_dict = get_missing_ohlcv_dates(symbols, days_back=days_back)
-    if not missing_dates_dict:
-        return {"message": f"No missing data found for symbols in '{watchlist_name}'", "refetched": []}
+    refetched_symbols = []
+    if missing_dates_dict:
+        refetched_symbols = list(missing_dates_dict.keys())
+        print(f"Refetching data for {len(refetched_symbols)} symbols in watchlist '{watchlist_name}'")
+        
+        # 2. Get existing cached data (needed for MACD calculation)
+        cached_data_dict = {}
+        for symbol in refetched_symbols:
+            cached_data_dict[symbol] = load_cached_data(symbol)
+        
+        # 3. Use bulk calculation logic to fetch and update
+        from datetime import datetime
+        today = pd.Timestamp(datetime.now().date())
+        
+        calculate_macd_and_signal_bulk(
+            refetched_symbols,
+            today,
+            cached_data_dict,
+            missing_dates_dict
+        )
+
+    # 4. Backfill missing symbol_picks entries for all past days with data in stock_cache
+    backfilled_days = backfill_symbol_picks_for_watchlist(watchlist_name, days_back=min(days_back, 365))
+
     
-    refetched_symbols = list(missing_dates_dict.keys())
-    print(f"Refetching data for {len(refetched_symbols)} symbols in watchlist '{watchlist_name}'")
+    msg_parts = []
+    if refetched_symbols:
+        msg_parts.append(f"Successfully refetched data for {len(refetched_symbols)} symbols.")
+    else:
+        msg_parts.append("No missing OHLCV data found.")
     
-    # 2. Get existing cached data (needed for MACD calculation)
-    cached_data_dict = {}
-    for symbol in refetched_symbols:
-        cached_data_dict[symbol] = load_cached_data(symbol)
-    
-    # 3. Use bulk calculation logic to fetch and update
-    from datetime import datetime
-    today = pd.Timestamp(datetime.now().date())
-    
-    calculate_macd_and_signal_bulk(
-        refetched_symbols,
-        today,
-        cached_data_dict,
-        missing_dates_dict
-    )
+    if backfilled_days > 0:
+        msg_parts.append(f"Backfilled {backfilled_days} missing days in symbol_picks.")
     
     return {
-        "message": f"Successfully refetched data for {len(refetched_symbols)} symbols.",
-        "refetched": refetched_symbols
+        "message": " ".join(msg_parts),
+        "refetched": refetched_symbols,
+        "backfilled_days": backfilled_days
     }
+
 
 def get_latest_market_date():
     """

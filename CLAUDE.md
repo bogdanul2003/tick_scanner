@@ -93,3 +93,25 @@ Default connection: `postgres://postgres:postgres@localhost:5432/postgres`
 - Float sanitization (NaN/Infinity -> None) via `utils/sanitization.py` before JSON responses.
 - Custom exceptions in `utils/exceptions.py`, handled by centralized middleware.
 - macOS-specific: uses matplotlib Agg backend (headless), Core ML for NPU inference.
+
+## Bullish MACD Signal Columns & History Lines
+
+In the **"Bullish MACD Signal for [Watchlist]"** view and its historical trend graph (**"Column counts – last X months"**), stock symbols are classified into 4 columns and tracked over time. Each line / column represents:
+
+1. **MACD gets positive** (Green `#27ae60`):
+   - **Meaning**: Stocks where MACD has recently crossed above zero from negative territory AND MACD is currently above the signal line.
+   - **Calculation**: `macd_just_became_positive == True` (crossed 0 from below in recent days) **AND** `bullish_macd_above_signal == True` (`macd > signal_line`).
+
+2. **Already crossed** (Purple `#8e44ad`):
+   - **Meaning**: Stocks that had a bullish MACD crossover above the signal line within the lookback window (past 15 trading days) AND MACD is already positive.
+   - **Calculation**: `recent_crossover == True` **AND** `macd_is_positive == True` (`macd > 0`).
+
+3. **MACD under signal positive** (Blue `#2980b9`):
+   - **Meaning**: Stocks where MACD is currently below the signal line but remains positive.
+   - **Calculation**: `bullish_macd_above_signal == False` (`macd <= signal_line`) **AND** `macd_is_positive == True` (`macd > 0`).
+
+4. **MACD under signal negative** (Grey `#7f8c8d`):
+   - **Meaning**: Stocks where MACD is currently below the signal line and also in negative territory.
+   - **Calculation**: `bullish_macd_above_signal == False` (`macd <= signal_line`) **AND** `macd_is_positive == False` (`macd <= 0`).
+
+*Note*: A symbol may appear in multiple columns if it satisfies multiple conditions. Historical daily totals are stored in `symbol_picks` and backfilled from `stock_cache` for 1, 3, 6, and 12-month intervals.

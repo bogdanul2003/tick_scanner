@@ -222,6 +222,58 @@ async def api_watchlist_bullish_signal(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/watchlist/{watchlist_name}/bullish_signal_history", tags=["Watchlist"])
+async def api_watchlist_bullish_signal_history(
+    watchlist_name: str,
+    days: int = 180
+):
+    """
+    Return per-day column counts for the 4 bullish MACD columns from symbol_picks history.
+    """
+    try:
+        from db_utils import get_symbol_picks_history
+        history = get_symbol_picks_history(watchlist_name, days=days)
+
+        result = []
+        for entry in history:
+            fr = entry["filter_results"]
+
+            all_symbols = set()
+            for sym_list in fr.values():
+                all_symbols.update(sym_list)
+
+            counts = {
+                "macd_gets_positive": 0,
+                "already_crossed": 0,
+                "under_signal_positive": 0,
+                "under_signal_negative": 0
+            }
+
+            for symbol in all_symbols:
+                just_pos = symbol in fr.get("macd_just_became_positive", [])
+                above_sig = symbol in fr.get("bullish_macd_above_signal", [])
+                recent_cross = symbol in fr.get("recent_crossover", [])
+                macd_pos = symbol in fr.get("macd_is_positive", [])
+
+                if just_pos and above_sig:
+                    counts["macd_gets_positive"] += 1
+                if recent_cross and macd_pos:
+                    counts["already_crossed"] += 1
+                if not above_sig and macd_pos:
+                    counts["under_signal_positive"] += 1
+                if not above_sig and not macd_pos:
+                    counts["under_signal_negative"] += 1
+
+            result.append({
+                "date": entry["date"],
+                "counts": counts
+            })
+
+        return {"watchlist": watchlist_name, "history": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 import math
 
 def sanitize_float(value):

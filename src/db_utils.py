@@ -709,6 +709,38 @@ def get_symbol_picks(watchlist_name, applied_date):
         put_connection(conn)
     return None
 
+def get_symbol_picks_history(watchlist_name, days=180):
+    """
+    Retrieve all symbol_picks rows for a watchlist over the past `days` days.
+    Returns a list of dicts: [{date: str, filter_results: {signal_name: [symbols]}}, ...]
+    sorted ascending by date.
+    """
+    import json
+    from datetime import date as dt_date, timedelta
+    conn = get_connection()
+    start_date = dt_date.today() - timedelta(days=days)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT applied_date, filter_results
+                FROM symbol_picks
+                WHERE watchlist_name = %s AND applied_date >= %s
+                ORDER BY applied_date ASC
+            """, (watchlist_name, start_date))
+            rows = cur.fetchall()
+            result = []
+            for row in rows:
+                applied_date, filter_results = row
+                if isinstance(filter_results, str):
+                    filter_results = json.loads(filter_results)
+                result.append({
+                    "date": applied_date.isoformat() if hasattr(applied_date, "isoformat") else str(applied_date),
+                    "filter_results": filter_results
+                })
+            return result
+    finally:
+        put_connection(conn)
+
 def create_symbol_properties_table():
     """
     Create the symbol_properties table with unique symbol and company_name columns.

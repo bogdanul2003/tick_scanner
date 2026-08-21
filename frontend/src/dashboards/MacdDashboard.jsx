@@ -220,6 +220,13 @@ function BullishSignal() {
   );
 }
 
+const INTERVAL_OPTIONS = [
+  { value: 30, label: "1 month" },
+  { value: 90, label: "3 months" },
+  { value: 180, label: "6 months" },
+  { value: 365, label: "12 months" }
+];
+
 function WatchlistBullishSignal({ watchlist, onClose }) {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -232,6 +239,13 @@ function WatchlistBullishSignal({ watchlist, onClose }) {
   const fetchedRef = React.useRef(false);
   // Add download state
   const [downloading, setDownloading] = useState(false);
+  // History chart state
+  const [historyDays, setHistoryDays] = useState(180);
+  const [historyData, setHistoryData] = useState(null);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [hoveredHistoryIndex, setHoveredHistoryIndex] = useState(null);
+
+
 
   React.useEffect(() => {
     const fetchSignal = async () => {
@@ -314,6 +328,28 @@ function WatchlistBullishSignal({ watchlist, onClose }) {
   const handleMouseLeave = () => {
     setHoveredSymbol(null);
   };
+
+  // Fetch history for the column-count line chart
+  React.useEffect(() => {
+    const fetchHistory = async () => {
+      setHistoryLoading(true);
+      try {
+        const res = await fetch(
+          `${API_BASE}/watchlist/${encodeURIComponent(watchlist)}/bullish_signal_history?days=${historyDays}`
+        );
+        if (res.ok) {
+          const data = await res.json();
+          setHistoryData(data.history || []);
+        }
+      } catch (e) {
+        console.error("Error fetching bullish signal history:", e);
+      }
+      setHistoryLoading(false);
+    };
+    fetchHistory();
+  }, [watchlist, historyDays]);
+
+
 
   // Compute symbols categorized into the 4 columns
   const columns = React.useMemo(() => {
@@ -542,7 +578,276 @@ function WatchlistBullishSignal({ watchlist, onClose }) {
         </div>
       )}
 
-      
+      {/* Column count history chart */}
+      <div style={{ marginTop: "20px" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            marginBottom: "8px",
+            flexWrap: "wrap",
+            gap: "8px"
+          }}
+        >
+          <div style={{ fontWeight: "bold", color: "#2c3e50", fontSize: "0.95em" }}>
+            Column counts – last {INTERVAL_OPTIONS.find(o => o.value === historyDays)?.label || `${historyDays} days`}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <label htmlFor="history-interval-select" style={{ fontSize: "0.85em", color: "#555", fontWeight: "bold" }}>
+              Interval:
+            </label>
+            <select
+              id="history-interval-select"
+              value={historyDays}
+              onChange={(e) => setHistoryDays(Number(e.target.value))}
+              style={{
+                padding: "3px 8px",
+                borderRadius: "4px",
+                border: "1px solid #ccc",
+                fontSize: "0.85em",
+                background: "#fff",
+                cursor: "pointer",
+                fontWeight: "bold",
+                color: "#2c3e50"
+              }}
+            >
+              {INTERVAL_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {historyLoading ? (
+          <div style={{ color: "#888", fontSize: "0.85em" }}>Loading history chart...</div>
+        ) : !historyData || historyData.length === 0 ? (
+          <div style={{ color: "#888", fontStyle: "italic", fontSize: "0.85em" }}>
+            No historical data yet — data accumulates over time as you run the scanner daily.
+          </div>
+        ) : (() => {
+          // --- SVG line chart (responsive 100% width) ---
+          const W = 1000, H = 220, PADL = 45, PADR = 25, PADT = 15, PADB = 35;
+          const innerW = W - PADL - PADR;
+          const innerH = H - PADT - PADB;
+
+          const cols = [
+            { key: "macd_gets_positive",    label: "MACD gets positive",       color: "#27ae60" },
+            { key: "already_crossed",        label: "Already crossed",          color: "#8e44ad" },
+            { key: "under_signal_positive",  label: "Under signal +",           color: "#2980b9" },
+            { key: "under_signal_negative",  label: "Under signal –",           color: "#7f8c8d" },
+          ];
+
+          // Interpolate missing days
+          const dates = historyData.map(d => d.date);
+          const allMax = Math.max(...historyData.flatMap(d =>
+            cols.map(c => d.counts[c.key] || 0)
+          ), 1);
+
+          const n = historyData.length;
+          const xOf = (i) => PADL + (i / Math.max(n - 1, 1)) * innerW;
+          const yOf = (v) => PADT + innerH - (v / allMax) * innerH;
+
+          // X-axis ticks: up to 10 evenly-spaced dates
+          const tickCount = Math.min(10, n);
+          const tickIndices = tickCount <= 1 ? [0]
+            : Array.from({ length: tickCount }, (_, k) => Math.round(k * (n - 1) / (tickCount - 1)));
+
+          // Y-axis ticks
+          const yTicks = [0, Math.round(allMax / 2), allMax];
+
+          const formatDateLabel = (d) => {
+            if (!d) return "";
+            if (historyDays >= 365) {
+              return d.slice(2); // YY-MM-DD
+            }
+            return d.slice(5); // MM-DD
+          };
+
+          const polyline = (colKey, color) => {
+            const points = historyData
+              .map((d, i) => `${xOf(i)},${yOf(d.counts[colKey] || 0)}`)
+              .join(" ");
+            return (
+              <polyline
+                key={colKey}
+                points={points}
+                fill="none"
+                stroke={color}
+                strokeWidth="2.5"
+                strokeLinejoin="round"
+                strokeLinecap="round"
+              />
+            );
+          };
+
+          const handleSvgMouseMove = (e) => {
+            if (!historyData || historyData.length === 0) return;
+            const rect = e.currentTarget.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const svgX = (mouseX / rect.width) * W;
+            const clampedX = Math.max(PADL, Math.min(PADL + innerW, svgX));
+            const rawIdx = ((clampedX - PADL) / innerW) * (n - 1);
+            const idx = Math.max(0, Math.min(n - 1, Math.round(rawIdx)));
+            setHoveredHistoryIndex(idx);
+          };
+
+          const handleSvgMouseLeave = () => {
+            setHoveredHistoryIndex(null);
+          };
+
+          return (
+            <div style={{ width: "100%", marginTop: "6px" }}>
+              <svg
+                width="100%"
+                height={H}
+                viewBox={`0 0 ${W} ${H}`}
+                onMouseMove={handleSvgMouseMove}
+                onMouseLeave={handleSvgMouseLeave}
+                style={{
+                  display: "block",
+                  fontFamily: "inherit",
+                  width: "100%",
+                  height: `${H}px`,
+                  cursor: "crosshair"
+                }}
+              >
+                {/* Y-axis grid lines and labels */}
+                {yTicks.map(v => (
+                  <g key={v}>
+                    <line
+                      x1={PADL} y1={yOf(v)} x2={W - PADR} y2={yOf(v)}
+                      stroke="#e8e8e8" strokeWidth="1"
+                    />
+                    <text
+                      x={PADL - 8} y={yOf(v) + 4}
+                      textAnchor="end" fontSize="11" fill="#888"
+                    >{v}</text>
+                  </g>
+                ))}
+
+                {/* Axes */}
+                <line x1={PADL} y1={PADT} x2={PADL} y2={PADT + innerH} stroke="#ccc" strokeWidth="1" />
+                <line x1={PADL} y1={PADT + innerH} x2={W - PADR} y2={PADT + innerH} stroke="#ccc" strokeWidth="1" />
+
+                {/* X-axis date labels */}
+                {tickIndices.map(i => (
+                  <text
+                    key={i}
+                    x={xOf(i)}
+                    y={PADT + innerH + 18}
+                    textAnchor="middle"
+                    fontSize="9"
+                    fill="#666"
+                  >
+                    {formatDateLabel(dates[i])}
+                  </text>
+                ))}
+
+                {/* Lines */}
+                {cols.map(c => polyline(c.key, c.color))}
+
+                {/* Hover crosshair and tooltip */}
+                {hoveredHistoryIndex !== null && historyData[hoveredHistoryIndex] && (() => {
+                  const hData = historyData[hoveredHistoryIndex];
+                  const hX = xOf(hoveredHistoryIndex);
+                  const cardW = 185;
+                  const cardH = 95;
+                  const tooltipX = hX > W - cardW - 30 ? hX - cardW - 12 : hX + 12;
+                  const tooltipY = PADT + 5;
+
+                  return (
+                    <g pointerEvents="none">
+                      {/* Vertical dashed crosshair */}
+                      <line
+                        x1={hX}
+                        y1={PADT}
+                        x2={hX}
+                        y2={PADT + innerH}
+                        stroke="#7f8c8d"
+                        strokeWidth="1.2"
+                        strokeDasharray="4 3"
+                      />
+
+                      {/* Circles on each curve */}
+                      {cols.map(c => (
+                        <circle
+                          key={c.key}
+                          cx={hX}
+                          cy={yOf(hData.counts[c.key] || 0)}
+                          r="4.5"
+                          fill={c.color}
+                          stroke="#ffffff"
+                          strokeWidth="2"
+                        />
+                      ))}
+
+                      {/* Floating tooltip box */}
+                      <rect
+                        x={tooltipX}
+                        y={tooltipY}
+                        width={cardW}
+                        height={cardH}
+                        rx="6"
+                        ry="6"
+                        fill="#ffffff"
+                        stroke="#dcdde1"
+                        strokeWidth="1.5"
+                        filter="drop-shadow(0 2px 6px rgba(0,0,0,0.18))"
+                      />
+                      {/* Date header */}
+                      <text
+                        x={tooltipX + 10}
+                        y={tooltipY + 18}
+                        fontSize="11"
+                        fontWeight="bold"
+                        fill="#2f3640"
+                      >
+                        {hData.date}
+                      </text>
+                      <line
+                        x1={tooltipX + 8}
+                        y1={tooltipY + 24}
+                        x2={tooltipX + cardW - 8}
+                        y2={tooltipY + 24}
+                        stroke="#f1f2f6"
+                        strokeWidth="1"
+                      />
+                      {/* Series Rows */}
+                      {cols.map((c, ci) => (
+                        <g key={c.key} transform={`translate(${tooltipX + 10}, ${tooltipY + 38 + ci * 14})`}>
+                          <circle cx="4" cy="-3" r="3.5" fill={c.color} />
+                          <text x="14" y="0" fontSize="10" fill="#57606f">
+                            {c.label}:
+                          </text>
+                          <text x={cardW - 20} y="0" fontSize="10" fontWeight="bold" textAnchor="end" fill="#2f3640">
+                            {hData.counts[c.key] || 0}
+                          </text>
+                        </g>
+                      ))}
+                    </g>
+                  );
+                })()}
+              </svg>
+
+
+
+              {/* Legend */}
+              <div style={{ display: "flex", gap: "16px", marginTop: "4px", flexWrap: "wrap" }}>
+                {cols.map(c => (
+                  <span key={c.key} style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "0.78em", color: "#444" }}>
+                    <span style={{ display: "inline-block", width: 20, height: 3, background: c.color, borderRadius: 2 }} />
+                    {c.label}
+                  </span>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
+      </div>
+
       {/* Chart tooltip */}
       {hoveredSymbol && (
         <div 
