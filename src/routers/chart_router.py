@@ -146,13 +146,14 @@ async def api_generate_watchlist_charts(
                 is_bullish = False
                 if pattern:
                     p_lower = pattern.lower()
-                    if "bottom" in p_lower:
+                    if "bottom" in p_lower or "triangle" in p_lower:
                         is_bullish = True
                 
                 if is_bullish:
                     bullish_images.append(url)
                 else:
                     bearish_images.append(url)
+
 
         process_detections(detections_3m, "3m")
         process_detections(detections_6m, "6m")

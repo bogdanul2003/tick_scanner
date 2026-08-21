@@ -147,6 +147,24 @@
   padding: 12px;
   margin-bottom: 12px;
   background: #fff;
+  transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.notes-card-initial {
+  background: #fff;
+  border-color: #e2e2e2;
+}
+
+.notes-card-confirmed {
+  background: #f0faf3;
+  border-color: #52c41a;
+  box-shadow: 0 1px 4px rgba(39, 174, 96, 0.12);
+}
+
+.notes-card-wrong {
+  background: #fffde7;
+  border-color: #fadb14;
+  box-shadow: 0 1px 4px rgba(250, 219, 20, 0.18);
 }
 
 .notes-card-head {
@@ -154,6 +172,7 @@
   align-items: center;
   gap: 10px;
   margin-bottom: 8px;
+  flex-wrap: wrap;
 }
 
 .notes-date-badge {
@@ -166,8 +185,51 @@
   white-space: nowrap;
 }
 
+.notes-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.82em;
+  color: #555;
+}
+
+.notes-status-label {
+  font-weight: 500;
+}
+
+.notes-status-select {
+  padding: 2px 7px;
+  border-radius: 6px;
+  border: 1px solid #ccc;
+  background: #fff;
+  font-weight: 600;
+  font-size: 0.82em;
+  cursor: pointer;
+  outline: none;
+  transition: all 0.2s ease;
+}
+
+.notes-status-select-initial {
+  color: #555;
+  border-color: #d0d7de;
+  background: #f6f8fa;
+}
+
+.notes-status-select-confirmed {
+  color: #1b662e;
+  border-color: #52c41a;
+  background: #e6f7ec;
+}
+
+.notes-status-select-wrong {
+  color: #7a5e00;
+  border-color: #fadb14;
+  background: #fffbe6;
+}
+
 .notes-card-meta { color: #888; font-size: 0.8em; }
 .notes-card-actions { margin-left: auto; display: flex; gap: 6px; }
+
 
 /* --- markdown body --- */
 

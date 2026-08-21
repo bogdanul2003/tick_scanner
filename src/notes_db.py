@@ -45,12 +45,16 @@ def create_note_tables():
                 symbol TEXT NOT NULL,
                 note_date DATE NOT NULL DEFAULT CURRENT_DATE,
                 body TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'INITIAL',
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 FOREIGN KEY (watchlist_id, symbol)
                     REFERENCES note_watchlist_symbols (watchlist_id, symbol)
                     ON DELETE CASCADE
             );
+            """)
+            cur.execute("""
+            ALTER TABLE symbol_notes ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'INITIAL';
             """)
             cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_symbol_notes_wl_symbol
@@ -104,20 +108,22 @@ def _image_meta(row):
 
 
 def _note_dict(row, images=None):
-    """Build a note dict from a (id, watchlist_id, symbol, note_date, body, created, updated) row."""
+    """Build a note dict from a (id, watchlist_id, symbol, note_date, body, status, created, updated) row."""
     return {
         "id": row[0],
         "watchlist_id": row[1],
         "symbol": row[2],
         "note_date": _iso(row[3]),
         "body": row[4],
-        "created_at": _iso(row[5]),
-        "updated_at": _iso(row[6]),
+        "status": row[5] or "INITIAL",
+        "created_at": _iso(row[6]),
+        "updated_at": _iso(row[7]),
         "images": images if images is not None else [],
     }
 
 
-NOTE_COLUMNS = "id, watchlist_id, symbol, note_date, body, created_at, updated_at"
+NOTE_COLUMNS = "id, watchlist_id, symbol, note_date, body, status, created_at, updated_at"
+
 
 
 def _touch_watchlist(cur, watchlist_id):
@@ -385,13 +391,18 @@ def get_note(note_id):
         put_connection(conn)
 
 
-def create_note(watchlist_id, symbol, body, note_date=None):
+def create_note(watchlist_id, symbol, body, note_date=None, status="INITIAL"):
     """
     Create a note for a symbol. The symbol is added to the watchlist if missing.
 
     `note_date` is a 'YYYY-MM-DD' string or None (defaults to today).
+    `status` is 'INITIAL', 'CONFIRMED', or 'WRONG' (defaults to 'INITIAL').
     Raises ValueError if the watchlist does not exist.
     """
+    status_val = (status or "INITIAL").upper()
+    if status_val not in ("INITIAL", "CONFIRMED", "WRONG"):
+        status_val = "INITIAL"
+
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -405,16 +416,16 @@ def create_note(watchlist_id, symbol, body, note_date=None):
             """, (watchlist_id, symbol))
             if note_date:
                 cur.execute(f"""
-                    INSERT INTO symbol_notes (watchlist_id, symbol, note_date, body)
-                    VALUES (%s, %s, %s, %s)
+                    INSERT INTO symbol_notes (watchlist_id, symbol, note_date, body, status)
+                    VALUES (%s, %s, %s, %s, %s)
                     RETURNING {NOTE_COLUMNS}
-                """, (watchlist_id, symbol, note_date, body))
+                """, (watchlist_id, symbol, note_date, body, status_val))
             else:
                 cur.execute(f"""
-                    INSERT INTO symbol_notes (watchlist_id, symbol, body)
-                    VALUES (%s, %s, %s)
+                    INSERT INTO symbol_notes (watchlist_id, symbol, body, status)
+                    VALUES (%s, %s, %s, %s)
                     RETURNING {NOTE_COLUMNS}
-                """, (watchlist_id, symbol, body))
+                """, (watchlist_id, symbol, body, status_val))
             note = _note_dict(cur.fetchone())
             _touch_watchlist(cur, watchlist_id)
             conn.commit()
@@ -423,8 +434,8 @@ def create_note(watchlist_id, symbol, body, note_date=None):
         put_connection(conn)
 
 
-def update_note(note_id, body=None, note_date=None):
-    """Update a note's body and/or recorded date. Returns the updated note, or None."""
+def update_note(note_id, body=None, note_date=None, status=None):
+    """Update a note's body, recorded date, and/or status. Returns the updated note, or None."""
     updates = []
     params = []
     if body is not None:
@@ -433,6 +444,12 @@ def update_note(note_id, body=None, note_date=None):
     if note_date is not None:
         updates.append("note_date = %s")
         params.append(note_date)
+    if status is not None:
+        status_val = status.upper()
+        if status_val not in ("INITIAL", "CONFIRMED", "WRONG"):
+            raise ValueError(f"Invalid status '{status}'. Must be INITIAL, CONFIRMED, or WRONG.")
+        updates.append("status = %s")
+        params.append(status_val)
     if not updates:
         return get_note(note_id)
 
@@ -455,6 +472,7 @@ def update_note(note_id, body=None, note_date=None):
             return get_note(note_id)
     finally:
         put_connection(conn)
+
 
 
 def delete_note(note_id):

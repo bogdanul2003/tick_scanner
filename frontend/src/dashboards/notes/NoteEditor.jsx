@@ -18,6 +18,7 @@ const isImage = file => file && file.type.startsWith("image/");
 export default function NoteEditor({ watchlistId, symbol, note, onSaved, onCancel }) {
   const editing = Boolean(note);
   const [noteDate, setNoteDate] = useState(note?.note_date || today());
+  const [status, setStatus] = useState(note?.status || "INITIAL");
   const [body, setBody] = useState(note?.body || "");
   const [pending, setPending] = useState([]);          // [{file, url}] not yet uploaded
   const [existing, setExisting] = useState(note?.images || []);
@@ -82,8 +83,8 @@ export default function NoteEditor({ watchlistId, symbol, note, onSaved, onCance
     setSaving(true);
     try {
       const saved = editing
-        ? await updateNote(note.id, { body, note_date: noteDate })
-        : await createNote(watchlistId, symbol, { body, noteDate });
+        ? await updateNote(note.id, { body, note_date: noteDate, status })
+        : await createNote(watchlistId, symbol, { body, noteDate, status });
       if (pending.length) {
         // Images are a separate call so they can also be added to older notes.
         await uploadImages(saved.id, pending.map(p => p.file));
@@ -111,10 +112,23 @@ export default function NoteEditor({ watchlistId, symbol, note, onSaved, onCance
           Date recorded{" "}
           <input type="date" value={noteDate} onChange={e => setNoteDate(e.target.value)} />
         </label>
+        <label className="notes-date">
+          Status{" "}
+          <select
+            className={`notes-status-select notes-status-select-${status.toLowerCase()}`}
+            value={status}
+            onChange={e => setStatus(e.target.value)}
+          >
+            <option value="INITIAL">INITIAL</option>
+            <option value="CONFIRMED">CONFIRMED</option>
+            <option value="WRONG">WRONG</option>
+          </select>
+        </label>
         <button className="notes-btn" onClick={() => setShowPreview(p => !p)}>
           {showPreview ? "Write" : "Preview"}
         </button>
       </div>
+
 
       {showPreview ? (
         <div className="notes-preview"><Markdown text={body} /></div>

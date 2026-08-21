@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import NoteCard from "./NoteCard";
 import NoteEditor from "./NoteEditor";
 import ImageLightbox from "./ImageLightbox";
-import { listNotes, deleteNote } from "./notesApi";
+import { listNotes, updateNote, deleteNote } from "./notesApi";
 
 const NEW_NOTE = "new";
 
@@ -33,6 +33,18 @@ export default function SymbolNotesPanel({ watchlistId, symbol, onNotesChanged }
     setEditing(null);
     await load();
     onNotesChanged?.();
+  };
+
+  const handleStatusChange = async (note, newStatus) => {
+    // Optimistically update status in UI immediately
+    setNotes(prev => prev.map(n => (n.id === note.id ? { ...n, status: newStatus } : n)));
+    try {
+      await updateNote(note.id, { status: newStatus });
+      onNotesChanged?.();
+    } catch (e) {
+      setError(e.message);
+      await load();
+    }
   };
 
   const handleDelete = async (note) => {
@@ -98,9 +110,11 @@ export default function SymbolNotesPanel({ watchlistId, symbol, onNotesChanged }
             onEdit={setEditing}
             onDelete={handleDelete}
             onOpenImage={setLightboxImage}
+            onStatusChange={handleStatusChange}
           />
         )
       ))}
+
 
       <ImageLightbox image={lightboxImage} onClose={() => setLightboxImage(null)} />
     </section>

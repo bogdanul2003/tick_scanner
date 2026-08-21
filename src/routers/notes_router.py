@@ -129,7 +129,7 @@ async def create_symbol_note(watchlist_id: int, symbol: str, payload: NoteCreate
     """Create a note for a symbol, adding the symbol to the watchlist if needed."""
     try:
         return notes_db.create_note(
-            watchlist_id, symbol.upper(), payload.body, payload.note_date
+            watchlist_id, symbol.upper(), payload.body, payload.note_date, payload.status
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -137,11 +137,17 @@ async def create_symbol_note(watchlist_id: int, symbol: str, payload: NoteCreate
 
 @router.patch("/entries/{note_id}", response_model=NoteResponse)
 async def update_note(note_id: int, payload: NoteUpdateRequest):
-    """Edit a note's text and/or its recorded date."""
-    note = notes_db.update_note(note_id, body=payload.body, note_date=payload.note_date)
+    """Edit a note's text, recorded date, and/or status."""
+    try:
+        note = notes_db.update_note(
+            note_id, body=payload.body, note_date=payload.note_date, status=payload.status
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if note is None:
         raise HTTPException(status_code=404, detail=f"Note {note_id} not found")
     return note
+
 
 
 @router.delete("/entries/{note_id}")

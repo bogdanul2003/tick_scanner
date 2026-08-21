@@ -31,11 +31,12 @@ export const removeSymbol = (id, symbol) =>
 export const listNotes = (id, symbol) =>
   apiJson(`/notes/watchlists/${id}/symbols/${encodeURIComponent(symbol)}/notes`);
 
-export const createNote = (id, symbol, { body, noteDate }) =>
+export const createNote = (id, symbol, { body, noteDate, status }) =>
   apiJson(
     `/notes/watchlists/${id}/symbols/${encodeURIComponent(symbol)}/notes`,
-    json("POST", { body, note_date: noteDate || null }),
+    json("POST", { body, note_date: noteDate || null, status: status || "INITIAL" }),
   );
+
 
 export const updateNote = (noteId, fields) =>
   apiJson(`/notes/entries/${noteId}`, json("PATCH", fields));
