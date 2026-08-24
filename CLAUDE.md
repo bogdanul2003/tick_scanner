@@ -96,22 +96,26 @@ Default connection: `postgres://postgres:postgres@localhost:5432/postgres`
 
 ## Bullish MACD Signal Columns & History Lines
 
-In the **"Bullish MACD Signal for [Watchlist]"** view and its historical trend graph (**"Column counts – last X months"**), stock symbols are classified into 4 columns and tracked over time. Each line / column represents:
+In the **"Bullish MACD Signal for [Watchlist]"** view and its historical trend graph (**"Column counts – last X months"**), stock symbols are classified into 5 columns and tracked over time. Each line / column represents:
 
-1. **MACD gets positive** (Green `#27ae60`):
+1. **MACD gets positive** (Green `#27ae60`) – history key `macd_gets_positive`:
    - **Meaning**: Stocks where MACD has recently crossed above zero from negative territory AND MACD is currently above the signal line.
    - **Calculation**: `macd_just_became_positive == True` (crossed 0 from below in recent days) **AND** `bullish_macd_above_signal == True` (`macd > signal_line`).
 
-2. **Already crossed** (Purple `#8e44ad`):
+2. **Recently crossed** (Purple `#8e44ad`) – history key `recently_crossed`:
    - **Meaning**: Stocks that had a bullish MACD crossover above the signal line within the lookback window (past 15 trading days) AND MACD is already positive.
    - **Calculation**: `recent_crossover == True` **AND** `macd_is_positive == True` (`macd > 0`).
 
-3. **MACD under signal positive** (Blue `#2980b9`):
+3. **MACD crossed** (Orange `#e67e22`) – history key `macd_crossed`:
+   - **Meaning**: Stocks where MACD is currently above the signal line, regardless of when the crossover happened. This is the superset that catches symbols whose crossover predates the `recent_crossover` lookback window.
+   - **Calculation**: `bullish_macd_above_signal == True` (`macd > signal_line`).
+
+4. **MACD under signal positive** (Blue `#2980b9`) – history key `under_signal_positive`:
    - **Meaning**: Stocks where MACD is currently below the signal line but remains positive.
    - **Calculation**: `bullish_macd_above_signal == False` (`macd <= signal_line`) **AND** `macd_is_positive == True` (`macd > 0`).
 
-4. **MACD under signal negative** (Grey `#7f8c8d`):
+5. **MACD under signal negative** (Grey `#7f8c8d`) – history key `under_signal_negative`:
    - **Meaning**: Stocks where MACD is currently below the signal line and also in negative territory.
    - **Calculation**: `bullish_macd_above_signal == False` (`macd <= signal_line`) **AND** `macd_is_positive == False` (`macd <= 0`).
 
-*Note*: A symbol may appear in multiple columns if it satisfies multiple conditions. Historical daily totals are stored in `symbol_picks` and backfilled from `stock_cache` for 1, 3, 6, and 12-month intervals.
+*Note*: A symbol may appear in multiple columns if it satisfies multiple conditions — in particular, every symbol in columns 1 and 2 that is above the signal line also appears in column 3. Column 3 is exactly the complement of columns 4 and 5 combined, so `macd_crossed + under_signal_positive + under_signal_negative` equals the number of evaluated symbols. Historical daily totals are stored in `symbol_picks` and backfilled from `stock_cache` for 1, 3, 6, and 12-month intervals.

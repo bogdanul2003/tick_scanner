@@ -12,8 +12,11 @@ DB_PARAMS = {
     "port": 5432
 }
 
-# Create a global connection pool (adjust minconn/maxconn as needed)
-CONN_POOL = psycopg2.pool.SimpleConnectionPool(
+# Create a global connection pool (adjust minconn/maxconn as needed).
+# Must be the Threaded variant: SimpleConnectionPool is not thread safe, and
+# any sync (non-async def) route handler is dispatched to Starlette's threadpool,
+# so getconn/putconn can be called from several threads at once.
+CONN_POOL = psycopg2.pool.ThreadedConnectionPool(
     minconn=1,
     maxconn=15,
     **DB_PARAMS
@@ -199,14 +202,21 @@ def save_bulk_to_cache(symbol, df):
     finally:
         put_connection(conn)
 
-def get_missing_ohlcv_dates(symbols, days_back=365):
+def get_missing_ohlcv_dates(symbols, days_back=365, end_date=None):
     """
-    Identifies dates within the last 'days_back' for which symbols are either 
+    Identifies dates within the last 'days_back' for which symbols are either
     missing from the DB or have NULL values in OHLCV columns.
+
+    end_date bounds the newest date considered. Callers should pass the latest
+    date with *final* market data (see macd_utils.get_latest_market_date), so an
+    in-progress daily bar is never reported as missing -- fetching it would cache
+    an intraday "close" that afterwards looks complete and is never refetched.
+    Defaults to today, and is never allowed past today.
     Returns a dict: {symbol: set(dates)}
     """
     from datetime import datetime, timedelta
-    end_date = datetime.now().date()
+    today = datetime.now().date()
+    end_date = today if end_date is None else min(end_date, today)
     start_date = end_date - timedelta(days=days_back)
     
     # Generate all expected business dates (approximate)

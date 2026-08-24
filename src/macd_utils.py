@@ -11,6 +11,16 @@ from db_utils import (
     fetch_from_cache
 )
 
+# US equity regular session close, Eastern Time.
+MARKET_CLOSE_ET = time(16, 0)
+
+# The consolidated closing print and the upstream daily bar do not settle at the
+# bell. Until this buffer has elapsed past the close, yfinance still serves an
+# in-progress daily bar whose "close" is just the last intraday trade -- caching
+# that bar poisons stock_cache, because it then looks complete (no NULL columns)
+# and is never refetched. Wait it out before treating today as final.
+MARKET_DATA_SETTLE_BUFFER = timedelta(hours=1)
+
 def get_macd_for_date(symbols: list, date):
     """
     Retrieves MACD and Signal Line for a list of symbols for a specific date.
@@ -770,25 +780,29 @@ def refresh_watchlist_data(watchlist_name, days_back=365):
     if not symbols:
         return {"message": f"No symbols found in watchlist '{watchlist_name}'", "refetched": [], "backfilled_days": 0}
     
-    # 1. Identify missing data/dates
-    missing_dates_dict = get_missing_ohlcv_dates(symbols, days_back=days_back)
+    # 1. Identify missing data/dates. Bound the window at the last settled
+    # session: the fetch range is derived from max(missing dates), so letting
+    # today in would download and cache an in-progress daily bar.
+    latest_market_date = get_latest_market_date()
+    missing_dates_dict = get_missing_ohlcv_dates(
+        symbols,
+        days_back=days_back,
+        end_date=latest_market_date
+    )
     refetched_symbols = []
     if missing_dates_dict:
         refetched_symbols = list(missing_dates_dict.keys())
-        print(f"Refetching data for {len(refetched_symbols)} symbols in watchlist '{watchlist_name}'")
-        
+        print(f"Refetching data for {len(refetched_symbols)} symbols in watchlist '{watchlist_name}' up to {latest_market_date}")
+
         # 2. Get existing cached data (needed for MACD calculation)
         cached_data_dict = {}
         for symbol in refetched_symbols:
             cached_data_dict[symbol] = load_cached_data(symbol)
-        
+
         # 3. Use bulk calculation logic to fetch and update
-        from datetime import datetime
-        today = pd.Timestamp(datetime.now().date())
-        
         calculate_macd_and_signal_bulk(
             refetched_symbols,
-            today,
+            latest_market_date,
             cached_data_dict,
             missing_dates_dict
         )
@@ -815,31 +829,32 @@ def refresh_watchlist_data(watchlist_name, days_back=365):
 
 def get_latest_market_date():
     """
-    Returns the latest date for which market data is available.
-    If the market is currently open or hasn't opened yet, returns yesterday's date.
-    If the market has closed today, returns today's date.
+    Returns the latest date for which *final* market data is available.
+
+    Today is only reported once MARKET_DATA_SETTLE_BUFFER has elapsed past the
+    close, so callers never fetch and cache an in-progress daily bar. Before
+    that, and on weekends, the previous trading day is returned.
     """
     # Get current time in Eastern Time
     et = pytz.timezone('America/New_York')
     now_et = datetime.now(et)
-    
-    market_close = time(16, 0)
+
     today = now_et.date()
-    current_time = now_et.time()
     weekday = today.weekday()
-    
+
     # If today is Saturday (5) or Sunday (6), return last Friday
     if weekday == 5:
         return today - timedelta(days=1)
     if weekday == 6:
         return today - timedelta(days=2)
-    
-    # If before market close (before 4:00 PM), return previous trading day
-    if current_time < market_close:
-        if weekday == 0:  # Monday before close, return last Friday
+
+    # Before the close plus the settle buffer, return the previous trading day
+    settled_at = datetime.combine(today, MARKET_CLOSE_ET) + MARKET_DATA_SETTLE_BUFFER
+    if now_et.replace(tzinfo=None) < settled_at:
+        if weekday == 0:  # Monday before settle, return last Friday
             return today - timedelta(days=3)
         else:
             return today - timedelta(days=1)
-    
-    # Market has closed for today
+
+    # Market has closed for today and its data has settled
     return today

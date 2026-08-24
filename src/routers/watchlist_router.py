@@ -80,8 +80,15 @@ async def api_remove_symbol_from_watchlist(
 
 
 @router.post("/{watchlist_name}/refresh")
-async def api_refresh_watchlist(watchlist_name: str, days_back: int = 365):
-    """Refresh missing/null OHLCV data for all symbols in a watchlist."""
+def api_refresh_watchlist(watchlist_name: str, days_back: int = 365):
+    """
+    Refresh missing/null OHLCV data for all symbols in a watchlist.
+
+    Deliberately a sync `def`, not `async def`: refresh_watchlist_data() blocks
+    for minutes (psycopg2, yfinance, pandas, multiprocessing) with nothing to
+    await, so on the event loop it would freeze the whole API. Starlette runs
+    sync handlers in its threadpool instead, keeping the loop free.
+    """
     try:
         result = refresh_watchlist_data(watchlist_name, days_back=days_back)
         return result
@@ -215,12 +222,13 @@ async def api_watchlist_bullish_signal_history(
     days: int = 180
 ):
     """
-    Return per-day column counts for the 4 bullish MACD columns, derived from symbol_picks history.
-    For each recorded date, compute how many symbols fall into each of the 4 columns:
-      1. macd_gets_positive   – macd_just_became_positive AND bullish_macd_above_signal
-      2. already_crossed      – recent_crossover AND macd_is_positive
-      3. under_signal_positive – NOT bullish_macd_above_signal AND macd_is_positive
-      4. under_signal_negative – NOT bullish_macd_above_signal AND NOT macd_is_positive
+    Return per-day column counts for the 5 bullish MACD columns, derived from symbol_picks history.
+    For each recorded date, compute how many symbols fall into each of the 5 columns:
+      1. macd_gets_positive    – macd_just_became_positive AND bullish_macd_above_signal
+      2. recently_crossed      – recent_crossover AND macd_is_positive
+      3. macd_crossed          – bullish_macd_above_signal
+      4. under_signal_positive – NOT bullish_macd_above_signal AND macd_is_positive
+      5. under_signal_negative – NOT bullish_macd_above_signal AND NOT macd_is_positive
     Returns a list of {date, counts: {col: n}} objects sorted ascending.
     """
     try:
@@ -237,7 +245,8 @@ async def api_watchlist_bullish_signal_history(
 
             counts = {
                 "macd_gets_positive": 0,
-                "already_crossed": 0,
+                "recently_crossed": 0,
+                "macd_crossed": 0,
                 "under_signal_positive": 0,
                 "under_signal_negative": 0
             }
@@ -251,7 +260,9 @@ async def api_watchlist_bullish_signal_history(
                 if just_pos and above_sig:
                     counts["macd_gets_positive"] += 1
                 if recent_cross and macd_pos:
-                    counts["already_crossed"] += 1
+                    counts["recently_crossed"] += 1
+                if above_sig:
+                    counts["macd_crossed"] += 1
                 if not above_sig and macd_pos:
                     counts["under_signal_positive"] += 1
                 if not above_sig and not macd_pos:

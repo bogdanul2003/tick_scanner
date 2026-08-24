@@ -351,19 +351,21 @@ function WatchlistBullishSignal({ watchlist, onClose }) {
 
 
 
-  // Compute symbols categorized into the 4 columns
+  // Compute symbols categorized into the 5 columns
   const columns = React.useMemo(() => {
     if (!result || !result.results) {
       return {
         getsPositive: [],
-        alreadyCrossed: [],
+        recentlyCrossed: [],
+        macdCrossed: [],
         underSignalPositive: [],
         underSignalNegative: []
       };
     }
 
     const getsPositive = [];
-    const alreadyCrossed = [];
+    const recentlyCrossed = [];
+    const macdCrossed = [];
     const underSignalPositive = [];
     const underSignalNegative = [];
 
@@ -380,17 +382,22 @@ function WatchlistBullishSignal({ watchlist, onClose }) {
         getsPositive.push(symbol);
       }
 
-      // 2. "Already crossed": (recent crossover OR both about to cross & recent crossover) AND MACD is already positive
+      // 2. "Recently crossed": crossed above the signal line within the lookback window AND MACD is already positive
       if (hasRecentCrossover && isMacdPositive) {
-        alreadyCrossed.push(symbol);
+        recentlyCrossed.push(symbol);
       }
 
-      // 3. "MACD under signal positive": MACD below signal line but still positive
+      // 3. "MACD crossed": MACD is currently above the signal line, regardless of when it crossed
+      if (isAboveSignal) {
+        macdCrossed.push(symbol);
+      }
+
+      // 4. "MACD under signal positive": MACD below signal line but still positive
       if (!isAboveSignal && isMacdPositive) {
         underSignalPositive.push(symbol);
       }
 
-      // 4. "MACD under signal negative": MACD below signal line and negative
+      // 5. "MACD under signal negative": MACD below signal line and negative
       if (!isAboveSignal && !isMacdPositive) {
         underSignalNegative.push(symbol);
       }
@@ -398,7 +405,8 @@ function WatchlistBullishSignal({ watchlist, onClose }) {
 
     return {
       getsPositive,
-      alreadyCrossed,
+      recentlyCrossed,
+      macdCrossed,
       underSignalPositive,
       underSignalNegative
     };
@@ -414,12 +422,20 @@ function WatchlistBullishSignal({ watchlist, onClose }) {
       borderColor: "#a3e0b8"
     },
     {
-      key: "alreadyCrossed",
-      title: "Already crossed",
-      symbols: columns.alreadyCrossed,
+      key: "recentlyCrossed",
+      title: "Recently crossed",
+      symbols: columns.recentlyCrossed,
       badgeColor: "#8e44ad",
       headerBg: "#f5eefb",
       borderColor: "#d2b4de"
+    },
+    {
+      key: "macdCrossed",
+      title: "MACD crossed",
+      symbols: columns.macdCrossed,
+      badgeColor: "#e67e22",
+      headerBg: "#fdf2e6",
+      borderColor: "#f5cba7"
     },
     {
       key: "underSignalPositive",
@@ -635,7 +651,8 @@ function WatchlistBullishSignal({ watchlist, onClose }) {
 
           const cols = [
             { key: "macd_gets_positive",    label: "MACD gets positive",       color: "#27ae60" },
-            { key: "already_crossed",        label: "Already crossed",          color: "#8e44ad" },
+            { key: "recently_crossed",       label: "Recently crossed",         color: "#8e44ad" },
+            { key: "macd_crossed",           label: "MACD crossed",             color: "#e67e22" },
             { key: "under_signal_positive",  label: "Under signal +",           color: "#2980b9" },
             { key: "under_signal_negative",  label: "Under signal –",           color: "#7f8c8d" },
           ];
@@ -754,7 +771,8 @@ function WatchlistBullishSignal({ watchlist, onClose }) {
                   const hData = historyData[hoveredHistoryIndex];
                   const hX = xOf(hoveredHistoryIndex);
                   const cardW = 185;
-                  const cardH = 95;
+                  // Header (38) + one 14px row per series + bottom padding
+                  const cardH = 38 + cols.length * 14 + 8;
                   const tooltipX = hX > W - cardW - 30 ? hX - cardW - 12 : hX + 12;
                   const tooltipY = PADT + 5;
 
