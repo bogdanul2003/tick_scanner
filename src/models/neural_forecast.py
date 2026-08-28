@@ -38,6 +38,7 @@ class CoreMLForecaster:
         self.normalization_type = "unknown"
         self.signal_type = signal_type
         self.include_delta = False
+        self.residual_target = False
         self.input_size = 1
         self.hidden_size = None
         self.num_layers = None
@@ -63,6 +64,7 @@ class CoreMLForecaster:
             self.forecast_horizon = cached["forecast_horizon"]
             self.normalization_type = cached.get("normalization_type", "unknown")
             self.include_delta = cached.get("include_delta", False)
+            self.residual_target = cached.get("residual_target", False)
             self.input_size = cached.get("input_size", 1)
             logger.info(f"Loaded Core ML model from cache")
             return
@@ -95,6 +97,7 @@ class CoreMLForecaster:
             self.forecast_horizon = int(metadata.get("forecast_horizon", 5))
             self.normalization_type = metadata.get("normalization_type", "global")
             self.include_delta = metadata.get("include_delta", "False").lower() == "true"
+            self.residual_target = metadata.get("residual_target", "False").lower() == "true"
             self.input_size = 2 if self.include_delta else 1
             
             # Load additional model details if present
@@ -117,6 +120,7 @@ class CoreMLForecaster:
                 "forecast_horizon": self.forecast_horizon,
                 "normalization_type": self.normalization_type,
                 "include_delta": self.include_delta,
+                "residual_target": self.residual_target,
                 "input_size": self.input_size,
                 "hidden_size": self.hidden_size,
                 "num_layers": self.num_layers,
@@ -189,8 +193,22 @@ class CoreMLForecaster:
         # Get forecast and denormalize
         # Output shape is (horizon * input_size)
         forecast_raw = output["forecast"][0].reshape(self.forecast_horizon, self.input_size)
-        forecast_denorm = forecast_raw * s + m
-        
+
+        if self.residual_target:
+            # Model predicted the drift baseline's error. Denormalize by std only
+            # (no mean — it was never subtracted during training) and add the raw
+            # drift back:  level = drift_raw + residual_norm * std
+            last = float(sequence[-1])
+            last_delta = float(sequence[-1] - sequence[-2])
+            steps = np.arange(1, self.forecast_horizon + 1, dtype=np.float32)
+            drift = np.empty((self.forecast_horizon, self.input_size), dtype=np.float32)
+            drift[:, 0] = last + last_delta * steps
+            if self.input_size > 1:
+                drift[:, 1] = last_delta
+            forecast_denorm = drift + forecast_raw * s
+        else:
+            forecast_denorm = forecast_raw * s + m
+
         # Return all features (horizon, input_size)
         return forecast_denorm
     

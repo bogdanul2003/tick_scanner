@@ -345,11 +345,12 @@ class MACDForecasterTrainer:
         architecture: str = "stacked_lstm",
         normalization_type: str = "global",
         include_delta: bool = False,
+        residual_target: bool = False,
         device: str = None
     ):
         """
         Initialize the trainer.
-        
+
         Args:
             seq_length: Length of input sequences
             forecast_horizon: Number of days to forecast
@@ -359,6 +360,11 @@ class MACDForecasterTrainer:
             architecture: Model architecture
             normalization_type: 'global' (dataset-wide) or 'internal' (per-sequence)
             include_delta: If True, include MACD delta as a feature and predict it
+            residual_target: If True, train on (actual - drift baseline) instead of
+                the actual values, where drift is the linear extrapolation
+                macd[t+k] = macd[t] + (k+1)*delta[t]. Makes "beat persistence" the
+                literal training objective. Inference adds the drift back, so
+                predictions remain in the original units.
             device: Device to train on
         """
         self.seq_length = seq_length
@@ -366,6 +372,7 @@ class MACDForecasterTrainer:
         self.architecture = architecture
         self.normalization_type = normalization_type.lower()
         self.include_delta = include_delta
+        self.residual_target = residual_target
         self.input_size = 2 if include_delta else 1
         self.output_size = forecast_horizon * self.input_size
         self.batch_size = None # Set during training
@@ -385,6 +392,7 @@ class MACDForecasterTrainer:
         print(f"Architecture: {architecture}")
         print(f"Normalization: {self.normalization_type}")
         print(f"Include Delta: {self.include_delta}")
+        print(f"Residual Target: {self.residual_target}")
         
         # Initialize model using factory function
         self.model = create_model(
@@ -402,6 +410,26 @@ class MACDForecasterTrainer:
         self.mean = np.zeros(self.input_size, dtype=np.float32)
         self.std = np.ones(self.input_size, dtype=np.float32)
     
+    def _drift_baseline(self, last: float, last_delta: float) -> np.ndarray:
+        """
+        Linear-extrapolation ("drift") persistence baseline for one window.
+
+            macd[t+k]  = macd[t] + (k+1) * delta[t]
+            delta[t+k] = delta[t]
+
+        This is the baseline measured by scripts/persistence_baseline.py. In
+        residual mode the model is trained to predict the error of THIS, so
+        anything it learns is by construction information the baseline lacks.
+
+        Returns shape (forecast_horizon, input_size) in raw units.
+        """
+        steps = np.arange(1, self.forecast_horizon + 1, dtype=np.float32)
+        drift = np.empty((self.forecast_horizon, self.input_size), dtype=np.float32)
+        drift[:, 0] = last + last_delta * steps
+        if self.input_size > 1:
+            drift[:, 1] = last_delta
+        return drift
+
     def _calculate_deltas(self, series: np.ndarray) -> np.ndarray:
         """Calculate MACD delta (today - yesterday). First point is 0."""
         deltas = np.zeros_like(series)
@@ -411,7 +439,8 @@ class MACDForecasterTrainer:
     def prepare_sequences(
         self,
         data,
-        fit: bool = True
+        fit: bool = True,
+        return_drift: bool = False
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Prepare training sequences from time series data.
@@ -420,8 +449,20 @@ class MACDForecasterTrainer:
             data: List of 1D numpy arrays (one per symbol) or a single array
             fit: If True (training), compute and store normalization stats.
                  If False (evaluation), reuse existing self.mean/self.std.
+            return_drift: If True, also return the drift baseline for each window,
+                normalized into the same space the *level* target occupies, i.e.
+                D = (drift_raw - mean) / std. That makes reconstruction additive:
+                    level_norm = residual_norm + D
+                Used by evaluate() to score in level space regardless of target mode.
+
+        Returns (X, y) or (X, y, D) when return_drift is True.
+
+        In residual mode the target is (y_raw - drift_raw) / std — scaled by std
+        but with NO mean subtraction, because a residual is already centred near
+        zero and drift's systematic overshoot at longer horizons is exactly the
+        bias we want the model to learn rather than absorb into normalization.
         """
-        all_X, all_y = [], []
+        all_X, all_y, all_D = [], [], []
 
         # Process each symbol into (raw, delta) pairs if needed
         processed_symbols = []
@@ -456,33 +497,55 @@ class MACDForecasterTrainer:
                     # Per-sequence normalization (per feature)
                     m = np.mean(X_raw, axis=0)
                     s = np.std(X_raw, axis=0) + 1e-8
-                    X_norm = (X_raw - m) / s
-                    y_norm = (y_raw - m) / s
                 else:
                     # Dataset-wide normalization
-                    X_norm = (X_raw - self.mean) / self.std
-                    y_norm = (y_raw - self.mean) / self.std
-                    
+                    m = self.mean
+                    s = self.std
+
+                X_norm = (X_raw - m) / s
+
+                if self.residual_target or return_drift:
+                    # Drift is computed from RAW values, before any normalization.
+                    drift_raw = self._drift_baseline(
+                        last=float(X_raw[-1, 0]),
+                        last_delta=float(X_raw[-1, 0] - X_raw[-2, 0])
+                    )
+
+                if self.residual_target:
+                    y_norm = (y_raw - drift_raw) / s
+                else:
+                    y_norm = (y_raw - m) / s
+
                 all_X.append(X_norm)
                 # Flatten target if multi-variate: (horizon, input_size) -> (horizon * input_size)
                 all_y.append(y_norm.flatten())
-        
+                if return_drift:
+                    all_D.append(((drift_raw - m) / s).flatten())
+
         if not all_X:
             # No window was long enough. Return empty tensors rather than
             # crashing in zip(*combined) below, so callers can check len().
-            return (
+            empty = (
                 torch.empty((0, self.seq_length, self.input_size), dtype=torch.float32),
                 torch.empty((0, self.output_size), dtype=torch.float32)
             )
+            return empty + (empty[1],) if return_drift else empty
 
-        # Shuffle
-        combined = list(zip(all_X, all_y))
-        np.random.shuffle(combined)
-        all_X, all_y = zip(*combined)
-        
+        # Shuffle (keep X/y/D aligned)
+        if return_drift:
+            combined = list(zip(all_X, all_y, all_D))
+            np.random.shuffle(combined)
+            all_X, all_y, all_D = zip(*combined)
+        else:
+            combined = list(zip(all_X, all_y))
+            np.random.shuffle(combined)
+            all_X, all_y = zip(*combined)
+
         # Convert to tensors
         X = torch.tensor(np.array(all_X), dtype=torch.float32)
         y = torch.tensor(np.array(all_y), dtype=torch.float32)
+        if return_drift:
+            return X, y, torch.tensor(np.array(all_D), dtype=torch.float32)
         
         return X, y
     
@@ -679,72 +742,97 @@ class MACDForecasterTrainer:
     ) -> dict:
         """
         Evaluate the model on held-out test data.
+
+        Metrics are always computed in *level* space, even in residual mode, so
+        they stay comparable across target modes. In residual mode the drift
+        baseline is scored on the identical windows and reported alongside — if
+        the model's numbers do not beat the drift column, it has learned nothing
+        that persistence did not already provide.
         """
-        X_test, y_test = self.prepare_sequences(test_data, fit=False)
-        
+        X_test, y_test, D_test = self.prepare_sequences(
+            test_data, fit=False, return_drift=True
+        )
+
         if len(X_test) == 0:
             return {"error": "Not enough test data"}
-        
+
         X_test = X_test.to(self.device)
         y_test = y_test.to(self.device)
-        
+        D_test = D_test.to(self.device)
+
         self.model.eval()
         with torch.no_grad():
             predictions = self.model(X_test)
-        
-        # Reshape to (samples, horizon, features)
-        pred_reshaped = predictions.cpu().numpy().reshape(-1, self.forecast_horizon, self.input_size)
-        actual_reshaped = y_test.cpu().numpy().reshape(-1, self.forecast_horizon, self.input_size)
-        X_test_np = X_test.cpu().numpy()
-        
-        # Compute metrics for each feature
-        feature_metrics = []
-        for f in range(self.input_size):
-            p_f = pred_reshaped[:, :, f]
-            a_f = actual_reshaped[:, :, f]
-            
-            mse = np.mean((p_f - a_f) ** 2)
-            mae = np.mean(np.abs(p_f - a_f))
-            rmse = np.sqrt(mse)
-            
-            # Directional Accuracy (relative to last input of that feature)
-            directional_correct = 0
-            for i in range(len(p_f)):
-                last_val = X_test_np[i, -1, f]
-                if (p_f[i, 0] > last_val) == (a_f[i, 0] > last_val):
-                    directional_correct += 1
-            
-            da = directional_correct / len(p_f)
-            
-            feature_metrics.append({
-                "mae": mae,
-                "rmse": rmse,
-                "directional_accuracy": da
-            })
-                
+
+        # Move everything into normalized LEVEL space.
+        # In residual mode the model and the target are both residuals, and
+        # level_norm = residual_norm + D (see prepare_sequences).
+        if self.residual_target:
+            pred_level = predictions + D_test
+            actual_level = y_test + D_test
+        else:
+            pred_level = predictions
+            actual_level = y_test
+
+        def _score(pred_t):
+            """Per-feature metrics for one prediction tensor, in level space."""
+            p = pred_t.cpu().numpy().reshape(-1, self.forecast_horizon, self.input_size)
+            a = actual_level.cpu().numpy().reshape(-1, self.forecast_horizon, self.input_size)
+            X_np = X_test.cpu().numpy()
+            out = []
+            for f in range(self.input_size):
+                p_f, a_f = p[:, :, f], a[:, :, f]
+                mse = np.mean((p_f - a_f) ** 2)
+                # Directional accuracy on day 1, versus the last input value
+                last_vals = X_np[:, -1, f]
+                da = float(np.mean((p_f[:, 0] > last_vals) == (a_f[:, 0] > last_vals)))
+                out.append({
+                    "mae": float(np.mean(np.abs(p_f - a_f))),
+                    "rmse": float(np.sqrt(mse)),
+                    "directional_accuracy": da
+                })
+            return out
+
+        feature_metrics = _score(pred_level)
+        # Zero residual == the drift baseline exactly.
+        drift_metrics = _score(D_test) if self.residual_target else None
+
         metrics = {
-            "mae": feature_metrics[0]["mae"], # MACD
+            "mae": feature_metrics[0]["mae"],  # MACD
             "rmse": feature_metrics[0]["rmse"],
             "directional_accuracy": feature_metrics[0]["directional_accuracy"],
-            "test_samples": len(pred_reshaped),
-            "features": feature_metrics
+            "test_samples": len(X_test),
+            "features": feature_metrics,
+            "drift_features": drift_metrics
         }
-        
+
         if verbose:
-            print("\n" + "=" * 50)
-            print("Test Evaluation Results")
-            print("=" * 50)
+            print("\n" + "=" * 62)
+            print("Test Evaluation Results (normalized level space)")
+            print("=" * 62)
             print(f"Test samples: {metrics['test_samples']}")
-            
+            if self.residual_target:
+                print("Target mode:  residual (model predicts the error of drift)")
+
             labels = ["MACD", "Delta"] if self.input_size > 1 else ["Signal"]
             for i, label in enumerate(labels):
                 m = feature_metrics[i]
                 print(f"\n{label} Metrics:")
-                print(f"  MAE (Normalized): {m['mae']:.6f}")
-                print(f"  RMSE (Normalized): {m['rmse']:.6f}")
-                print(f"  Directional Acc: {m['directional_accuracy']:.2%}")
-            print("=" * 50)
-        
+                if drift_metrics:
+                    d = drift_metrics[i]
+                    print(f"  {'':22s}{'model':>12s}{'drift':>12s}")
+                    print(f"  {'MAE':22s}{m['mae']:>12.6f}{d['mae']:>12.6f}")
+                    print(f"  {'RMSE':22s}{m['rmse']:>12.6f}{d['rmse']:>12.6f}")
+                    print(f"  {'Directional Acc (D1)':22s}"
+                          f"{m['directional_accuracy']:>11.2%}{d['directional_accuracy']:>12.2%}")
+                    better = m["mae"] < d["mae"] and m["directional_accuracy"] > d["directional_accuracy"]
+                    print(f"  -> model beats drift on both: {better}")
+                else:
+                    print(f"  MAE:                  {m['mae']:.6f}")
+                    print(f"  RMSE:                 {m['rmse']:.6f}")
+                    print(f"  Directional Acc (D1): {m['directional_accuracy']:.2%}")
+            print("=" * 62)
+
         return metrics
     
     def predict(self, sequence: np.ndarray, prev_value: float = None) -> np.ndarray:
@@ -786,8 +874,19 @@ class MACDForecasterTrainer:
         
         # Denormalize and reshape
         pred_np = pred.cpu().numpy()[0].reshape(self.forecast_horizon, self.input_size)
-        forecast_all = pred_np * s + m
-        
+
+        if self.residual_target:
+            # The model predicted the drift baseline's error. Denormalize the
+            # residual by std only (no mean — it was never subtracted) and add
+            # the raw drift back:  level = drift_raw + residual_norm * std
+            drift_raw = self._drift_baseline(
+                last=float(sequence[-1]),
+                last_delta=float(sequence[-1] - sequence[-2])
+            )
+            forecast_all = drift_raw + pred_np * s
+        else:
+            forecast_all = pred_np * s + m
+
         return forecast_all
     
     def save(self, path: str):
@@ -804,6 +903,7 @@ class MACDForecasterTrainer:
             "batch_size": self.batch_size,
             "architecture": self.architecture,
             "include_delta": self.include_delta,
+            "residual_target": self.residual_target,
             "input_size": self.input_size
         }, path)
         print(f"Model saved to {path}")
@@ -813,6 +913,7 @@ class MACDForecasterTrainer:
         checkpoint = torch.load(path, map_location=self.device)
         
         self.include_delta = checkpoint.get("include_delta", False)
+        self.residual_target = checkpoint.get("residual_target", False)
         self.input_size = checkpoint.get("input_size", 1)
         self.seq_length = checkpoint["seq_length"]
         self.forecast_horizon = checkpoint["forecast_horizon"]
@@ -862,6 +963,7 @@ class MACDForecasterTrainer:
         mlmodel.user_defined_metadata["seq_length"] = str(self.seq_length)
         mlmodel.user_defined_metadata["forecast_horizon"] = str(self.forecast_horizon)
         mlmodel.user_defined_metadata["include_delta"] = str(self.include_delta)
+        mlmodel.user_defined_metadata["residual_target"] = str(self.residual_target)
         mlmodel.user_defined_metadata["hidden_size"] = str(self.model.hidden_size)
         mlmodel.user_defined_metadata["num_layers"] = str(self.model.num_layers)
         if self.batch_size:

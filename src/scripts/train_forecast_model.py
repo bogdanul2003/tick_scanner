@@ -184,6 +184,14 @@ def main():
         action="store_true",
         help="Include MACD delta (today - yesterday) as a feature and predict it"
     )
+    parser.add_argument(
+        "--residual-target",
+        action="store_true",
+        help="Train on (actual - drift baseline) instead of the actual values, where "
+             "drift is macd[t+k] = macd[t] + (k+1)*delta[t]. Makes 'beat persistence' "
+             "the training objective. Inference adds the drift back, so predictions "
+             "stay in original units. Compare against scripts/persistence_baseline.py"
+    )
     
     args = parser.parse_args()
     
@@ -201,7 +209,11 @@ def main():
     signal_label = "MACD" if args.signal_type == "macd" else "Signal Line"
     arch_label = args.architecture.replace("_", " ").title()
     delta_suffix = "_with_delta" if args.include_delta else ""
-    model_name = f"{args.signal_type}_{args.architecture}{delta_suffix}"  # e.g., "macd_bidirectional_gru_with_delta"
+    residual_suffix = "_residual" if args.residual_target else ""
+    # e.g. "macd_bidirectional_gru_with_delta_residual". The suffixes keep a
+    # residual-target artifact from overwriting a level-target one — pass the whole
+    # string as --architecture to evaluate_forecast_model.py.
+    model_name = f"{args.signal_type}_{args.architecture}{delta_suffix}{residual_suffix}"
     
     print("=" * 60)
     print(f"{arch_label} {signal_label} Forecaster Training")
@@ -210,6 +222,7 @@ def main():
     print(f"Signal type: {signal_label}")
     print(f"Normalization: {args.normalization_type}")
     print(f"Include Delta: {args.include_delta}")
+    print(f"Residual Target: {args.residual_target}")
     print(f"Output directory: {output_dir}")
     print(f"Sequence length: {args.seq_length}")
     print(f"Forecast horizon: {args.forecast_horizon}")
@@ -312,7 +325,8 @@ def main():
         learning_rate=args.learning_rate,
         architecture=args.architecture,
         normalization_type=args.normalization_type,
-        include_delta=args.include_delta
+        include_delta=args.include_delta,
+        residual_target=args.residual_target
     )
     
     print("\nTraining...")
