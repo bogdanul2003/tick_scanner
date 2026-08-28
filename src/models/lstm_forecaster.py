@@ -467,6 +467,14 @@ class MACDForecasterTrainer:
                 # Flatten target if multi-variate: (horizon, input_size) -> (horizon * input_size)
                 all_y.append(y_norm.flatten())
         
+        if not all_X:
+            # No window was long enough. Return empty tensors rather than
+            # crashing in zip(*combined) below, so callers can check len().
+            return (
+                torch.empty((0, self.seq_length, self.input_size), dtype=torch.float32),
+                torch.empty((0, self.output_size), dtype=torch.float32)
+            )
+
         # Shuffle
         combined = list(zip(all_X, all_y))
         np.random.shuffle(combined)
@@ -478,6 +486,45 @@ class MACDForecasterTrainer:
         
         return X, y
     
+    def _split_series(self, data, val_fraction: float):
+        """
+        Split per-symbol series into train/val parts BEFORE windowing.
+
+        Windows are cut with stride 1, so window i and window i+1 share
+        seq_length-1 of their inputs. Splitting *after* windowing (and after
+        shuffling) puts near-duplicates of training windows into the validation
+        set, which makes val loss meaningless. Splitting the raw series first
+        guarantees no validation window shares an observation with a training one.
+
+        Prefers holding out whole symbols. Falls back to a per-symbol temporal
+        split with a purge gap when there are too few symbols to split.
+
+        Returns (train_series, val_series); val_series is [] if no split is possible.
+        """
+        series_list = data if isinstance(data, list) else [data]
+        min_len = self.seq_length + self.forecast_horizon
+
+        if val_fraction <= 0:
+            return series_list, []
+
+        # Preferred: hold out whole symbols.
+        n_val = int(len(series_list) * val_fraction)
+        if n_val >= 1 and (len(series_list) - n_val) >= 1:
+            return series_list[:-n_val], series_list[-n_val:]
+
+        # Fallback: temporal split per symbol. The purge gap guarantees the last
+        # training window and the first validation window share no observation.
+        embargo = min_len
+        train_part, val_part = [], []
+        for s in series_list:
+            cut = int(len(s) * (1 - val_fraction))
+            if cut >= min_len and (len(s) - cut - embargo) >= min_len:
+                train_part.append(s[:cut])
+                val_part.append(s[cut + embargo:])
+            else:
+                train_part.append(s)  # too short to split — training only
+        return train_part, val_part
+
     def train(
         self,
         train_data,
@@ -490,22 +537,42 @@ class MACDForecasterTrainer:
         Train the model on MACD data.
         """
         self.batch_size = batch_size
-        X, y = self.prepare_sequences(train_data)
-        X, y = self.prepare_sequences(train_data)
-        
-        # Split into train/val
-        split_idx = int(len(X) * (1 - validation_split))
-        X_train, X_val = X[:split_idx], X[split_idx:]
-        y_train, y_val = y[:split_idx], y[split_idx:]
-        
+
+        train_series, val_series = self._split_series(train_data, validation_split)
+
+        # fit=True stores the normalization stats — computed on TRAIN ONLY so the
+        # validation set contributes nothing to them.
+        X_train, y_train = self.prepare_sequences(train_series, fit=True)
+        if val_series:
+            X_val, y_val = self.prepare_sequences(val_series, fit=False)
+        else:
+            X_val, y_val = None, None
+
+        if len(X_train) == 0:
+            raise ValueError(
+                f"No training windows produced. Each symbol needs at least "
+                f"{self.seq_length + self.forecast_horizon} data points "
+                f"(seq_length={self.seq_length} + forecast_horizon={self.forecast_horizon})."
+            )
+
         X_train = X_train.to(self.device)
         y_train = y_train.to(self.device)
-        X_val = X_val.to(self.device)
-        y_val = y_val.to(self.device)
-        
+
+        has_val = X_val is not None and len(X_val) > 0
+        if has_val:
+            X_val = X_val.to(self.device)
+            y_val = y_val.to(self.device)
+            if verbose:
+                print(f"Train windows: {len(X_train)}, Val windows: {len(X_val)} "
+                      f"(split before windowing — no overlap)")
+        else:
+            print("WARNING: no validation set could be built; "
+                  "selecting the checkpoint on train loss instead.")
+
         history = {"train_loss": [], "val_loss": []}
         best_val_loss = float("inf")
         best_state = None
+        best_epoch = 0
         
         for epoch in range(epochs):
             self.model.train()
@@ -532,16 +599,21 @@ class MACDForecasterTrainer:
             train_loss = total_loss / num_batches
             
             # Validation
-            self.model.eval()
-            with torch.no_grad():
-                val_pred = self.model(X_val)
-                val_loss = self.criterion(val_pred, y_val).item()
-            
+            if has_val:
+                self.model.eval()
+                with torch.no_grad():
+                    val_pred = self.model(X_val)
+                    val_loss = self.criterion(val_pred, y_val).item()
+            else:
+                val_loss = train_loss
+
             history["train_loss"].append(train_loss)
             history["val_loss"].append(val_loss)
-            
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
+
+            selection_loss = val_loss if has_val else train_loss
+            if selection_loss < best_val_loss:
+                best_val_loss = selection_loss
+                best_epoch = epoch + 1
                 best_state = {k: v.clone() for k, v in self.model.state_dict().items()}
             
             if verbose and (epoch + 1) % 10 == 0:
@@ -550,7 +622,14 @@ class MACDForecasterTrainer:
         # Restore best model
         if best_state is not None:
             self.model.load_state_dict(best_state)
-        
+            if verbose:
+                metric = "val" if has_val else "train"
+                print(f"Restored best checkpoint from epoch {best_epoch}/{epochs} "
+                      f"({metric} loss {best_val_loss:.6f})")
+                if has_val and best_epoch == epochs:
+                    print("NOTE: best epoch is the last epoch — val loss never turned up. "
+                          "The model is likely undertrained; try more epochs.")
+
         return history
     
     def evaluate(
