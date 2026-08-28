@@ -321,7 +321,8 @@ def main():
         epochs=args.epochs,
         batch_size=args.batch_size,
         validation_split=0.2,
-        verbose=True
+        verbose=True,
+        split_strategy=args.split_strategy
     )
     
     print(f"\nFinal train loss: {history['train_loss'][-1]:.6f}")

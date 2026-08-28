@@ -486,35 +486,25 @@ class MACDForecasterTrainer:
         
         return X, y
     
-    def _split_series(self, data, val_fraction: float):
-        """
-        Split per-symbol series into train/val parts BEFORE windowing.
-
-        Windows are cut with stride 1, so window i and window i+1 share
-        seq_length-1 of their inputs. Splitting *after* windowing (and after
-        shuffling) puts near-duplicates of training windows into the validation
-        set, which makes val loss meaningless. Splitting the raw series first
-        guarantees no validation window shares an observation with a training one.
-
-        Prefers holding out whole symbols. Falls back to a per-symbol temporal
-        split with a purge gap when there are too few symbols to split.
-
-        Returns (train_series, val_series); val_series is [] if no split is possible.
-        """
-        series_list = data if isinstance(data, list) else [data]
-        min_len = self.seq_length + self.forecast_horizon
-
-        if val_fraction <= 0:
-            return series_list, []
-
-        # Preferred: hold out whole symbols.
+    def _split_series_by_symbol(self, series_list, val_fraction: float):
+        """Hold out whole symbols. Measures generalization to UNSEEN symbols."""
         n_val = int(len(series_list) * val_fraction)
         if n_val >= 1 and (len(series_list) - n_val) >= 1:
             return series_list[:-n_val], series_list[-n_val:]
+        return series_list, []
 
-        # Fallback: temporal split per symbol. The purge gap guarantees the last
-        # training window and the first validation window share no observation.
-        embargo = min_len
+    def _split_series_by_time(self, series_list, val_fraction: float):
+        """
+        Split each symbol temporally. Measures generalization to LATER DATES on
+        the same symbols — which is the production condition.
+
+        A purge gap of forecast_horizon separates the two parts: training windows
+        only touch indices < cut, so any gap >= 0 already guarantees index
+        disjointness; the horizon-sized gap additionally stops the last training
+        window's target period from sitting adjacent to the first validation input.
+        """
+        min_len = self.seq_length + self.forecast_horizon
+        embargo = self.forecast_horizon
         train_part, val_part = [], []
         for s in series_list:
             cut = int(len(s) * (1 - val_fraction))
@@ -525,20 +515,68 @@ class MACDForecasterTrainer:
                 train_part.append(s)  # too short to split — training only
         return train_part, val_part
 
+    def _split_series(self, data, val_fraction: float, strategy: str = "symbol"):
+        """
+        Split per-symbol series into train/val parts BEFORE windowing.
+
+        Windows are cut with stride 1, so window i and window i+1 share
+        seq_length-1 of their inputs. Splitting *after* windowing (and after
+        shuffling) puts near-duplicates of training windows into the validation
+        set, which makes val loss meaningless. Splitting the raw series first
+        guarantees no validation window shares an observation with a training one.
+
+        `strategy` should match how the caller split off its test set, so that
+        val is a valid early-stopping proxy for test:
+            "time"   -> temporal split within each symbol (same symbols, later
+                        dates — matches production)
+            "symbol" -> hold out whole symbols (unseen symbols)
+        Falls back to the other strategy, with a warning, if the requested one
+        cannot produce a validation set.
+
+        Returns (train_series, val_series); val_series is [] if no split is possible.
+        """
+        series_list = data if isinstance(data, list) else [data]
+
+        if val_fraction <= 0:
+            return series_list, []
+
+        if strategy == "time":
+            train_part, val_part = self._split_series_by_time(series_list, val_fraction)
+            if val_part:
+                return train_part, val_part
+            print("WARNING: temporal validation split produced no data (symbols "
+                  "too short); falling back to a by-symbol split. Val loss will "
+                  "measure unseen-symbol generalization, not later dates.")
+            return self._split_series_by_symbol(series_list, val_fraction)
+
+        train_part, val_part = self._split_series_by_symbol(series_list, val_fraction)
+        if val_part:
+            return train_part, val_part
+        print("WARNING: by-symbol validation split needs >= 2 symbols; "
+              "falling back to a temporal split.")
+        return self._split_series_by_time(series_list, val_fraction)
+
     def train(
         self,
         train_data,
         epochs: int = 100,
         batch_size: int = 32,
         validation_split: float = 0.2,
-        verbose: bool = True
+        verbose: bool = True,
+        split_strategy: str = "symbol"
     ) -> dict:
         """
         Train the model on MACD data.
+
+        split_strategy: how to carve the validation set — "time" (later dates,
+            same symbols) or "symbol" (unseen symbols). Pass the same strategy
+            used for the test split so val tracks test.
         """
         self.batch_size = batch_size
 
-        train_series, val_series = self._split_series(train_data, validation_split)
+        train_series, val_series = self._split_series(
+            train_data, validation_split, split_strategy
+        )
 
         # fit=True stores the normalization stats — computed on TRAIN ONLY so the
         # validation set contributes nothing to them.
@@ -563,8 +601,10 @@ class MACDForecasterTrainer:
             X_val = X_val.to(self.device)
             y_val = y_val.to(self.device)
             if verbose:
+                axis = ("later dates, same symbols" if split_strategy == "time"
+                        else "unseen symbols")
                 print(f"Train windows: {len(X_train)}, Val windows: {len(X_val)} "
-                      f"(split before windowing — no overlap)")
+                      f"(split before windowing — no overlap; val measures {axis})")
         else:
             print("WARNING: no validation set could be built; "
                   "selecting the checkpoint on train loss instead.")
