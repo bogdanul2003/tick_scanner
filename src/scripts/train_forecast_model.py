@@ -31,7 +31,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 def get_training_data(symbols: list, days: int = 365, signal_type: str = "macd"):
     """
     Gather MACD or Signal Line data for training from multiple symbols.
-    
+
+    Reads directly from stock_cache (same data the UI uses) without triggering
+    any Yahoo Finance fetches. If data is missing from the cache for a symbol,
+    that symbol is simply skipped rather than re-fetching live data.
+
     Args:
         symbols: List of stock symbols
         days: Number of days of history to use
@@ -40,8 +44,8 @@ def get_training_data(symbols: list, days: int = 365, signal_type: str = "macd")
     Returns:
         List of numpy arrays, one per symbol (maintains symbol boundaries)
     """
-    from macd_utils import get_macd_for_range, get_latest_market_date
-    from db_utils import get_watchlist_symbols
+    from macd_utils import get_latest_market_date
+    from db_utils import fetch_bulk_from_cache
     
     per_symbol_data = []
     total_points = 0
@@ -50,22 +54,20 @@ def get_training_data(symbols: list, days: int = 365, signal_type: str = "macd")
     start_date = end_date - timedelta(days=days)
     
     signal_label = "MACD" if signal_type == "macd" else "Signal Line"
+    field_name = "MACD" if signal_type == "macd" else "Signal_Line"
     print(f"Gathering {signal_label} data from {start_date} to {end_date}")
     print(f"Processing {len(symbols)} symbols...")
     
     for i, symbol in enumerate(symbols):
         try:
-            macd_data = get_macd_for_range(symbol, start_date, end_date)
-            if signal_type == "macd":
-                series = [
-                    d["macd"] for d in macd_data 
-                    if "macd" in d and d["macd"] is not None
-                ]
-            else:  # signal_line
-                series = [
-                    d["signal_line"] for d in macd_data 
-                    if "signal_line" in d and d["signal_line"] is not None
-                ]
+            bulk = fetch_bulk_from_cache([symbol], start_date, end_date)
+            cached_df = bulk.get(symbol)
+            series = []
+            if cached_df is not None and not cached_df.empty and field_name in cached_df.columns:
+                for idx, row in cached_df.iterrows():
+                    val = row.get(field_name)
+                    if val is not None and not (isinstance(val, float) and val != val):  # skip NaN
+                        series.append(float(val))
             if len(series) >= 50:  # Need enough data
                 symbol_array = np.array(series, dtype=np.float32)
                 per_symbol_data.append(symbol_array)
