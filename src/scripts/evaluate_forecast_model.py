@@ -26,19 +26,27 @@ def get_historical_data(
     end_date: datetime, 
     days_back: int = 60
 ) -> Tuple[List[float], List[datetime]]:
-    """Get historical MACD or Signal Line data from database."""
-    from macd_utils import get_macd_for_range
+    """Get historical MACD or Signal Line data from database.
+
+    Reads directly from stock_cache (same data the UI uses) without triggering
+    any Yahoo Finance fetches. If data is missing from the cache, the evaluation
+    will simply have fewer samples rather than re-fetching live data.
+    """
+    from db_utils import fetch_bulk_from_cache
     calendar_days = int(days_back * 1.6)
     start_date = end_date - timedelta(days=calendar_days)
-    macd_data = get_macd_for_range(symbol, start_date, end_date)
-    field_name = "macd" if signal_type == "macd" else "signal_line"
+    bulk = fetch_bulk_from_cache([symbol], start_date, end_date)
+    cached_df = bulk.get(symbol)
+    field_name = "MACD" if signal_type == "macd" else "Signal_Line"
     values, dates = [], []
-    for d in macd_data:
-        if field_name in d and d[field_name] is not None:
-            values.append(float(d[field_name]))
-            dt = d["date"]
-            dates.append(datetime.strptime(dt, "%Y-%m-%d") if isinstance(dt, str) else dt)
+    if cached_df is not None and not cached_df.empty and field_name in cached_df.columns:
+        for idx, row in cached_df.iterrows():
+            val = row.get(field_name)
+            if val is not None and not (isinstance(val, float) and val != val):  # skip NaN
+                values.append(float(val))
+                dates.append(idx.to_pydatetime())
     return values, dates
+
 
 
 def _run_arima_forecast_worker(symbol: str, signal_type: str, end_date_str: str, forecast_horizon: int, days_past: int = 100) -> np.ndarray:
