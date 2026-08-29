@@ -28,7 +28,7 @@ class BullishSignalRequest(BaseModel):
 class ForecastRequest(BaseModel):
     """Request model for ARIMA forecasting."""
     symbols: List[str] = Field(..., min_length=1, description="List of stock symbols")
-    days_past: int = Field(default=100, ge=30, le=365, description="Days of historical data")
+    days_past: int = Field(default=100, ge=30, le=365, description="CALENDAR days of historical data (~1.45x trading days). The neural path widens this internally when it is too small for the model's sequence length, so a low value no longer underfeeds the model.")
     forecast_days: int = Field(default=5, ge=1, le=30, description="Days to forecast")
     
     @field_validator("symbols")

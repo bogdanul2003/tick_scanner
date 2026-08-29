@@ -157,12 +157,29 @@ class CoreMLForecaster:
         if not self.is_available:
             raise RuntimeError("Core ML model not loaded")
 
-        # Ensure correct length
-        if len(sequence) < self.seq_length:
-            padding = np.full(self.seq_length - len(sequence), sequence[0])
-            sequence = np.concatenate([padding, sequence])
-        elif len(sequence) > self.seq_length:
-            sequence = sequence[-self.seq_length:]
+        # Window the input FIRST, then resolve prev_value against the windowed
+        # array. Doing it the other way round makes a caller-supplied prev_value
+        # point at the wrong element once truncation shifts the window.
+        # NOTE: kept in sync with MACDForecasterTrainer.predict in
+        # lstm_forecaster.py — not shared, to avoid importing torch here.
+        seq = np.asarray(sequence, dtype=np.float32)
+
+        if len(seq) > self.seq_length:
+            # Derive the true pre-window value ourselves. A caller-supplied
+            # prev_value refers to the untruncated sequence[0] and would be wrong.
+            prev_value = float(seq[-(self.seq_length + 1)])
+            seq = seq[-self.seq_length:]
+        elif len(seq) < self.seq_length:
+            logger.warning(
+                "Input has %d points but the model needs %d; padding %d synthetic "
+                "steps. Increase days_past.",
+                len(seq), self.seq_length, self.seq_length - len(seq)
+            )
+            padding = np.full(self.seq_length - len(seq), seq[0], dtype=np.float32)
+            seq = np.concatenate([padding, seq])
+            # seq[0] is now synthetic, so a real delta for it is meaningless.
+            prev_value = None
+        sequence = seq
 
         # Prepare input features
         if self.include_delta:
@@ -250,7 +267,7 @@ class NeuralForecastService:
     def forecast_macd(
         self,
         symbol: str,
-        days_past: int = 30,
+        days_past: int = 100,   # calendar days; matches config.forecast_days_past
         forecast_days: int = 5
     ) -> Dict[str, Any]:
         """
@@ -277,9 +294,17 @@ class NeuralForecastService:
                 }
         
         try:
-            # Get historical data
+            # Get historical data.
+            # days_past is CALENDAR days but seq_length is TRADING days (~1.45x
+            # ratio; 1.6 for safety). Sizing the window off days_past alone lets a
+            # small value silently underfeed the model, and predict() then pads
+            # with synthetic points. Widening is free: predict() truncates to the
+            # last seq_length points anyway, and it gives predict() the extra
+            # observation it needs to reconstruct delta[0].
             end_date = get_latest_market_date()
-            start_date = end_date - timedelta(days=days_past)
+            needed = self.forecaster.seq_length + 6
+            calendar_days = max(days_past, int(needed * 1.6) + 1)
+            start_date = end_date - timedelta(days=calendar_days)
             macd_data = get_macd_for_range(symbol, start_date, end_date)
             
             series = np.array([
@@ -342,7 +367,7 @@ class NeuralForecastService:
     def forecast_batch(
         self,
         symbols: List[str],
-        days_past: int = 30,
+        days_past: int = 100,   # calendar days; matches config.forecast_days_past
         forecast_days: int = 5
     ) -> Dict[str, Dict[str, Any]]:
         """

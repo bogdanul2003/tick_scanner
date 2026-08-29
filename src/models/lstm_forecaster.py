@@ -845,6 +845,25 @@ class MACDForecasterTrainer:
         """
         self.model.eval()
 
+        # Window the input FIRST, then resolve prev_value against the windowed
+        # array — otherwise a caller-supplied prev_value points at the wrong
+        # element once truncation shifts the window. Keeps this path consistent
+        # with the Core ML path, which previously truncated while this one did not.
+        # NOTE: kept in sync with CoreMLForecaster.predict in neural_forecast.py —
+        # not shared, to avoid importing torch into the inference-only module.
+        seq = np.asarray(sequence, dtype=np.float32)
+
+        if len(seq) > self.seq_length:
+            prev_value = float(seq[-(self.seq_length + 1)])
+            seq = seq[-self.seq_length:]
+        elif len(seq) < self.seq_length:
+            print(f"WARNING: input has {len(seq)} points but the model needs "
+                  f"{self.seq_length}; padding {self.seq_length - len(seq)} synthetic steps.")
+            padding = np.full(self.seq_length - len(seq), seq[0], dtype=np.float32)
+            seq = np.concatenate([padding, seq])
+            prev_value = None   # seq[0] is synthetic
+        sequence = seq
+
         # Prepare features
         if self.include_delta:
             deltas = self._calculate_deltas(sequence)
