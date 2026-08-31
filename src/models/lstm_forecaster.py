@@ -9,6 +9,7 @@ import torch.nn as nn
 import numpy as np
 from typing import Tuple, Optional, List
 import os
+from datetime import datetime
 
 
 # Supported architectures
@@ -20,15 +21,16 @@ class LSTMForecaster(nn.Module):
     LSTM model for time series forecasting (MACD values).
     
     Architecture:
-    - Input: sequence of MACD values (batch, seq_len, input_size)
+    - Input: sequence of features (batch, seq_len, input_size)
     - LSTM layers with dropout
     - Fully connected output layer
-    - Output: forecasted values (batch, forecast_horizon * input_size)
+    - Output: forecasted values (batch, forecast_horizon * target_size)
     """
     
     def __init__(
         self,
         input_size: int = 1,
+        target_size: int = 1,
         hidden_size: int = 64,
         num_layers: int = 2,
         dropout: float = 0.2,
@@ -38,7 +40,8 @@ class LSTMForecaster(nn.Module):
         Initialize the LSTM forecaster.
         
         Args:
-            input_size: Number of input features (1 for univariate MACD, 2 for MACD + Delta)
+            input_size: Number of input features
+            target_size: Number of target features to forecast (1 for MACD, 2 for MACD + Delta)
             hidden_size: Number of LSTM hidden units
             num_layers: Number of LSTM layers
             dropout: Dropout rate between LSTM layers
@@ -47,10 +50,11 @@ class LSTMForecaster(nn.Module):
         super(LSTMForecaster, self).__init__()
         
         self.input_size = input_size
+        self.target_size = target_size
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.forecast_horizon = forecast_horizon
-        self.output_size = forecast_horizon * input_size
+        self.output_size = forecast_horizon * target_size
         
         # LSTM layers
         self.lstm = nn.LSTM(
@@ -70,24 +74,10 @@ class LSTMForecaster(nn.Module):
         )
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass.
-        
-        Args:
-            x: Input tensor of shape (batch, seq_len, input_size)
-            
-        Returns:
-            Forecasted values of shape (batch, forecast_horizon * input_size)
-        """
         # LSTM forward
         lstm_out, _ = self.lstm(x)
-        
-        # Take the last timestep's output
         last_output = lstm_out[:, -1, :]
-        
-        # Project to forecast horizon
         forecast = self.fc(last_output)
-        
         return forecast
 
 
@@ -99,6 +89,7 @@ class BidirectionalGRUForecaster(nn.Module):
     def __init__(
         self,
         input_size: int = 1,
+        target_size: int = 1,
         hidden_size: int = 64,
         num_layers: int = 2,
         dropout: float = 0.2,
@@ -107,10 +98,11 @@ class BidirectionalGRUForecaster(nn.Module):
         super(BidirectionalGRUForecaster, self).__init__()
         
         self.input_size = input_size
+        self.target_size = target_size
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.forecast_horizon = forecast_horizon
-        self.output_size = forecast_horizon * input_size
+        self.output_size = forecast_horizon * target_size
         
         # Bidirectional GRU layers
         self.gru = nn.GRU(
@@ -155,6 +147,7 @@ class StackedGRUForecaster(nn.Module):
     def __init__(
         self,
         input_size: int = 1,
+        target_size: int = 1,
         hidden_size: int = 64,
         num_layers: int = 2,
         dropout: float = 0.2,
@@ -163,10 +156,11 @@ class StackedGRUForecaster(nn.Module):
         super(StackedGRUForecaster, self).__init__()
         
         self.input_size = input_size
+        self.target_size = target_size
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.forecast_horizon = forecast_horizon
-        self.output_size = forecast_horizon * input_size
+        self.output_size = forecast_horizon * target_size
         
         self.gru = nn.GRU(
             input_size=input_size,
@@ -198,6 +192,7 @@ class StandardGRUForecaster(nn.Module):
     def __init__(
         self,
         input_size: int = 1,
+        target_size: int = 1,
         hidden_size: int = 64,
         num_layers: int = 1,
         dropout: float = 0.2,
@@ -206,10 +201,11 @@ class StandardGRUForecaster(nn.Module):
         super(StandardGRUForecaster, self).__init__()
         
         self.input_size = input_size
+        self.target_size = target_size
         self.hidden_size = hidden_size
         self.num_layers = 1
         self.forecast_horizon = forecast_horizon
-        self.output_size = forecast_horizon * input_size
+        self.output_size = forecast_horizon * target_size
         
         self.gru = nn.GRU(
             input_size=input_size,
@@ -240,6 +236,7 @@ class StandardLSTMForecaster(nn.Module):
     def __init__(
         self,
         input_size: int = 1,
+        target_size: int = 1,
         hidden_size: int = 64,
         num_layers: int = 1,
         dropout: float = 0.2,
@@ -248,10 +245,11 @@ class StandardLSTMForecaster(nn.Module):
         super(StandardLSTMForecaster, self).__init__()
         
         self.input_size = input_size
+        self.target_size = target_size
         self.hidden_size = hidden_size
         self.num_layers = 1
         self.forecast_horizon = forecast_horizon
-        self.output_size = forecast_horizon * input_size
+        self.output_size = forecast_horizon * target_size
         
         self.lstm = nn.LSTM(
             input_size=input_size,
@@ -277,6 +275,7 @@ class StandardLSTMForecaster(nn.Module):
 def create_model(
     architecture: str = "stacked_lstm",
     input_size: int = 1,
+    target_size: int = 1,
     hidden_size: int = 64,
     num_layers: int = 2,
     dropout: float = 0.2,
@@ -290,6 +289,7 @@ def create_model(
     if architecture == "stacked_lstm":
         return LSTMForecaster(
             input_size=input_size,
+            target_size=target_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
             dropout=dropout,
@@ -298,6 +298,7 @@ def create_model(
     elif architecture == "bidirectional_gru":
         return BidirectionalGRUForecaster(
             input_size=input_size,
+            target_size=target_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
             dropout=dropout,
@@ -306,6 +307,7 @@ def create_model(
     elif architecture == "stacked_gru":
         return StackedGRUForecaster(
             input_size=input_size,
+            target_size=target_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
             dropout=dropout,
@@ -314,6 +316,7 @@ def create_model(
     elif architecture == "standard_lstm":
         return StandardLSTMForecaster(
             input_size=input_size,
+            target_size=target_size,
             hidden_size=hidden_size,
             dropout=dropout,
             forecast_horizon=forecast_horizon
@@ -321,6 +324,7 @@ def create_model(
     elif architecture in ("gru", "standard_gru"):
         return StandardGRUForecaster(
             input_size=input_size,
+            target_size=target_size,
             hidden_size=hidden_size,
             dropout=dropout,
             forecast_horizon=forecast_horizon
@@ -346,6 +350,12 @@ class MACDForecasterTrainer:
         normalization_type: str = "global",
         include_delta: bool = False,
         residual_target: bool = False,
+        loss_decay_gamma: float = None,
+        feature_names: List[str] = None,
+        lr_scheduler: bool = False,
+        lr_factor: float = 0.5,
+        lr_patience: int = 10,
+        lr_min: float = 1e-6,
         device: str = None
     ):
         """
@@ -365,16 +375,39 @@ class MACDForecasterTrainer:
                 macd[t+k] = macd[t] + (k+1)*delta[t]. Makes "beat persistence" the
                 literal training objective. Inference adds the drift back, so
                 predictions remain in the original units.
+            loss_decay_gamma: Exponential decay factor per forecast step for MSE loss
+                (e.g., 0.8). When set < 1.0, discounts errors on further horizons
+                so the model focuses on near-term prediction. Default is None (unweighted MSE).
+            feature_names: Optional list of feature names (e.g. ['macd', 'delta', 'open', 'close', 'volume']).
+                If omitted, defaults to ['macd', 'delta'] when include_delta is True, else ['macd'].
+            lr_scheduler: If True, decay the learning rate via ReduceLROnPlateau, watching
+                the same loss (val if available, else train) used for checkpoint selection.
+            lr_factor: Multiply the learning rate by this factor on each plateau (default 0.5).
+            lr_patience: Epochs with no improvement before decaying (default 10).
+            lr_min: Floor the learning rate never decays below (default 1e-6).
             device: Device to train on
         """
         self.seq_length = seq_length
         self.forecast_horizon = forecast_horizon
         self.architecture = architecture
         self.normalization_type = normalization_type.lower()
-        self.include_delta = include_delta
         self.residual_target = residual_target
-        self.input_size = 2 if include_delta else 1
-        self.output_size = forecast_horizon * self.input_size
+        self.loss_decay_gamma = loss_decay_gamma
+        
+        # Configure feature names
+        if feature_names is not None and len(feature_names) > 0:
+            self.feature_names = [f.strip().lower() for f in feature_names]
+            self.include_delta = "delta" in self.feature_names or include_delta
+            if self.include_delta and "delta" not in self.feature_names:
+                # Insert delta right after primary signal if missing
+                self.feature_names.insert(1, "delta")
+        else:
+            self.include_delta = include_delta
+            self.feature_names = ["macd", "delta"] if include_delta else ["macd"]
+            
+        self.input_size = len(self.feature_names)
+        self.target_size = 2 if self.include_delta else 1
+        self.output_size = forecast_horizon * self.target_size
         self.batch_size = None # Set during training
         
         # Auto-select device
@@ -391,13 +424,15 @@ class MACDForecasterTrainer:
         print(f"Using device: {self.device}")
         print(f"Architecture: {architecture}")
         print(f"Normalization: {self.normalization_type}")
-        print(f"Include Delta: {self.include_delta}")
+        print(f"Features ({self.input_size}): {', '.join(self.feature_names)}")
+        print(f"Targets ({self.target_size}): {', '.join(self.feature_names[:self.target_size])}")
         print(f"Residual Target: {self.residual_target}")
         
         # Initialize model using factory function
         self.model = create_model(
             architecture=architecture,
             input_size=self.input_size,
+            target_size=self.target_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
             forecast_horizon=forecast_horizon
@@ -405,10 +440,34 @@ class MACDForecasterTrainer:
         
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
         self.criterion = nn.MSELoss()
+
+        self.scheduler = None
+        if lr_scheduler:
+            self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer, mode="min", factor=lr_factor, patience=lr_patience, min_lr=lr_min
+            )
+        
+        # Decay weights for horizon loss weighting (if enabled)
+        if self.loss_decay_gamma is not None and self.loss_decay_gamma < 1.0:
+            if not (0.0 < self.loss_decay_gamma <= 1.0):
+                raise ValueError(f"loss_decay_gamma must be in (0.0, 1.0], got {self.loss_decay_gamma}")
+            day_weights = np.array([self.loss_decay_gamma ** k for k in range(forecast_horizon)], dtype=np.float32)
+            flat_weights = np.repeat(day_weights, self.target_size)
+            flat_weights = flat_weights / flat_weights.mean()
+            self.loss_weights = torch.tensor(flat_weights, dtype=torch.float32, device=self.device)
+            print(f"Loss Decay Gamma: {self.loss_decay_gamma} (normalized weights: {np.round(flat_weights, 3).tolist()})")
+        else:
+            self.loss_weights = None
         
         # For 'global' normalization (store as vectors for multi-variate support)
         self.mean = np.zeros(self.input_size, dtype=np.float32)
         self.std = np.ones(self.input_size, dtype=np.float32)
+
+    def _compute_loss(self, predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """Compute loss (weighted MSE if decay weights enabled, standard MSE otherwise)."""
+        if self.loss_weights is not None:
+            return torch.mean(self.loss_weights * (predictions - targets) ** 2)
+        return self.criterion(predictions, targets)
     
     def _drift_baseline(self, last: float, last_delta: float) -> np.ndarray:
         """
@@ -417,16 +476,12 @@ class MACDForecasterTrainer:
             macd[t+k]  = macd[t] + (k+1) * delta[t]
             delta[t+k] = delta[t]
 
-        This is the baseline measured by scripts/persistence_baseline.py. In
-        residual mode the model is trained to predict the error of THIS, so
-        anything it learns is by construction information the baseline lacks.
-
-        Returns shape (forecast_horizon, input_size) in raw units.
+        Returns shape (forecast_horizon, target_size) in raw units.
         """
         steps = np.arange(1, self.forecast_horizon + 1, dtype=np.float32)
-        drift = np.empty((self.forecast_horizon, self.input_size), dtype=np.float32)
+        drift = np.empty((self.forecast_horizon, self.target_size), dtype=np.float32)
         drift[:, 0] = last + last_delta * steps
-        if self.input_size > 1:
+        if self.target_size > 1:
             drift[:, 1] = last_delta
         return drift
 
@@ -446,37 +501,28 @@ class MACDForecasterTrainer:
         Prepare training sequences from time series data.
 
         Args:
-            data: List of 1D numpy arrays (one per symbol) or a single array
+            data: List of numpy arrays (2D points x input_size, or 1D per symbol) or a single array
             fit: If True (training), compute and store normalization stats.
                  If False (evaluation), reuse existing self.mean/self.std.
             return_drift: If True, also return the drift baseline for each window,
-                normalized into the same space the *level* target occupies, i.e.
-                D = (drift_raw - mean) / std. That makes reconstruction additive:
-                    level_norm = residual_norm + D
-                Used by evaluate() to score in level space regardless of target mode.
-
-        Returns (X, y) or (X, y, D) when return_drift is True.
-
-        In residual mode the target is (y_raw - drift_raw) / std — scaled by std
-        but with NO mean subtraction, because a residual is already centred near
-        zero and drift's systematic overshoot at longer horizons is exactly the
-        bias we want the model to learn rather than absorb into normalization.
+                normalized into the same space the *level* target occupies.
         """
         all_X, all_y, all_D = [], [], []
 
-        # Process each symbol into (raw, delta) pairs if needed
         processed_symbols = []
         input_data = data if isinstance(data, list) else [data]
 
-        for symbol_series in input_data:
-            if self.include_delta:
-                deltas = self._calculate_deltas(symbol_series)
-                # Stack to shape (points, 2)
-                stacked = np.stack([symbol_series, deltas], axis=1)
-                processed_symbols.append(stacked)
+        for symbol_item in input_data:
+            if isinstance(symbol_item, np.ndarray) and symbol_item.ndim == 2:
+                processed_symbols.append(symbol_item.astype(np.float32))
             else:
-                # Shape (points, 1)
-                processed_symbols.append(symbol_series.reshape(-1, 1))
+                series_1d = np.asarray(symbol_item, dtype=np.float32)
+                if self.include_delta:
+                    deltas = self._calculate_deltas(series_1d)
+                    stacked = np.stack([series_1d, deltas], axis=1)
+                    processed_symbols.append(stacked)
+                else:
+                    processed_symbols.append(series_1d.reshape(-1, 1))
 
         # 1. Handle dataset-wide stats for 'global' mode
         if self.normalization_type == "global" and fit:
@@ -491,7 +537,7 @@ class MACDForecasterTrainer:
                 
             for i in range(len(symbol_data) - self.seq_length - self.forecast_horizon + 1):
                 X_raw = symbol_data[i:i + self.seq_length]
-                y_raw = symbol_data[i + self.seq_length:i + self.seq_length + self.forecast_horizon]
+                y_raw = symbol_data[i + self.seq_length:i + self.seq_length + self.forecast_horizon, 0:self.target_size]
                 
                 if self.normalization_type == "internal":
                     # Per-sequence normalization (per feature)
@@ -503,28 +549,29 @@ class MACDForecasterTrainer:
                     s = self.std
 
                 X_norm = (X_raw - m) / s
+                s_target = s[:self.target_size]
+                m_target = m[:self.target_size]
 
                 if self.residual_target or return_drift:
                     # Drift is computed from RAW values, before any normalization.
+                    last_delta = float(X_raw[-1, 0] - X_raw[-2, 0]) if len(X_raw) >= 2 else 0.0
                     drift_raw = self._drift_baseline(
                         last=float(X_raw[-1, 0]),
-                        last_delta=float(X_raw[-1, 0] - X_raw[-2, 0])
+                        last_delta=last_delta
                     )
 
                 if self.residual_target:
-                    y_norm = (y_raw - drift_raw) / s
+                    y_norm = (y_raw - drift_raw) / s_target
                 else:
-                    y_norm = (y_raw - m) / s
+                    y_norm = (y_raw - m_target) / s_target
 
                 all_X.append(X_norm)
-                # Flatten target if multi-variate: (horizon, input_size) -> (horizon * input_size)
+                # Flatten target: (horizon, target_size) -> (horizon * target_size)
                 all_y.append(y_norm.flatten())
                 if return_drift:
-                    all_D.append(((drift_raw - m) / s).flatten())
+                    all_D.append(((drift_raw - m_target) / s_target).flatten())
 
         if not all_X:
-            # No window was long enough. Return empty tensors rather than
-            # crashing in zip(*combined) below, so callers can check len().
             empty = (
                 torch.empty((0, self.seq_length, self.input_size), dtype=torch.float32),
                 torch.empty((0, self.output_size), dtype=torch.float32)
@@ -626,7 +673,8 @@ class MACDForecasterTrainer:
         batch_size: int = 32,
         validation_split: float = 0.2,
         verbose: bool = True,
-        split_strategy: str = "symbol"
+        split_strategy: str = "symbol",
+        checkpoint_warmup_epochs: int = 0
     ) -> dict:
         """
         Train the model on MACD data.
@@ -634,6 +682,10 @@ class MACDForecasterTrainer:
         split_strategy: how to carve the validation set — "time" (later dates,
             same symbols) or "symbol" (unseen symbols). Pass the same strategy
             used for the test split so val tracks test.
+        checkpoint_warmup_epochs: epochs 1..N are trained normally but ineligible
+            to become the "best" checkpoint, and are excluded from the LR
+            scheduler's plateau tracking too (so it doesn't anchor to, and decay
+            LR against, an early accidental low before training has settled in).
         """
         self.batch_size = batch_size
 
@@ -672,11 +724,16 @@ class MACDForecasterTrainer:
             print("WARNING: no validation set could be built; "
                   "selecting the checkpoint on train loss instead.")
 
+        if checkpoint_warmup_epochs >= epochs:
+            print(f"WARNING: checkpoint_warmup_epochs ({checkpoint_warmup_epochs}) >= epochs "
+                  f"({epochs}); no epoch will ever be eligible as 'best' — the model will end "
+                  f"training on its final-epoch weights, unselected.")
+
         history = {"train_loss": [], "val_loss": []}
         best_val_loss = float("inf")
         best_state = None
         best_epoch = 0
-        
+
         for epoch in range(epochs):
             self.model.train()
             
@@ -692,7 +749,7 @@ class MACDForecasterTrainer:
                 
                 self.optimizer.zero_grad()
                 predictions = self.model(batch_X)
-                loss = self.criterion(predictions, batch_y)
+                loss = self._compute_loss(predictions, batch_y)
                 loss.backward()
                 self.optimizer.step()
                 
@@ -706,7 +763,7 @@ class MACDForecasterTrainer:
                 self.model.eval()
                 with torch.no_grad():
                     val_pred = self.model(X_val)
-                    val_loss = self.criterion(val_pred, y_val).item()
+                    val_loss = self._compute_loss(val_pred, y_val).item()
             else:
                 val_loss = train_loss
 
@@ -714,13 +771,23 @@ class MACDForecasterTrainer:
             history["val_loss"].append(val_loss)
 
             selection_loss = val_loss if has_val else train_loss
-            if selection_loss < best_val_loss:
+            past_warmup = (epoch + 1) > checkpoint_warmup_epochs
+            if past_warmup and selection_loss < best_val_loss:
                 best_val_loss = selection_loss
                 best_epoch = epoch + 1
                 best_state = {k: v.clone() for k, v in self.model.state_dict().items()}
-            
+                if verbose:
+                    ts = datetime.now().strftime("%H:%M:%S")
+                    metric = "val" if has_val else "train"
+                    print(f"[{ts}] New best checkpoint: epoch {best_epoch}/{epochs} ({metric} loss {best_val_loss:.6f})")
+
+            if self.scheduler is not None and past_warmup:
+                self.scheduler.step(selection_loss)
+
             if verbose and (epoch + 1) % 10 == 0:
-                print(f"Epoch {epoch + 1}/{epochs} - Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}")
+                ts = datetime.now().strftime("%H:%M:%S")
+                current_lr = self.optimizer.param_groups[0]["lr"]
+                print(f"[{ts}] Epoch {epoch + 1}/{epochs} - Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}, LR: {current_lr:.6g}")
         
         # Restore best model
         if best_state is not None:
@@ -776,11 +843,11 @@ class MACDForecasterTrainer:
 
         def _score(pred_t):
             """Per-feature metrics for one prediction tensor, in level space."""
-            p = pred_t.cpu().numpy().reshape(-1, self.forecast_horizon, self.input_size)
-            a = actual_level.cpu().numpy().reshape(-1, self.forecast_horizon, self.input_size)
+            p = pred_t.cpu().numpy().reshape(-1, self.forecast_horizon, self.target_size)
+            a = actual_level.cpu().numpy().reshape(-1, self.forecast_horizon, self.target_size)
             X_np = X_test.cpu().numpy()
             out = []
-            for f in range(self.input_size):
+            for f in range(self.target_size):
                 p_f, a_f = p[:, :, f], a[:, :, f]
                 mse = np.mean((p_f - a_f) ** 2)
                 # Directional accuracy on day 1, versus the last input value
@@ -814,7 +881,7 @@ class MACDForecasterTrainer:
             if self.residual_target:
                 print("Target mode:  residual (model predicts the error of drift)")
 
-            labels = ["MACD", "Delta"] if self.input_size > 1 else ["Signal"]
+            labels = ["MACD", "Delta"] if self.target_size > 1 else ["Signal"]
             for i, label in enumerate(labels):
                 m = feature_metrics[i]
                 print(f"\n{label} Metrics:")
@@ -838,73 +905,62 @@ class MACDForecasterTrainer:
     def predict(self, sequence: np.ndarray, prev_value: float = None) -> np.ndarray:
         """
         Make a prediction given an input sequence.
-        Input sequence shape: (seq_length,)
-        prev_value: the data point immediately before sequence[0], used to compute
-                    the correct delta for position 0 (matches training behaviour).
-        Returns: forecasted values (forecast_horizon, input_size)
+        Input sequence shape: (seq_length, input_size) or (seq_length,) for 1D.
+        Returns: forecasted values (forecast_horizon, target_size)
         """
         self.model.eval()
-
-        # Window the input FIRST, then resolve prev_value against the windowed
-        # array — otherwise a caller-supplied prev_value points at the wrong
-        # element once truncation shifts the window. Keeps this path consistent
-        # with the Core ML path, which previously truncated while this one did not.
-        # NOTE: kept in sync with CoreMLForecaster.predict in neural_forecast.py —
-        # not shared, to avoid importing torch into the inference-only module.
         seq = np.asarray(sequence, dtype=np.float32)
 
-        if len(seq) > self.seq_length:
-            prev_value = float(seq[-(self.seq_length + 1)])
-            seq = seq[-self.seq_length:]
-        elif len(seq) < self.seq_length:
-            print(f"WARNING: input has {len(seq)} points but the model needs "
-                  f"{self.seq_length}; padding {self.seq_length - len(seq)} synthetic steps.")
-            padding = np.full(self.seq_length - len(seq), seq[0], dtype=np.float32)
-            seq = np.concatenate([padding, seq])
-            prev_value = None   # seq[0] is synthetic
-        sequence = seq
-
-        # Prepare features
-        if self.include_delta:
-            deltas = self._calculate_deltas(sequence)
-            if prev_value is not None:
-                deltas[0] = sequence[0] - prev_value
-            input_features = np.stack([sequence, deltas], axis=1)
+        if seq.ndim == 2:
+            if len(seq) > self.seq_length:
+                seq = seq[-self.seq_length:]
+            elif len(seq) < self.seq_length:
+                padding = np.repeat(seq[0:1, :], self.seq_length - len(seq), axis=0)
+                seq = np.vstack([padding, seq])
+            input_features = seq
         else:
-            input_features = sequence.reshape(-1, 1)
-            
+            # 1D input (legacy single feature / delta)
+            if len(seq) > self.seq_length:
+                prev_value = float(seq[-(self.seq_length + 1)])
+                seq = seq[-self.seq_length:]
+            elif len(seq) < self.seq_length:
+                print(f"WARNING: input has {len(seq)} points but the model needs "
+                      f"{self.seq_length}; padding {self.seq_length - len(seq)} synthetic steps.")
+                padding = np.full(self.seq_length - len(seq), seq[0], dtype=np.float32)
+                seq = np.concatenate([padding, seq])
+                prev_value = None
+            if self.include_delta:
+                deltas = self._calculate_deltas(seq)
+                if prev_value is not None:
+                    deltas[0] = seq[0] - prev_value
+                input_features = np.stack([seq, deltas], axis=1)
+            else:
+                input_features = seq.reshape(-1, 1)
+
         if self.normalization_type == "internal":
             m = np.mean(input_features, axis=0)
             s = np.std(input_features, axis=0) + 1e-8
         else:
             m = self.mean
             s = self.std
-            
-        # Normalize
+
         normalized = (input_features - m) / s
-        
-        # Prepare input
-        x = torch.tensor(normalized, dtype=torch.float32).unsqueeze(0) # (1, seq_len, features)
-        x = x.to(self.device)
-        
-        # Predict
+        x = torch.tensor(normalized, dtype=torch.float32).unsqueeze(0).to(self.device)
+
         with torch.no_grad():
             pred = self.model(x)
-        
-        # Denormalize and reshape
-        pred_np = pred.cpu().numpy()[0].reshape(self.forecast_horizon, self.input_size)
+
+        pred_np = pred.cpu().numpy()[0].reshape(self.forecast_horizon, self.target_size)
+        s_target = s[:self.target_size] if isinstance(s, np.ndarray) else s
+        m_target = m[:self.target_size] if isinstance(m, np.ndarray) else m
 
         if self.residual_target:
-            # The model predicted the drift baseline's error. Denormalize the
-            # residual by std only (no mean — it was never subtracted) and add
-            # the raw drift back:  level = drift_raw + residual_norm * std
-            drift_raw = self._drift_baseline(
-                last=float(sequence[-1]),
-                last_delta=float(sequence[-1] - sequence[-2])
-            )
-            forecast_all = drift_raw + pred_np * s
+            last = float(input_features[-1, 0])
+            last_delta = float(input_features[-1, 0] - input_features[-2, 0]) if len(input_features) >= 2 else 0.0
+            drift_raw = self._drift_baseline(last, last_delta)
+            forecast_all = drift_raw + pred_np * s_target
         else:
-            forecast_all = pred_np * s + m
+            forecast_all = pred_np * s_target + m_target
 
         return forecast_all
     
@@ -923,35 +979,64 @@ class MACDForecasterTrainer:
             "architecture": self.architecture,
             "include_delta": self.include_delta,
             "residual_target": self.residual_target,
-            "input_size": self.input_size
+            "loss_decay_gamma": self.loss_decay_gamma,
+            "feature_names": self.feature_names,
+            "input_size": self.input_size,
+            "target_size": self.target_size
         }, path)
         print(f"Model saved to {path}")
     
     def load(self, path: str):
         """Load model and normalization parameters."""
-        checkpoint = torch.load(path, map_location=self.device)
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         
         self.include_delta = checkpoint.get("include_delta", False)
         self.residual_target = checkpoint.get("residual_target", False)
-        self.input_size = checkpoint.get("input_size", 1)
+        self.loss_decay_gamma = checkpoint.get("loss_decay_gamma", None)
+        self.feature_names = checkpoint.get("feature_names", ["macd", "delta"] if self.include_delta else ["macd"])
+        self.input_size = checkpoint.get("input_size", len(self.feature_names))
+        self.target_size = checkpoint.get("target_size", 2 if self.include_delta else 1)
         self.seq_length = checkpoint["seq_length"]
         self.forecast_horizon = checkpoint["forecast_horizon"]
+        self.output_size = self.forecast_horizon * self.target_size
         self.normalization_type = checkpoint.get("normalization_type", "global")
         
-        # Re-initialize model with correct input size
+        if self.loss_decay_gamma is not None and self.loss_decay_gamma < 1.0:
+            day_weights = np.array([self.loss_decay_gamma ** k for k in range(self.forecast_horizon)], dtype=np.float32)
+            flat_weights = np.repeat(day_weights, self.target_size)
+            flat_weights = flat_weights / flat_weights.mean()
+            self.loss_weights = torch.tensor(flat_weights, dtype=torch.float32, device=self.device)
+        else:
+            self.loss_weights = None
+        
+        # Re-initialize model with correct input size and target size
         self.model = create_model(
             architecture=checkpoint.get("architecture", self.architecture),
             input_size=self.input_size,
+            target_size=self.target_size,
             hidden_size=checkpoint.get("hidden_size", 64),
             num_layers=checkpoint.get("num_layers", 2),
             forecast_horizon=self.forecast_horizon
         ).to(self.device)
         
         self.model.load_state_dict(checkpoint["model_state_dict"])
-        self.mean = checkpoint.get("mean", 0.0)
-        self.std = checkpoint.get("std", 1.0)
+        raw_mean = checkpoint.get("mean", 0.0)
+        raw_std = checkpoint.get("std", 1.0)
+        if isinstance(raw_mean, (int, float)):
+            self.mean = np.full(self.input_size, raw_mean, dtype=np.float32)
+        else:
+            self.mean = np.array(raw_mean, dtype=np.float32)
+            if len(self.mean) < self.input_size:
+                self.mean = np.pad(self.mean, (0, self.input_size - len(self.mean)))
+
+        if isinstance(raw_std, (int, float)):
+            self.std = np.full(self.input_size, raw_std, dtype=np.float32)
+        else:
+            self.std = np.array(raw_std, dtype=np.float32)
+            if len(self.std) < self.input_size:
+                self.std = np.pad(self.std, (0, self.input_size - len(self.std)), constant_values=1.0)
         
-        print(f"Model loaded from {path} (Features: {self.input_size}, Norm: {self.normalization_type})")
+        print(f"Model loaded from {path} (Features: {self.feature_names}, Norm: {self.normalization_type})")
     
     def export_to_coreml(self, output_path: str) -> str:
         """
@@ -973,8 +1058,8 @@ class MACDForecasterTrainer:
         )
         
         mlmodel.author = "Tick Scanner"
-        mlmodel.short_description = f"{self.architecture} MACD forecaster (Features: {self.input_size}, Norm: {self.normalization_type})"
-        mlmodel.version = "1.2"
+        mlmodel.short_description = f"{self.architecture} MACD forecaster (Features: {', '.join(self.feature_names)}, Norm: {self.normalization_type})"
+        mlmodel.version = "1.3"
         
         mlmodel.user_defined_metadata["normalization_type"] = self.normalization_type
         mlmodel.user_defined_metadata["mean"] = str(self.mean.tolist())
@@ -983,6 +1068,9 @@ class MACDForecasterTrainer:
         mlmodel.user_defined_metadata["forecast_horizon"] = str(self.forecast_horizon)
         mlmodel.user_defined_metadata["include_delta"] = str(self.include_delta)
         mlmodel.user_defined_metadata["residual_target"] = str(self.residual_target)
+        mlmodel.user_defined_metadata["feature_names"] = ",".join(self.feature_names)
+        mlmodel.user_defined_metadata["input_size"] = str(self.input_size)
+        mlmodel.user_defined_metadata["target_size"] = str(self.target_size)
         mlmodel.user_defined_metadata["hidden_size"] = str(self.model.hidden_size)
         mlmodel.user_defined_metadata["num_layers"] = str(self.model.num_layers)
         if self.batch_size:

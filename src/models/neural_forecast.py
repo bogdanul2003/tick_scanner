@@ -17,6 +17,17 @@ logger = logging.getLogger(__name__)
 _model_cache: Dict[str, Any] = {}
 
 
+def _trailing_mean(values: np.ndarray, window: int) -> np.ndarray:
+    """Trailing (inclusive) rolling mean; NaN wherever fewer than `window` points precede it."""
+    n = len(values)
+    out = np.full(n, np.nan, dtype=np.float32)
+    if n < window:
+        return out
+    csum = np.cumsum(np.insert(values.astype(np.float64), 0, 0.0))
+    out[window - 1:] = ((csum[window:] - csum[:-window]) / window).astype(np.float32)
+    return out
+
+
 class CoreMLForecaster:
     """
     Core ML-based forecaster that runs on Apple Neural Engine (NPU).
@@ -98,7 +109,16 @@ class CoreMLForecaster:
             self.normalization_type = metadata.get("normalization_type", "global")
             self.include_delta = metadata.get("include_delta", "False").lower() == "true"
             self.residual_target = metadata.get("residual_target", "False").lower() == "true"
-            self.input_size = 2 if self.include_delta else 1
+            
+            # Load feature names and sizes from metadata
+            feature_names_str = metadata.get("feature_names", "")
+            if feature_names_str:
+                self.feature_names = [f.strip().lower() for f in feature_names_str.split(",") if f.strip()]
+            else:
+                self.feature_names = ["macd", "delta"] if self.include_delta else ["macd"]
+                
+            self.input_size = int(metadata.get("input_size", len(self.feature_names)))
+            self.target_size = int(metadata.get("target_size", 2 if self.include_delta else 1))
             
             # Load additional model details if present
             try:
@@ -121,14 +141,17 @@ class CoreMLForecaster:
                 "normalization_type": self.normalization_type,
                 "include_delta": self.include_delta,
                 "residual_target": self.residual_target,
+                "feature_names": self.feature_names,
                 "input_size": self.input_size,
+                "target_size": self.target_size,
                 "hidden_size": self.hidden_size,
                 "num_layers": self.num_layers,
                 "batch_size": self.batch_size
             }
             
             logger.info(f"Loaded Core ML model from {self.model_path}")
-            logger.info(f"  - Features: {self.input_size} (Delta: {self.include_delta})")
+            logger.info(f"  - Features: {', '.join(self.feature_names)} (Count: {self.input_size})")
+            logger.info(f"  - Targets: {self.target_size}")
             logger.info(f"  - Sequence length: {self.seq_length}")
             logger.info(f"  - Forecast horizon: {self.forecast_horizon}")
             
@@ -151,45 +174,43 @@ class CoreMLForecaster:
     def predict(self, sequence: np.ndarray, prev_value: float = None) -> np.ndarray:
         """
         Make a prediction using the Core ML model (runs on NPU).
-        prev_value: the data point immediately before sequence[0], used to compute
-                    the correct delta for position 0 (matches training behaviour).
+        Input sequence shape: (seq_length, input_size) or (seq_length,) for 1D.
+        Returns: forecasted values (forecast_horizon, target_size)
         """
         if not self.is_available:
             raise RuntimeError("Core ML model not loaded")
 
-        # Window the input FIRST, then resolve prev_value against the windowed
-        # array. Doing it the other way round makes a caller-supplied prev_value
-        # point at the wrong element once truncation shifts the window.
-        # NOTE: kept in sync with MACDForecasterTrainer.predict in
-        # lstm_forecaster.py — not shared, to avoid importing torch here.
         seq = np.asarray(sequence, dtype=np.float32)
 
-        if len(seq) > self.seq_length:
-            # Derive the true pre-window value ourselves. A caller-supplied
-            # prev_value refers to the untruncated sequence[0] and would be wrong.
-            prev_value = float(seq[-(self.seq_length + 1)])
-            seq = seq[-self.seq_length:]
-        elif len(seq) < self.seq_length:
-            logger.warning(
-                "Input has %d points but the model needs %d; padding %d synthetic "
-                "steps. Increase days_past.",
-                len(seq), self.seq_length, self.seq_length - len(seq)
-            )
-            padding = np.full(self.seq_length - len(seq), seq[0], dtype=np.float32)
-            seq = np.concatenate([padding, seq])
-            # seq[0] is now synthetic, so a real delta for it is meaningless.
-            prev_value = None
-        sequence = seq
-
-        # Prepare input features
-        if self.include_delta:
-            deltas = self._calculate_deltas(sequence)
-            if prev_value is not None:
-                deltas[0] = sequence[0] - prev_value
-            input_features = np.stack([sequence, deltas], axis=1)
+        if seq.ndim == 2:
+            if len(seq) > self.seq_length:
+                seq = seq[-self.seq_length:]
+            elif len(seq) < self.seq_length:
+                padding = np.repeat(seq[0:1, :], self.seq_length - len(seq), axis=0)
+                seq = np.vstack([padding, seq])
+            input_features = seq
         else:
-            input_features = sequence.reshape(-1, 1)
-            
+            # 1D input (legacy single feature / delta)
+            if len(seq) > self.seq_length:
+                prev_value = float(seq[-(self.seq_length + 1)])
+                seq = seq[-self.seq_length:]
+            elif len(seq) < self.seq_length:
+                logger.warning(
+                    "Input has %d points but the model needs %d; padding %d synthetic "
+                    "steps. Increase days_past.",
+                    len(seq), self.seq_length, self.seq_length - len(seq)
+                )
+                padding = np.full(self.seq_length - len(seq), seq[0], dtype=np.float32)
+                seq = np.concatenate([padding, seq])
+                prev_value = None
+            if self.include_delta:
+                deltas = self._calculate_deltas(seq)
+                if prev_value is not None:
+                    deltas[0] = seq[0] - prev_value
+                input_features = np.stack([seq, deltas], axis=1)
+            else:
+                input_features = seq.reshape(-1, 1)
+
         # Determine normalization parameters
         if self.normalization_type == "internal":
             m = np.mean(input_features, axis=0)
@@ -197,7 +218,7 @@ class CoreMLForecaster:
         else:
             m = self.mean
             s = self.std
-            
+
         # Normalize
         normalized = (input_features - m) / s
         
@@ -207,26 +228,23 @@ class CoreMLForecaster:
         # Run inference on NPU
         output = self.model.predict({"input_sequence": input_data})
         
-        # Get forecast and denormalize
-        # Output shape is (horizon * input_size)
-        forecast_raw = output["forecast"][0].reshape(self.forecast_horizon, self.input_size)
+        # Get forecast and denormalize (horizon, target_size)
+        forecast_raw = output["forecast"][0].reshape(self.forecast_horizon, self.target_size)
+        s_target = s[:self.target_size] if isinstance(s, np.ndarray) else s
+        m_target = m[:self.target_size] if isinstance(m, np.ndarray) else m
 
         if self.residual_target:
-            # Model predicted the drift baseline's error. Denormalize by std only
-            # (no mean — it was never subtracted during training) and add the raw
-            # drift back:  level = drift_raw + residual_norm * std
-            last = float(sequence[-1])
-            last_delta = float(sequence[-1] - sequence[-2])
+            last = float(input_features[-1, 0])
+            last_delta = float(input_features[-1, 0] - input_features[-2, 0]) if len(input_features) >= 2 else 0.0
             steps = np.arange(1, self.forecast_horizon + 1, dtype=np.float32)
-            drift = np.empty((self.forecast_horizon, self.input_size), dtype=np.float32)
+            drift = np.empty((self.forecast_horizon, self.target_size), dtype=np.float32)
             drift[:, 0] = last + last_delta * steps
-            if self.input_size > 1:
+            if self.target_size > 1:
                 drift[:, 1] = last_delta
-            forecast_denorm = drift + forecast_raw * s
+            forecast_denorm = drift + forecast_raw * s_target
         else:
-            forecast_denorm = forecast_raw * s + m
+            forecast_denorm = forecast_raw * s_target + m_target
 
-        # Return all features (horizon, input_size)
         return forecast_denorm
     
     def predict_batch(self, sequences: List[np.ndarray]) -> List[np.ndarray]:
@@ -302,26 +320,62 @@ class NeuralForecastService:
             # last seq_length points anyway, and it gives predict() the extra
             # observation it needs to reconstruct delta[0].
             end_date = get_latest_market_date()
-            needed = self.forecaster.seq_length + 6
+            has_volume_feature = any(f.lower() == "volume" for f in self.forecaster.feature_names)
+            needed = self.forecaster.seq_length + 6 + (20 if has_volume_feature else 0)
             calendar_days = max(days_past, int(needed * 1.6) + 1)
             start_date = end_date - timedelta(days=calendar_days)
             macd_data = get_macd_for_range(symbol, start_date, end_date)
             
-            series = np.array([
-                d[field_name] for d in macd_data 
-                if field_name in d and d[field_name] is not None
-            ], dtype=np.float32)
+            if len(self.forecaster.feature_names) > (2 if self.forecaster.include_delta else 1):
+                # Multi-feature input
+                cols = []
+                for f in self.forecaster.feature_names:
+                    f_lower = f.lower()
+                    if f_lower in ("macd", "signal_line"):
+                        cols.append(np.array([d[field_name] for d in macd_data if field_name in d and d[field_name] is not None], dtype=np.float32))
+                    elif f_lower == "delta":
+                        primary_vals = [d[field_name] for d in macd_data if field_name in d and d[field_name] is not None]
+                        deltas = np.zeros(len(primary_vals), dtype=np.float32)
+                        deltas[1:] = np.array(primary_vals[1:]) - np.array(primary_vals[:-1])
+                        cols.append(deltas)
+                    elif f_lower == "open-close":
+                        o_vals = np.array([float(d.get("open", 0.0) or 0.0) for d in macd_data if field_name in d and d[field_name] is not None], dtype=np.float32)
+                        c_vals = np.array([float(d.get("close", 0.0) or 0.0) for d in macd_data if field_name in d and d[field_name] is not None], dtype=np.float32)
+                        cols.append(np.where(o_vals != 0, (c_vals - o_vals) / o_vals, 0.0).astype(np.float32))
+                    elif f_lower == "volume":
+                        # Relative volume (today's volume / trailing 20-day average) —
+                        # see train_forecast_model.py's get_training_data for rationale.
+                        vol_vals = np.array([float(d.get("volume", 0.0) or 0.0) for d in macd_data if field_name in d and d[field_name] is not None], dtype=np.float32)
+                        vol_avg = _trailing_mean(vol_vals, 20)
+                        cols.append(np.where(vol_avg > 0, vol_vals / vol_avg, np.nan).astype(np.float32))
+                    else:
+                        cols.append(np.array([float(d.get(f_lower, 0.0) or 0.0) for d in macd_data if field_name in d and d[field_name] is not None], dtype=np.float32))
+                series_input = np.column_stack(cols).astype(np.float32)
+                if len(series_input) < 10:
+                    return {
+                        "will_become_positive": False,
+                        "forecasted_values": [],
+                        "details": {"error": f"Not enough {signal_label} data"}
+                    }
+                forecast = self.forecaster.predict(series_input)
+                series = series_input[:, 0]
+            else:
+                series = np.array([
+                    d[field_name] for d in macd_data 
+                    if field_name in d and d[field_name] is not None
+                ], dtype=np.float32)
+                
+                if len(series) < 10:
+                    return {
+                        "will_become_positive": False,
+                        "forecasted_values": [],
+                        "details": {"error": f"Not enough {signal_label} data"}
+                    }
+                
+                # Run neural prediction on NPU
+                forecast = self.forecaster.predict(series)
             
-            if len(series) < 10:
-                return {
-                    "will_become_positive": False,
-                    "forecasted_values": [],
-                    "details": {"error": f"Not enough {signal_label} data"}
-                }
-            
-            # Run neural prediction on NPU
-            forecast = self.forecaster.predict(series)
-            # forecast shape is (horizon, input_size); extract MACD column (index 0)
+            # forecast shape is (horizon, target_size); extract MACD column (index 0)
             macd_forecast = forecast[:, 0] if forecast.ndim > 1 else forecast.flatten()
             forecasted_values = macd_forecast.tolist()
 

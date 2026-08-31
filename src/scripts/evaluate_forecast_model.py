@@ -17,7 +17,97 @@ from typing import List, Dict, Any, Tuple
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 # Add src to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+COLUMN_MAPPING = {
+    "macd": "MACD",
+    "signal_line": "Signal_Line",
+    "open": "Open",
+    "high": "High",
+    "low": "Low",
+    "close": "Close",
+    "volume": "Volume",
+    "ema12": "EMA12",
+    "ema26": "EMA26",
+    "ma20": "MA20",
+    "ma50": "MA50",
+}
+
+
+def get_historical_data_for_features(
+    symbol: str, 
+    feature_names: List[str],
+    signal_type: str, 
+    end_date: datetime, 
+    days_back: int = 60
+) -> Tuple[np.ndarray, List[datetime]]:
+    """Get historical multi-feature data from database.
+
+    Reads directly from stock_cache (same data the UI uses) without triggering
+    any Yahoo Finance fetches. If data is missing from the cache, the evaluation
+    will simply have fewer samples rather than re-fetching live data.
+    """
+    from db_utils import fetch_bulk_from_cache
+    calendar_days = int(days_back * 1.6)
+    if any(f.lower() == "volume" for f in feature_names):
+        # Relative volume needs a trailing 20-day window before the first valid
+        # row; pad the fetch so trimming those NaN rows doesn't starve days_back.
+        calendar_days += 40
+    start_date = end_date - timedelta(days=calendar_days)
+    bulk = fetch_bulk_from_cache([symbol], start_date, end_date)
+    cached_df = bulk.get(symbol)
+    if cached_df is None or cached_df.empty:
+        return np.empty((0, len(feature_names)), dtype=np.float32), []
+        
+    primary_col = "MACD" if signal_type == "macd" else "Signal_Line"
+    cols_data = []
+    
+    for f in feature_names:
+        f_lower = f.lower()
+        if f_lower in ("macd", "signal_line"):
+            col = "MACD" if f_lower == "macd" else "Signal_Line"
+            if col in cached_df.columns:
+                cols_data.append(cached_df[col].values)
+            else:
+                return np.empty((0, len(feature_names)), dtype=np.float32), []
+        elif f_lower == "delta":
+            if primary_col in cached_df.columns:
+                p_vals = cached_df[primary_col].values.astype(np.float32)
+                deltas = np.zeros(len(cached_df), dtype=np.float32)
+                deltas[1:] = p_vals[1:] - p_vals[:-1]
+                cols_data.append(deltas)
+            else:
+                return np.empty((0, len(feature_names)), dtype=np.float32), []
+        elif f_lower == "open-close":
+            if "Open" in cached_df.columns and "Close" in cached_df.columns:
+                o_vals = cached_df["Open"].values.astype(np.float32)
+                c_vals = cached_df["Close"].values.astype(np.float32)
+                cols_data.append(np.where(o_vals != 0, (c_vals - o_vals) / o_vals, 0.0).astype(np.float32))
+            else:
+                return np.empty((0, len(feature_names)), dtype=np.float32), []
+        elif f_lower == "volume":
+            # Relative volume (today's volume / trailing 20-day average) instead
+            # of the raw count — see train_forecast_model.py's get_training_data.
+            if "Volume" in cached_df.columns:
+                vol_vals = cached_df["Volume"].values.astype(np.float32)
+                vol_avg = cached_df["Volume"].rolling(window=20, min_periods=20).mean().values
+                cols_data.append(np.where(vol_avg > 0, vol_vals / vol_avg, np.nan).astype(np.float32))
+            else:
+                return np.empty((0, len(feature_names)), dtype=np.float32), []
+        else:
+            db_col = COLUMN_MAPPING.get(f_lower, f_lower.upper())
+            if db_col in cached_df.columns:
+                cols_data.append(cached_df[db_col].values)
+            else:
+                return np.empty((0, len(feature_names)), dtype=np.float32), []
+
+    matrix = np.column_stack(cols_data).astype(np.float32)
+    dates = [idx.to_pydatetime() for idx in cached_df.index]
+    
+    valid_mask = ~np.isnan(matrix).any(axis=1) & ~np.isinf(matrix).any(axis=1)
+    matrix = matrix[valid_mask]
+    dates = [d for d, v in zip(dates, valid_mask) if v]
+    return matrix, dates
 
 
 def get_historical_data(
@@ -26,26 +116,10 @@ def get_historical_data(
     end_date: datetime, 
     days_back: int = 60
 ) -> Tuple[List[float], List[datetime]]:
-    """Get historical MACD or Signal Line data from database.
-
-    Reads directly from stock_cache (same data the UI uses) without triggering
-    any Yahoo Finance fetches. If data is missing from the cache, the evaluation
-    will simply have fewer samples rather than re-fetching live data.
-    """
-    from db_utils import fetch_bulk_from_cache
-    calendar_days = int(days_back * 1.6)
-    start_date = end_date - timedelta(days=calendar_days)
-    bulk = fetch_bulk_from_cache([symbol], start_date, end_date)
-    cached_df = bulk.get(symbol)
-    field_name = "MACD" if signal_type == "macd" else "Signal_Line"
-    values, dates = [], []
-    if cached_df is not None and not cached_df.empty and field_name in cached_df.columns:
-        for idx, row in cached_df.iterrows():
-            val = row.get(field_name)
-            if val is not None and not (isinstance(val, float) and val != val):  # skip NaN
-                values.append(float(val))
-                dates.append(idx.to_pydatetime())
-    return values, dates
+    """Legacy helper for 1D single-signal historical data."""
+    mat, dates = get_historical_data_for_features(symbol, [signal_type], signal_type, end_date, days_back)
+    if len(mat) == 0: return [], []
+    return mat[:, 0].tolist(), dates
 
 
 
@@ -81,7 +155,10 @@ def load_model(architecture: str, signal_type: str):
                 details = {
                     "hidden_size": getattr(f, "hidden_size", None),
                     "num_layers": getattr(f, "num_layers", None),
-                    "batch_size": getattr(f, "batch_size", None)
+                    "batch_size": getattr(f, "batch_size", None),
+                    "feature_names": getattr(f, "feature_names", ["macd"]),
+                    "input_size": getattr(f, "input_size", 1),
+                    "target_size": getattr(f, "target_size", 1)
                 }
                 return ("coreml", f, f.normalization_type, details)
         except Exception as e: print(f"Warning: CoreML load failed: {e}")
@@ -90,19 +167,24 @@ def load_model(architecture: str, signal_type: str):
         try:
             import torch
             from models.lstm_forecaster import MACDForecasterTrainer
-            cp = torch.load(pytorch_path, map_location="cpu")
+            cp = torch.load(pytorch_path, map_location="cpu", weights_only=False)
+            feature_names = cp.get("feature_names", ["macd", "delta"] if cp.get("include_delta", False) else ["macd"])
             trainer = MACDForecasterTrainer(
                 seq_length=cp.get("seq_length", 30), 
                 forecast_horizon=cp.get("forecast_horizon", 5), 
                 hidden_size=cp.get("hidden_size", 64), 
                 num_layers=cp.get("num_layers", 2),
-                architecture=cp.get("architecture", architecture)
+                architecture=cp.get("architecture", architecture),
+                feature_names=feature_names
             )
             trainer.load(pytorch_path)
             details = {
                 "hidden_size": cp.get("hidden_size"),
                 "num_layers": cp.get("num_layers"),
-                "batch_size": cp.get("batch_size")
+                "batch_size": cp.get("batch_size"),
+                "feature_names": getattr(trainer, "feature_names", feature_names),
+                "input_size": getattr(trainer, "input_size", len(feature_names)),
+                "target_size": getattr(trainer, "target_size", 1)
             }
             return ("pytorch", trainer, cp.get("normalization_type", "global"), details)
         except Exception as e: print(f"Warning: PyTorch load failed: {e}")
@@ -169,7 +251,8 @@ def run_evaluation(symbol: str, signal_type: str, architecture: str, input_days:
     if not arima_only and not model: return {"error": f"No model found for {signal_type}_{architecture}"}
     
     inc_delta = getattr(model, "include_delta", False) if model else False
-    in_size = getattr(model, "input_size", 1) if model else 1
+    feature_names = getattr(model, "feature_names", ["macd", "delta"] if inc_delta else ["macd"]) if not arima_only else [signal_type]
+    in_size = getattr(model, "input_size", len(feature_names)) if model else 1
     seq_len = input_days if arima_only else model.seq_length
     fh = forecast_horizon if forecast_horizon else (model.forecast_horizon if model else 5)
     efh = min(inference_forcast_horizon if inference_forcast_horizon else fh, fh)
@@ -178,7 +261,7 @@ def run_evaluation(symbol: str, signal_type: str, architecture: str, input_days:
         "architecture": "ARIMA" if arima_only else architecture,
         "engine": "statsmodels" if arima_only else engine_type.upper(),
         "normalization": normalization_type,
-        "features": "MACD" if arima_only else ("MACD + Delta" if inc_delta else "MACD"),
+        "features": "MACD" if arima_only else (" + ".join([f.upper() for f in feature_names])),
         "seq_len": seq_len,
         "forecast_horizon": fh,
         "eval_horizon": efh,
@@ -190,7 +273,7 @@ def run_evaluation(symbol: str, signal_type: str, architecture: str, input_days:
     # Use evaluation horizon for sampling constraints if smaller than model's trained horizon
     total_needed = seq_len + num_samples + efh + (1 if inc_delta else 0)
     fetch_until = get_latest_market_date()
-    all_vals, all_dates = get_historical_data(symbol, signal_type, fetch_until, total_needed + 10)
+    all_vals, all_dates = get_historical_data_for_features(symbol, feature_names, signal_type, fetch_until, total_needed + 10)
     
     if len(all_vals) < total_needed: return {"error": f"Not enough data: {len(all_vals)} < {total_needed}"}
 
@@ -201,13 +284,13 @@ def run_evaluation(symbol: str, signal_type: str, architecture: str, input_days:
         s_idx = len(all_vals) - num_samples - efh + i - seq_len + 1
         e_idx = s_idx + seq_len
         if s_idx < 0: continue
-        in_seq = np.array(all_vals[s_idx:e_idx])
+        in_seq = all_vals[s_idx:e_idx, :]
         dt = all_dates[e_idx-1]
         
         # We try to get up to fh days of actuals for the model's output comparison,
         # but we only require at least efh days to be present.
-        act_v = all_vals[e_idx : min(e_idx + fh, len(all_vals))]
-        act_d = [act_v[j] - (in_seq[-1] if j==0 else act_v[j-1]) for j in range(len(act_v))]
+        act_v = all_vals[e_idx : min(e_idx + fh, len(all_vals)), 0]
+        act_d = [act_v[j] - (in_seq[-1, 0] if j==0 else act_v[j-1]) for j in range(len(act_v))]
         sample_data.append((i, in_seq, dt, act_v, act_d, all_dates[e_idx : min(e_idx + fh, len(all_vals))]))
 
     neural_macd, neural_delta = [], []
@@ -215,10 +298,10 @@ def run_evaluation(symbol: str, signal_type: str, architecture: str, input_days:
         if not arima_only:
             # Recalculate s_idx for prev_val consistency
             s_idx = len(all_vals) - num_samples - efh + i - seq_len + 1
-            prev_val = float(all_vals[s_idx - 1]) if inc_delta and s_idx > 0 else None
+            prev_val = float(all_vals[s_idx - 1, 0]) if inc_delta and s_idx > 0 else None
             p = model.predict(seq, prev_value=prev_val)
             neural_macd.append(p[:efh, 0].tolist())
-            if inc_delta and in_size > 1: neural_delta.append(p[:efh, 1].tolist())
+            if inc_delta and p.shape[1] > 1: neural_delta.append(p[:efh, 1].tolist())
             else: neural_delta.append(None)
         else: neural_macd.append(None); neural_delta.append(None)
 
@@ -236,12 +319,12 @@ def run_evaluation(symbol: str, signal_type: str, architecture: str, input_days:
         pp = ap if arima_only else neural_macd[i]
         if pp is not None:
             mlen = min(len(pp), len(av[:efh]))
-            p_preds.append(pp[:mlen]); actuals.append(av[:mlen]); bases.append(float(seq[-1]))
+            p_preds.append(pp[:mlen]); actuals.append(av[:mlen]); bases.append(float(seq[-1, 0]))
             if neural_delta[i]: d_preds.append(neural_delta[i][:mlen]); d_actuals.append(ad[:mlen])
             if ap: a_preds.append(ap[:mlen])
             
             if verbose:
-                print(f"Sample {len(p_preds)}: Ends {sample_data[i][2].strftime('%Y-%m-%d')} | Last MACD: {seq[-1]:.4f}")
+                print(f"Sample {len(p_preds)}: Ends {sample_data[i][2].strftime('%Y-%m-%d')} | Last MACD: {seq[-1, 0]:.4f}")
                 for j in range(mlen):
                     line = f"  Day {j+1}: Pred={pp[j]:8.4f}, Act={av[j]:8.4f}, Err={pp[j]-av[j]:+8.4f}"
                     if neural_delta[i]: line += f" | Delta: P={neural_delta[i][j]:.4f}, A={ad[j]:.4f}"
@@ -259,7 +342,7 @@ def run_evaluation(symbol: str, signal_type: str, architecture: str, input_days:
     if lag_test:
         res["primary_lag"] = _compute_lag_metrics(p_preds, actuals, bases)
         if d_preds:
-            d_bases = [sample_data[idx][1][-1] - sample_data[idx][1][-2] for idx in range(len(d_preds))]
+            d_bases = [float(sample_data[idx][1][-1, 0] - sample_data[idx][1][-2, 0]) for idx in range(len(d_preds))]
             res["delta_lag"] = _compute_lag_metrics(d_preds, d_actuals, d_bases)
             
     if breakdown_by_day:

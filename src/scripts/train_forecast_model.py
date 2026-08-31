@@ -28,9 +28,24 @@ from datetime import datetime, timedelta
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 
-def get_training_data(symbols: list, days: int = 365, signal_type: str = "macd"):
+COLUMN_MAPPING = {
+    "macd": "MACD",
+    "signal_line": "Signal_Line",
+    "open": "Open",
+    "high": "High",
+    "low": "Low",
+    "close": "Close",
+    "volume": "Volume",
+    "ema12": "EMA12",
+    "ema26": "EMA26",
+    "ma20": "MA20",
+    "ma50": "MA50",
+}
+
+
+def get_training_data(symbols: list, days: int = 365, signal_type: str = "macd", feature_names: list = None):
     """
-    Gather MACD or Signal Line data for training from multiple symbols.
+    Gather multi-feature data for training from multiple symbols.
 
     Reads directly from stock_cache (same data the UI uses) without triggering
     any Yahoo Finance fetches. If data is missing from the cache for a symbol,
@@ -39,14 +54,18 @@ def get_training_data(symbols: list, days: int = 365, signal_type: str = "macd")
     Args:
         symbols: List of stock symbols
         days: Number of days of history to use
-        signal_type: Type of signal to gather - "macd" or "signal_line"
+        signal_type: Type of primary signal - "macd" or "signal_line"
+        feature_names: List of features to gather (e.g. ['macd', 'delta', 'open', 'close', 'volume'])
         
     Returns:
-        List of numpy arrays, one per symbol (maintains symbol boundaries)
+        List of 2D numpy arrays of shape (points, num_features), one per symbol
     """
     from macd_utils import get_latest_market_date
     from db_utils import fetch_bulk_from_cache
     
+    if feature_names is None:
+        feature_names = [signal_type]
+        
     per_symbol_data = []
     total_points = 0
     
@@ -54,29 +73,80 @@ def get_training_data(symbols: list, days: int = 365, signal_type: str = "macd")
     start_date = end_date - timedelta(days=days)
     
     signal_label = "MACD" if signal_type == "macd" else "Signal Line"
-    field_name = "MACD" if signal_type == "macd" else "Signal_Line"
-    print(f"Gathering {signal_label} data from {start_date} to {end_date}")
+    primary_col = "MACD" if signal_type == "macd" else "Signal_Line"
+    print(f"Gathering features ({', '.join(feature_names)}) from {start_date} to {end_date}")
     print(f"Processing {len(symbols)} symbols...")
     
     for i, symbol in enumerate(symbols):
         try:
             bulk = fetch_bulk_from_cache([symbol], start_date, end_date)
             cached_df = bulk.get(symbol)
-            series = []
-            if cached_df is not None and not cached_df.empty and field_name in cached_df.columns:
-                for idx, row in cached_df.iterrows():
-                    val = row.get(field_name)
-                    if val is not None and not (isinstance(val, float) and val != val):  # skip NaN
-                        series.append(float(val))
-            if len(series) >= 50:  # Need enough data
-                symbol_array = np.array(series, dtype=np.float32)
-                per_symbol_data.append(symbol_array)
-                total_points += len(series)
-                print(f"  [{i+1}/{len(symbols)}] {symbol}: {len(series)} data points")
+            if cached_df is None or cached_df.empty:
+                continue
+                
+            cols_data = []
+            has_all_cols = True
+            for f in feature_names:
+                f_lower = f.lower()
+                if f_lower in ("macd", "signal_line"):
+                    col = "MACD" if f_lower == "macd" else "Signal_Line"
+                    if col in cached_df.columns:
+                        cols_data.append(cached_df[col].values)
+                    else:
+                        has_all_cols = False
+                        break
+                elif f_lower == "delta":
+                    if primary_col in cached_df.columns:
+                        p_vals = cached_df[primary_col].values.astype(np.float32)
+                        deltas = np.zeros(len(cached_df), dtype=np.float32)
+                        deltas[1:] = p_vals[1:] - p_vals[:-1]
+                        cols_data.append(deltas)
+                    else:
+                        has_all_cols = False
+                        break
+                elif f_lower == "open-close":
+                    if "Open" in cached_df.columns and "Close" in cached_df.columns:
+                        o_vals = cached_df["Open"].values.astype(np.float32)
+                        c_vals = cached_df["Close"].values.astype(np.float32)
+                        cols_data.append(np.where(o_vals != 0, (c_vals - o_vals) / o_vals, 0.0).astype(np.float32))
+                    else:
+                        has_all_cols = False
+                        break
+                elif f_lower == "volume":
+                    # Relative volume (today's volume / trailing 20-day average) instead
+                    # of the raw count, so it's comparable across symbols with wildly
+                    # different share counts under global normalization.
+                    if "Volume" in cached_df.columns:
+                        vol_vals = cached_df["Volume"].values.astype(np.float32)
+                        vol_avg = cached_df["Volume"].rolling(window=20, min_periods=20).mean().values
+                        cols_data.append(np.where(vol_avg > 0, vol_vals / vol_avg, np.nan).astype(np.float32))
+                    else:
+                        has_all_cols = False
+                        break
+                else:
+                    db_col = COLUMN_MAPPING.get(f_lower, f_lower.upper())
+                    if db_col in cached_df.columns:
+                        cols_data.append(cached_df[db_col].values)
+                    else:
+                        has_all_cols = False
+                        break
+
+            if not has_all_cols or len(cols_data) == 0:
+                continue
+                
+            matrix = np.column_stack(cols_data).astype(np.float32)
+            # Filter out any rows with NaN/inf across any feature
+            valid_mask = ~np.isnan(matrix).any(axis=1) & ~np.isinf(matrix).any(axis=1)
+            matrix = matrix[valid_mask]
+            
+            if len(matrix) >= 50:  # Need enough data
+                per_symbol_data.append(matrix)
+                total_points += len(matrix)
+                print(f"  [{i+1}/{len(symbols)}] {symbol}: {len(matrix)} data points")
         except Exception as e:
             print(f"  [{i+1}/{len(symbols)}] {symbol}: Error - {e}")
     
-    print(f"\nTotal {signal_label} data points: {total_points} across {len(per_symbol_data)} symbols")
+    print(f"\nTotal data points: {total_points} across {len(per_symbol_data)} symbols")
     return per_symbol_data
 
 
@@ -158,6 +228,38 @@ def main():
         help="Learning rate (default: 0.001)"
     )
     parser.add_argument(
+        "--lr-scheduler",
+        action="store_true",
+        help="Decay the learning rate via ReduceLROnPlateau, watching the same loss "
+             "(val if available, else train) used for checkpoint selection."
+    )
+    parser.add_argument(
+        "--lr-factor",
+        type=float,
+        default=0.5,
+        help="Multiply the learning rate by this factor on each plateau (default: 0.5)"
+    )
+    parser.add_argument(
+        "--lr-patience",
+        type=int,
+        default=10,
+        help="Epochs with no improvement before decaying the learning rate (default: 10)"
+    )
+    parser.add_argument(
+        "--lr-min",
+        type=float,
+        default=1e-6,
+        help="Floor the learning rate never decays below (default: 1e-6)"
+    )
+    parser.add_argument(
+        "--checkpoint-warmup-epochs",
+        type=int,
+        default=0,
+        help="Epochs 1..N train normally but are ineligible to become the 'best' "
+             "checkpoint, and are excluded from LR scheduler plateau tracking too "
+             "(default: 0, i.e. every epoch is eligible from the start)"
+    )
+    parser.add_argument(
         "--output-dir",
         type=str,
         default=None,
@@ -194,6 +296,25 @@ def main():
              "the training objective. Inference adds the drift back, so predictions "
              "stay in original units. Compare against scripts/persistence_baseline.py"
     )
+    parser.add_argument(
+        "--loss-decay-gamma",
+        type=float,
+        default=None,
+        help="Exponential decay factor per forecast step for weighted MSE loss (e.g. 0.8). "
+             "Discounts errors on far-horizon days so the model focuses on near-term accuracy. "
+             "If omitted, standard unweighted MSE is used."
+    )
+    parser.add_argument(
+        "--extra-features",
+        type=str,
+        default=None,
+        help="Comma-separated list of additional features from stock_cache to use as inputs "
+             "(e.g., 'open,close,volume' or 'open,high,low,close,volume,ma20,ma50'). "
+             "'open-close' is a derived (close-open)/open ratio feature (distinct from the "
+             "raw 'open'/'close' levels, which can be included alongside it). 'volume' is "
+             "relative volume (today's volume / trailing 20-day average), not the raw count. "
+             "Primary signal (MACD) and delta (if --include-delta) are always included."
+    )
     
     args = parser.parse_args()
     
@@ -207,24 +328,36 @@ def main():
         )
     os.makedirs(output_dir, exist_ok=True)
     
-    # Determine model name based on signal type and architecture
+    # Build list of feature names
+    feature_names = [args.signal_type]
+    if args.include_delta:
+        feature_names.append("delta")
+    if args.extra_features:
+        extras = [f.strip().lower() for f in args.extra_features.split(",") if f.strip()]
+        for ex in extras:
+            if ex not in feature_names:
+                feature_names.append(ex)
+                
+    # Determine model name based on signal type, architecture and features
     signal_label = "MACD" if args.signal_type == "macd" else "Signal Line"
     arch_label = args.architecture.replace("_", " ").title()
     delta_suffix = "_with_delta" if args.include_delta else ""
     residual_suffix = "_residual" if args.residual_target else ""
-    # e.g. "macd_bidirectional_gru_with_delta_residual". The suffixes keep a
-    # residual-target artifact from overwriting a level-target one — pass the whole
-    # string as --architecture to evaluate_forecast_model.py.
-    model_name = f"{args.signal_type}_{args.architecture}{delta_suffix}{residual_suffix}"
+    extra_suffix = f"_with_{'_'.join([f.strip().lower() for f in args.extra_features.split(',') if f.strip()])}" if args.extra_features else ""
+    # e.g. "macd_bidirectional_gru_with_delta_residual_with_open_close_volume".
+    model_name = f"{args.signal_type}_{args.architecture}{delta_suffix}{residual_suffix}{extra_suffix}"
     
     print("=" * 60)
     print(f"{arch_label} {signal_label} Forecaster Training")
     print("=" * 60)
     print(f"Architecture: {args.architecture}")
     print(f"Signal type: {signal_label}")
+    print(f"Features: {', '.join(feature_names)}")
     print(f"Normalization: {args.normalization_type}")
     print(f"Include Delta: {args.include_delta}")
     print(f"Residual Target: {args.residual_target}")
+    if args.loss_decay_gamma is not None:
+        print(f"Loss Decay Gamma: {args.loss_decay_gamma}")
     print(f"Output directory: {output_dir}")
     print(f"Sequence length: {args.seq_length}")
     print(f"Forecast horizon: {args.forecast_horizon}")
@@ -232,6 +365,10 @@ def main():
     print(f"Epochs: {args.epochs}")
     print(f"Batch size: {args.batch_size}")
     print(f"Learning rate: {args.learning_rate}")
+    if args.lr_scheduler:
+        print(f"LR Scheduler: ReduceLROnPlateau (factor={args.lr_factor}, patience={args.lr_patience}, min_lr={args.lr_min})")
+    if args.checkpoint_warmup_epochs > 0:
+        print(f"Checkpoint warmup: {args.checkpoint_warmup_epochs} epochs (ineligible as 'best', excluded from LR scheduler tracking)")
     print(f"Test split: {args.test_split * 100:.0f}%")
     print()
     
@@ -251,7 +388,7 @@ def main():
     
     # Gather training data
     print("Gathering training data...")
-    per_symbol_data = get_training_data(symbols, args.days, args.signal_type)
+    per_symbol_data = get_training_data(symbols, args.days, args.signal_type, feature_names=feature_names)
     
     if len(per_symbol_data) == 0:
         print("Error: No valid symbol data collected")
@@ -328,7 +465,13 @@ def main():
         architecture=args.architecture,
         normalization_type=args.normalization_type,
         include_delta=args.include_delta,
-        residual_target=args.residual_target
+        residual_target=args.residual_target,
+        loss_decay_gamma=args.loss_decay_gamma,
+        feature_names=feature_names,
+        lr_scheduler=args.lr_scheduler,
+        lr_factor=args.lr_factor,
+        lr_patience=args.lr_patience,
+        lr_min=args.lr_min
     )
     
     print("\nTraining...")
@@ -338,7 +481,8 @@ def main():
         batch_size=args.batch_size,
         validation_split=0.2,
         verbose=True,
-        split_strategy=args.split_strategy
+        split_strategy=args.split_strategy,
+        checkpoint_warmup_epochs=args.checkpoint_warmup_epochs
     )
     
     print(f"\nFinal train loss: {history['train_loss'][-1]:.6f}")
@@ -347,6 +491,7 @@ def main():
     print("Training Configuration:")
     print(f"  Architecture:       {args.architecture}")
     print(f"  Signal Type:        {signal_label}")
+    print(f"  Features:           {', '.join(feature_names)}")
     print(f"  Normalization:      {args.normalization_type}")
     print(f"  Split Strategy:     {args.split_strategy}")
     print(f"  Sequence Length:    {args.seq_length}")
@@ -355,7 +500,13 @@ def main():
     print(f"  Epochs:             {args.epochs}")
     print(f"  Batch Size:         {args.batch_size}")
     print(f"  Learning Rate:      {args.learning_rate}")
-    
+    if args.lr_scheduler:
+        print(f"  LR Scheduler:       ReduceLROnPlateau (factor={args.lr_factor}, patience={args.lr_patience}, min_lr={args.lr_min})")
+    if args.checkpoint_warmup_epochs > 0:
+        print(f"  Checkpoint Warmup:  {args.checkpoint_warmup_epochs} epochs")
+    if args.loss_decay_gamma is not None:
+        print(f"  Loss Decay Gamma:   {args.loss_decay_gamma}")
+
     # Evaluate on held-out test set
     if test_data is not None and len(test_data) > 0:
         # Check if any test symbol has enough data
