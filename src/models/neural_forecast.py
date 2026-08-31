@@ -50,11 +50,13 @@ class CoreMLForecaster:
         self.signal_type = signal_type
         self.include_delta = False
         self.residual_target = False
+        self.feature_names = ["macd"]
         self.input_size = 1
+        self.target_size = 1
         self.hidden_size = None
         self.num_layers = None
         self.batch_size = None
-        
+
         if model_path is None:
             from models.lstm_forecaster import get_model_path
             model_path = get_model_path(signal_type)
@@ -65,101 +67,104 @@ class CoreMLForecaster:
     def _load_model(self):
         """Load the Core ML model."""
         global _model_cache
-        
-        if self.model_path in _model_cache:
-            cached = _model_cache[self.model_path]
-            self.model = cached["model"]
-            self.mean = cached["mean"]
-            self.std = cached["std"]
-            self.seq_length = cached["seq_length"]
-            self.forecast_horizon = cached["forecast_horizon"]
-            self.normalization_type = cached.get("normalization_type", "unknown")
-            self.include_delta = cached.get("include_delta", False)
-            self.residual_target = cached.get("residual_target", False)
-            self.input_size = cached.get("input_size", 1)
+
+        cached = _model_cache.get(self.model_path)
+        if cached is not None:
+            # The cache entry IS the attribute set produced by _read_metadata,
+            # so restoring it wholesale keeps the cached instance identical to a
+            # freshly parsed one. Adding a field to _read_metadata cannot leave
+            # this path half-initialized the way an explicit copy-out could.
+            self.__dict__.update(cached)
             logger.info(f"Loaded Core ML model from cache")
             return
-        
+
         if not os.path.exists(self.model_path):
             logger.warning(f"Core ML model not found at {self.model_path}")
             return
-        
+
         try:
             import coremltools as ct
-            
-            # Load the model
-            self.model = ct.models.MLModel(self.model_path)
-            
-            # Load parameters from metadata
-            metadata = self.model.user_defined_metadata
-            
-            # Handle list-based mean/std if multi-variate
-            mean_str = metadata.get("mean", "0.0")
-            std_str = metadata.get("std", "1.0")
-            
-            if mean_str.startswith("["):
-                self.mean = np.array(ast.literal_eval(mean_str), dtype=np.float32)
-                self.std = np.array(ast.literal_eval(std_str), dtype=np.float32)
-            else:
-                self.mean = float(mean_str)
-                self.std = float(std_str)
-                
-            self.seq_length = int(metadata.get("seq_length", 30))
-            self.forecast_horizon = int(metadata.get("forecast_horizon", 5))
-            self.normalization_type = metadata.get("normalization_type", "global")
-            self.include_delta = metadata.get("include_delta", "False").lower() == "true"
-            self.residual_target = metadata.get("residual_target", "False").lower() == "true"
-            
-            # Load feature names and sizes from metadata
-            feature_names_str = metadata.get("feature_names", "")
-            if feature_names_str:
-                self.feature_names = [f.strip().lower() for f in feature_names_str.split(",") if f.strip()]
-            else:
-                self.feature_names = ["macd", "delta"] if self.include_delta else ["macd"]
-                
-            self.input_size = int(metadata.get("input_size", len(self.feature_names)))
-            self.target_size = int(metadata.get("target_size", 2 if self.include_delta else 1))
-            
-            # Load additional model details if present
-            try:
-                self.hidden_size = int(metadata.get("hidden_size", 0))
-                self.num_layers = int(metadata.get("num_layers", 0))
-                batch_size_str = metadata.get("batch_size")
-                self.batch_size = int(batch_size_str) if batch_size_str else None
-            except (ValueError, TypeError):
-                self.hidden_size = None
-                self.num_layers = None
-                self.batch_size = None
-            
-            # Cache the model
-            _model_cache[self.model_path] = {
-                "model": self.model,
-                "mean": self.mean,
-                "std": self.std,
-                "seq_length": self.seq_length,
-                "forecast_horizon": self.forecast_horizon,
-                "normalization_type": self.normalization_type,
-                "include_delta": self.include_delta,
-                "residual_target": self.residual_target,
-                "feature_names": self.feature_names,
-                "input_size": self.input_size,
-                "target_size": self.target_size,
-                "hidden_size": self.hidden_size,
-                "num_layers": self.num_layers,
-                "batch_size": self.batch_size
-            }
-            
-            logger.info(f"Loaded Core ML model from {self.model_path}")
-            logger.info(f"  - Features: {', '.join(self.feature_names)} (Count: {self.input_size})")
-            logger.info(f"  - Targets: {self.target_size}")
-            logger.info(f"  - Sequence length: {self.seq_length}")
-            logger.info(f"  - Forecast horizon: {self.forecast_horizon}")
-            
+
+            model = ct.models.MLModel(self.model_path)
+            attrs = self._read_metadata(model)
         except ImportError:
             logger.error("coremltools not installed. Install with: pip install coremltools")
+            return
         except Exception as e:
+            # Nothing has been applied to self yet, so a parse failure leaves the
+            # forecaster unavailable (is_available stays False) and callers fall
+            # back to ARIMA rather than predicting with half-parsed metadata.
             logger.error(f"Failed to load Core ML model: {e}")
-    
+            return
+
+        _model_cache[self.model_path] = attrs
+        self.__dict__.update(attrs)
+
+        logger.info(f"Loaded Core ML model from {self.model_path}")
+        logger.info(f"  - Features: {', '.join(self.feature_names)} (Count: {self.input_size})")
+        logger.info(f"  - Targets: {self.target_size}")
+        logger.info(f"  - Sequence length: {self.seq_length}")
+        logger.info(f"  - Forecast horizon: {self.forecast_horizon}")
+
+    @staticmethod
+    def _read_metadata(model) -> Dict[str, Any]:
+        """
+        Parse a loaded Core ML model into the attribute dict that both the
+        instance and the module-level cache are populated from.
+
+        The returned keys ARE attribute names: whatever is added here is restored
+        on a cache hit for free.
+        """
+        metadata = model.user_defined_metadata
+
+        # Handle list-based mean/std if multi-variate
+        mean_str = metadata.get("mean", "0.0")
+        std_str = metadata.get("std", "1.0")
+
+        if mean_str.startswith("["):
+            mean = np.array(ast.literal_eval(mean_str), dtype=np.float32)
+            std = np.array(ast.literal_eval(std_str), dtype=np.float32)
+        else:
+            mean = float(mean_str)
+            std = float(std_str)
+
+        include_delta = metadata.get("include_delta", "False").lower() == "true"
+
+        # Feature names and sizes
+        feature_names_str = metadata.get("feature_names", "")
+        if feature_names_str:
+            feature_names = [f.strip().lower() for f in feature_names_str.split(",") if f.strip()]
+        else:
+            feature_names = ["macd", "delta"] if include_delta else ["macd"]
+
+        # Additional model details if present
+        try:
+            hidden_size = int(metadata.get("hidden_size", 0))
+            num_layers = int(metadata.get("num_layers", 0))
+            batch_size_str = metadata.get("batch_size")
+            batch_size = int(batch_size_str) if batch_size_str else None
+        except (ValueError, TypeError):
+            hidden_size = None
+            num_layers = None
+            batch_size = None
+
+        return {
+            "model": model,
+            "mean": mean,
+            "std": std,
+            "seq_length": int(metadata.get("seq_length", 30)),
+            "forecast_horizon": int(metadata.get("forecast_horizon", 5)),
+            "normalization_type": metadata.get("normalization_type", "global"),
+            "include_delta": include_delta,
+            "residual_target": metadata.get("residual_target", "False").lower() == "true",
+            "feature_names": feature_names,
+            "input_size": int(metadata.get("input_size", len(feature_names))),
+            "target_size": int(metadata.get("target_size", 2 if include_delta else 1)),
+            "hidden_size": hidden_size,
+            "num_layers": num_layers,
+            "batch_size": batch_size,
+        }
+
     @property
     def is_available(self) -> bool:
         """Check if the model is loaded and ready."""
@@ -332,7 +337,17 @@ class NeuralForecastService:
                 for f in self.forecaster.feature_names:
                     f_lower = f.lower()
                     if f_lower in ("macd", "signal_line"):
-                        cols.append(np.array([d[field_name] for d in macd_data if field_name in d and d[field_name] is not None], dtype=np.float32))
+                        # Read the column this feature NAMES, not the service's
+                        # primary signal: a MACD model carrying signal_line as an
+                        # extra feature must get real Signal_Line values here.
+                        # get_training_data maps the two independently, so keying
+                        # off field_name fed the model the primary column twice.
+                        cols.append(np.array(
+                            [float(d[f_lower]) if d.get(f_lower) is not None else 0.0
+                             for d in macd_data
+                             if field_name in d and d[field_name] is not None],
+                            dtype=np.float32
+                        ))
                     elif f_lower == "delta":
                         primary_vals = [d[field_name] for d in macd_data if field_name in d and d[field_name] is not None]
                         deltas = np.zeros(len(primary_vals), dtype=np.float32)

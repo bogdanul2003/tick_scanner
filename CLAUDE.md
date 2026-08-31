@@ -25,6 +25,7 @@ src/
   core/                       # Config, database, middleware, dependencies
   utils/                      # Sanitization, exceptions, date helpers
   scripts/                    # train_forecast_model.py, evaluate_forecast_model.py
+  tests/                      # unittest suite (no DB / Core ML needed — both stubbed)
   macd_utils.py, db_utils.py, forecast_utils.py, pattern_utils.py, charts_generator.py, picks.py
   notes_db.py                 # Notes Dashboard tables + CRUD
 chart_scan/                   # YOLO pattern detection (detector_neural.py, detector_gpu.py)
@@ -67,7 +68,42 @@ python scripts/train_forecast_model.py --architecture bidirectional_gru --epochs
 
 # Evaluate a model (from src/)
 python scripts/evaluate_forecast_model.py --symbol AAPL --samples 10
+
+# Run the tests (from src/)
+python -m unittest discover tests
 ```
+
+## Tests
+
+`src/tests/` uses the stdlib `unittest` module — there is no pytest dependency and
+no test runner config. The suite stubs `coremltools` and `macd_utils` in
+`sys.modules`, so it needs no Postgres, no `.mlpackage`, and no NPU; it runs
+anywhere in well under a second.
+
+```bash
+# From src/ — whole suite
+python -m unittest discover tests
+
+# One module / one test
+python -m unittest tests.test_neural_forecast_cache
+python -m unittest tests.test_neural_forecast_features.MultiFeatureInputTest.test_signal_line_feature_reads_the_signal_line_column
+
+# From the repo root (the test files add src/ to sys.path themselves)
+python -m unittest discover src/tests
+```
+
+Current coverage is the neural forecaster's inference plumbing only — the parts
+where a silent wrong answer is indistinguishable from a right one:
+
+| Module | Covers |
+|--------|--------|
+| `test_neural_forecast_cache.py` | `CoreMLForecaster._load_model`: a cache-hit instance must be identical to a freshly parsed one; a failed parse must leave the forecaster unavailable rather than predicting with default normalization stats |
+| `test_neural_forecast_features.py` | The multi-feature matrix `forecast_macd` builds: each feature reads the column it names, `delta` tracks the primary signal, columns stay length-aligned |
+
+When adding a feature to the `--extra-features` path, note it is built in three
+places (`scripts/train_forecast_model.py`, `scripts/evaluate_forecast_model.py`,
+`models/neural_forecast.py`) — `test_neural_forecast_features.py` pins only the
+inference one.
 
 ## Architecture Notes
 

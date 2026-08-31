@@ -51,6 +51,42 @@ cd frontend && npm run dev
 - **API Docs**: http://localhost:8000/docs
 - **Frontend**: http://localhost:5173
 
+### Running the Tests
+
+The suite lives in `src/tests/` and uses Python's built-in `unittest` — nothing to
+install beyond `requirements.txt`. Core ML and the database layer are stubbed, so
+the tests need no PostgreSQL, no trained `.mlpackage`, and no Apple Neural Engine.
+
+```bash
+# Whole suite (from src/)
+cd src && python -m unittest discover tests
+
+# Or from the repo root
+python -m unittest discover src/tests
+
+# A single module, with per-test names
+cd src && python -m unittest tests.test_neural_forecast_cache -v
+```
+
+Expected output:
+
+```
+----------------------------------------------------------------------
+Ran 11 tests in 0.025s
+
+OK
+```
+
+| Test module | What it pins down |
+|-------------|-------------------|
+| `test_neural_forecast_cache.py` | The `CoreMLForecaster` metadata cache: an instance built from the cache must be identical to one that parsed the `.mlpackage`, and a model that fails to parse must report itself unavailable instead of forecasting with default normalization stats |
+| `test_neural_forecast_features.py` | The multi-feature input matrix (`--extra-features` models): every feature reads the DB column it names, `delta` tracks the primary signal, and all columns stay length-aligned |
+
+To add a test, drop a `test_*.py` file into `src/tests/`; discovery picks it up with
+no registration step. The existing modules show the two stubbing patterns —
+`mock.patch.dict(sys.modules, ...)` for `coremltools` / `macd_utils`, and a small
+recording double in place of the forecaster.
+
 ---
 
 ## Neural Forecasting System
@@ -362,9 +398,10 @@ tick_scanner/
 │   ├── models/                # Data models & neural networks
 │   │   ├── lstm_forecaster.py # LSTM training & export
 │   │   └── neural_forecast.py # NPU inference
-│   └── scripts/
-│       ├── train_forecast_model.py      # Train LSTM/GRU models
-│       └── evaluate_forecast_model.py   # Evaluate model accuracy
+│   ├── scripts/
+│   │   ├── train_forecast_model.py      # Train LSTM/GRU models
+│   │   └── evaluate_forecast_model.py   # Evaluate model accuracy
+│   └── tests/                 # unittest suite (DB and Core ML stubbed)
 ├── chart_scan/
 │   ├── detector_neural.py     # YOLO pattern detection
 │   └── model.mlpackage/       # YOLO Core ML model
@@ -372,7 +409,9 @@ tick_scanner/
 ├── models/                     # Trained forecast models
 ├── watchlists/                 # Watchlist files
 ├── requirements.txt
-└── ARCHITECTURE.md            # Full architecture docs
+└── docs/
+    ├── ARCHITECTURE.md        # Full architecture docs
+    └── FORECAST_*.md          # Forecaster fix plan and improvement proposals
 ```
 
 ---

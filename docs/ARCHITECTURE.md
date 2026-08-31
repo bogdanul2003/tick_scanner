@@ -783,6 +783,48 @@ npm run dev
 | `API_HOST` | `0.0.0.0` | API bind host |
 | `API_PORT` | `8000` | API bind port |
 
+### Running the Tests
+
+```bash
+# Whole suite (from src/)
+cd src
+python -m unittest discover tests
+
+# Single module, verbose
+python -m unittest tests.test_neural_forecast_cache -v
+
+# Single test
+python -m unittest tests.test_neural_forecast_features.MultiFeatureInputTest.test_signal_line_feature_reads_the_signal_line_column
+
+# From the repo root instead — the test modules put src/ on sys.path themselves
+python -m unittest discover src/tests
+```
+
+Stdlib `unittest`, no pytest and no runner config. Every test file is
+self-contained: `coremltools` and `macd_utils` are replaced in `sys.modules`, and
+the Core ML forecaster is swapped for a recording double, so the suite touches
+**no PostgreSQL, no `.mlpackage`, and no Neural Engine** and finishes in well
+under a second. That is deliberate — these tests have to be runnable on a machine
+with no trained model and no database, which is where a fresh checkout starts.
+
+| Module | Layer under test | Invariant |
+|--------|------------------|-----------|
+| `tests/test_neural_forecast_cache.py` | `models/neural_forecast.py` → `CoreMLForecaster._load_model` | The module-level `_model_cache` entry *is* the instance attribute set, so a cached load and a cold load are indistinguishable; a `.mlpackage` that fails to parse leaves `is_available` false rather than forecasting with default normalization stats |
+| `tests/test_neural_forecast_features.py` | `models/neural_forecast.py` → `NeuralForecastService.forecast_macd` | The multi-feature input matrix: each feature reads the DB column it names (not the service's primary signal), `delta` tracks the primary column, and a NULL never shortens one column out of alignment with the rest |
+
+Both modules cover inference plumbing rather than model quality — the class of
+defect where the pipeline returns a confident number that is quietly built from
+the wrong inputs. Model *accuracy* is measured separately and by hand, via
+`scripts/evaluate_forecast_model.py` and `scripts/persistence_baseline.py`; see
+`src/models/MODEL_CARD.md` for what those numbers currently look like.
+
+Not yet covered, in rough priority order: the feature-matrix builders in
+`scripts/train_forecast_model.py` and `scripts/evaluate_forecast_model.py` (the
+same logic as the tested one, duplicated twice more), the residual-target drift
+arithmetic in `models/lstm_forecaster.py`, `utils/sanitization.py`, and the
+service layer. The "Add tests" items still marked ⏳ in the Migration Strategy
+above refer to that untested surface, not to the two modules here.
+
 ---
 
 ## Next Steps
