@@ -141,12 +141,40 @@ def run_arima_forecast(symbol: str, signal_type: str, end_date: datetime, foreca
     return np.array(values[:forecast_horizon])
 
 
-def load_model(architecture: str, signal_type: str):
-    """Load the trained model (CoreML or PyTorch)."""
+def _usable_arima(values, horizon: int):
+    """Return the first `horizon` ARIMA values, or None if the forecast is unusable.
+
+    A failed fit is recorded as `[None] * horizon` by the worker loop. A plain
+    truthiness check treats that list as a real forecast and hands Nones straight to
+    `_compute_metrics`, which raises `TypeError: unsupported operand type(s) for -:
+    'NoneType' and 'float'`. In a watchlist run that kills the whole pass — the loop
+    does not catch exceptions from run_evaluation — so a single illiquid symbol can
+    discard half an hour of work.
+    """
+    if not values:
+        return None
+    trimmed = values[:horizon]
+    if not trimmed or any(v is None for v in trimmed):
+        return None
+    return trimmed
+
+
+def load_model(architecture: str, signal_type: str, model_name: str = None, version: int = None):
+    """Load the trained model (CoreML or PyTorch).
+
+    When `model_name` is given, resolves `models/{model_name}_{version}.*`
+    (latest version if `version` is None) instead of the legacy
+    `{signal_type}_{architecture}_forecaster.*` naming.
+    """
     from models.lstm_forecaster import get_model_path, get_pytorch_model_path
-    coreml_path = get_model_path(signal_type, architecture)
-    pytorch_path = get_pytorch_model_path(signal_type, architecture)
-    
+    coreml_path = get_model_path(signal_type, architecture, model_name=model_name, version=version)
+    pytorch_path = get_pytorch_model_path(signal_type, architecture, model_name=model_name, version=version)
+
+    if model_name:
+        pin = f"version={version}" if version is not None else "latest version"
+        print(f"Resolved model_name='{model_name}' ({pin}) -> {os.path.basename(coreml_path)}")
+
+
     if os.path.exists(coreml_path):
         try:
             from models.neural_forecast import CoreMLForecaster
@@ -242,13 +270,68 @@ def _compute_lag_metrics(predictions: List[List[float]], actuals: List[List[floa
     return {"mae": float(np.mean(np.abs(p_all - l_all))), "rmse": float(np.sqrt(np.mean((p_all - l_all)**2)))}
 
 
-def run_evaluation(symbol: str, signal_type: str, architecture: str, input_days: int, num_samples: int, forecast_horizon: int = None, inference_forcast_horizon: int = None, compare_arima: bool = False, arima_only: bool = False, verbose: bool = True, cached_model: Any = None, breakdown_by_day: bool = False, lag_test: bool = False) -> Dict[str, Any]:
+def _rollout_predict(model, seq, prev_val, steps, inc_delta, fill="mean", delta_mode="predicted"):
+    """Recursive (iterated) multi-step forecast: predict one day, append that prediction to
+    the input window, drop the oldest row, re-predict — `steps` times, keeping only each
+    run's day-1 output.
+
+    Motivation: the direct multi-horizon head's day-1 output is by far its strongest
+    (MACD DA ~56-65% vs ~40% at day 5), and the day-3+ DA is *below* chance, which is an
+    anti-correlation signature rather than an out-of-signal one — an MSE-trained head
+    collapses toward the anchor as the horizon grows, so in a trending window it calls the
+    direction backwards. Re-anchoring on each step's own output carries the trend forward
+    instead of flattening it. See docs/FORECAST_MODEL_IMPROVEMENTS.md (A4).
+
+    Two caveats that must be kept in mind when reading the numbers this produces:
+      - **Exposure bias.** The model only ever saw windows of real data during training, but
+        by the final step most of the window's tail is its own output. Nothing here corrects
+        for that; a fair version of this idea needs scheduled sampling at training time.
+      - **Unpredictable feature columns.** Anything past macd/delta (open-close, volume, ...)
+        cannot be forecast by this model at all, so `fill` decides what goes into those
+        columns for the synthesized rows. The filler is computed once from the *original*
+        window and reused, so every appended row carries the same value there.
+    """
+    window = np.array(seq, dtype=np.float32, copy=True)
+    n_feat = window.shape[1]
+    if fill == "zero":
+        filler = np.zeros(n_feat, dtype=np.float32)
+    elif fill == "hold":
+        filler = window[-1].copy()
+    else:  # "mean" — for open-close this is ~0, for relative volume ~1, i.e. each column's
+           # own neutral value rather than a constant that means different things per feature
+        filler = window.mean(axis=0)
+
+    macd_out, delta_out = [], []
+    for _ in range(steps):
+        p = model.predict(window, prev_value=prev_val)
+        macd_next = float(p[0, 0])
+        has_delta_out = inc_delta and p.ndim > 1 and p.shape[1] > 1
+        if has_delta_out and delta_mode == "predicted":
+            delta_next = float(p[0, 1])
+        else:
+            # "diff": derive delta the way every other code path defines it — as the
+            # difference of the primary series — instead of trusting the second head.
+            delta_next = macd_next - float(window[-1, 0])
+        macd_out.append(macd_next)
+        delta_out.append(delta_next)
+
+        row = filler.copy()
+        row[0] = macd_next
+        if inc_delta and n_feat > 1:
+            row[1] = delta_next
+        prev_val = float(window[-1, 0])
+        window = np.vstack([window[1:], row[None, :]])
+
+    return macd_out, (delta_out if inc_delta else None)
+
+
+def run_evaluation(symbol: str, signal_type: str, architecture: str, input_days: int, num_samples: int, forecast_horizon: int = None, inference_forcast_horizon: int = None, compare_arima: bool = False, arima_only: bool = False, verbose: bool = True, cached_model: Any = None, breakdown_by_day: bool = False, lag_test: bool = False, model_name: str = None, version: int = None, rollout: bool = False, rollout_fill: str = "mean", rollout_delta: str = "predicted") -> Dict[str, Any]:
     """Run model evaluation for a single symbol."""
     from macd_utils import get_latest_market_date
     if arima_only: engine_type, model, normalization_type, details = "statsmodels", None, "N/A", {}
     elif cached_model: engine_type, model, normalization_type, details = cached_model
-    else: engine_type, model, normalization_type, details = load_model(architecture, signal_type)
-    if not arima_only and not model: return {"error": f"No model found for {signal_type}_{architecture}"}
+    else: engine_type, model, normalization_type, details = load_model(architecture, signal_type, model_name, version)
+    if not arima_only and not model: return {"error": f"No model found for {model_name or f'{signal_type}_{architecture}'}"}
     
     inc_delta = getattr(model, "include_delta", False) if model else False
     feature_names = getattr(model, "feature_names", ["macd", "delta"] if inc_delta else ["macd"]) if not arima_only else [signal_type]
@@ -258,13 +341,15 @@ def run_evaluation(symbol: str, signal_type: str, architecture: str, input_days:
     efh = min(inference_forcast_horizon if inference_forcast_horizon else fh, fh)
     
     model_info = {
-        "architecture": "ARIMA" if arima_only else architecture,
+        "architecture": "ARIMA" if arima_only else (model_name or architecture),
         "engine": "statsmodels" if arima_only else engine_type.upper(),
         "normalization": normalization_type,
         "features": "MACD" if arima_only else (" + ".join([f.upper() for f in feature_names])),
         "seq_len": seq_len,
         "forecast_horizon": fh,
         "eval_horizon": efh,
+        "mode": (f"rollout (recursive, fill={rollout_fill}, delta={rollout_delta})"
+                 if rollout and not arima_only else "direct"),
         "hidden_size": details.get("hidden_size"),
         "num_layers": details.get("num_layers"),
         "batch_size": details.get("batch_size")
@@ -299,10 +384,16 @@ def run_evaluation(symbol: str, signal_type: str, architecture: str, input_days:
             # Recalculate s_idx for prev_val consistency
             s_idx = len(all_vals) - num_samples - efh + i - seq_len + 1
             prev_val = float(all_vals[s_idx - 1, 0]) if inc_delta and s_idx > 0 else None
-            p = model.predict(seq, prev_value=prev_val)
-            neural_macd.append(p[:efh, 0].tolist())
-            if inc_delta and p.shape[1] > 1: neural_delta.append(p[:efh, 1].tolist())
-            else: neural_delta.append(None)
+            if rollout:
+                # efh sequential one-step predictions instead of one efh-step prediction
+                rm, rd = _rollout_predict(model, seq, prev_val, efh, inc_delta, rollout_fill, rollout_delta)
+                neural_macd.append(rm)
+                neural_delta.append(rd)
+            else:
+                p = model.predict(seq, prev_value=prev_val)
+                neural_macd.append(p[:efh, 0].tolist())
+                if inc_delta and p.shape[1] > 1: neural_delta.append(p[:efh, 1].tolist())
+                else: neural_delta.append(None)
         else: neural_macd.append(None); neural_delta.append(None)
 
     arima_res = {}
@@ -315,7 +406,7 @@ def run_evaluation(symbol: str, signal_type: str, architecture: str, input_days:
 
     p_preds, d_preds, a_preds, actuals, d_actuals, bases = [], [], [], [], [], []
     for i, (_, seq, _, av, ad, _) in enumerate(sample_data):
-        ap = arima_res.get(i)[:efh] if (compare_arima or arima_only) else None
+        ap = _usable_arima(arima_res.get(i), efh) if (compare_arima or arima_only) else None
         pp = ap if arima_only else neural_macd[i]
         if pp is not None:
             mlen = min(len(pp), len(av[:efh]))
@@ -349,6 +440,9 @@ def run_evaluation(symbol: str, signal_type: str, architecture: str, input_days:
         res["primary_per_day"] = _compute_per_day_metrics(p_preds, actuals, bases)
         if d_preds:
             res["delta_per_day"] = _compute_per_day_metrics(d_preds, d_actuals, [0.0]*len(d_preds))
+        if a_preds:
+            # Same bases as the model, so the two per-day tables are directly comparable.
+            res["arima_per_day"] = _compute_per_day_metrics(a_preds, actuals[:len(a_preds)], bases[:len(a_preds)])
 
     if verbose:
         print("="*90 + "\nEVALUATION SUMMARY\n" + "="*90)
@@ -357,6 +451,7 @@ def run_evaluation(symbol: str, signal_type: str, architecture: str, input_days:
         print(f"Features:      {model_info['features']}")
         print(f"Normalization: {model_info['normalization']}")
         print(f"Horizons:      Seq={model_info['seq_len']}, Forecast={model_info['forecast_horizon']}, Eval={model_info['eval_horizon']}")
+        print(f"Mode:          {model_info.get('mode', 'direct')}")
         
         h, l, b = model_info.get("hidden_size"), model_info.get("num_layers"), model_info.get("batch_size")
         params = [f"Hidden={h if h else '?'}", f"Layers={l if l else '?'}", f"Batch={b if b else '?'}"]
@@ -366,6 +461,8 @@ def run_evaluation(symbol: str, signal_type: str, architecture: str, input_days:
         print("-" * 90)
         print(f"MACD:  MAE={m_macd['mae']:.6f}, RMSE={m_macd['rmse']:.6f}, DirAcc={m_macd['directional_accuracy']:.2%}")
         if m_delta: print(f"DELTA: MAE={m_delta['mae']:.6f}, RMSE={m_delta['rmse']:.6f}, DirAcc={m_delta['directional_accuracy']:.2%}")
+        if m_arima: print(f"ARIMA: MAE={m_arima['mae']:.6f}, RMSE={m_arima['rmse']:.6f}, DirAcc={m_arima['directional_accuracy']:.2%}"
+                          f"  (on {m_arima['total_directions']} of {m_macd['total_directions']} model comparisons)")
         
         if lag_test:
             lm = res["primary_lag"]
@@ -380,25 +477,34 @@ def run_evaluation(symbol: str, signal_type: str, architecture: str, input_days:
             if m_delta:
                 print("\nPER-DAY (DELTA):")
                 for d, m in sorted(res["delta_per_day"].items()): print(f"  Day {d}: DA={m['directional_accuracy']:.1%}, MAE={m['mae']:.6f}")
+            if res.get("arima_per_day"):
+                print("\nPER-DAY (ARIMA):")
+                for d, m in sorted(res["arima_per_day"].items()): print(f"  Day {d}: DA={m['directional_accuracy']:.1%}, MAE={m['mae']:.6f}")
         print("="*90)
 
     return res
 
 
-def run_watchlist_evaluation(watchlist_name: str, signal_type: str, architecture: str, input_days: int, num_samples: int, forecast_horizon: int = None, inference_forcast_horizon: int = None, compare_arima: bool = False, arima_only: bool = False, exclude_list: List[str] = None, breakdown_by_day: bool = False, lag_test: bool = False, verbose: bool = False) -> Dict[str, Any]:
+def run_watchlist_evaluation(watchlist_name: str, signal_type: str, architecture: str, input_days: int, num_samples: int, forecast_horizon: int = None, inference_forcast_horizon: int = None, compare_arima: bool = False, arima_only: bool = False, exclude_list: List[str] = None, breakdown_by_day: bool = False, lag_test: bool = False, verbose: bool = False, model_name: str = None, version: int = None, rollout: bool = False, rollout_fill: str = "mean", rollout_delta: str = "predicted") -> Dict[str, Any]:
     from db_utils import get_watchlist_symbols
     try: symbols = sorted(get_watchlist_symbols(watchlist_name))
     except Exception as e: return {"error": str(e)}
     if not symbols: return {"error": "Empty watchlist"}
     if exclude_list: symbols = [s for s in symbols if s.upper() not in exclude_list]
-    
-    cm = load_model(architecture, signal_type) if not arima_only else None
+
+    cm = load_model(architecture, signal_type, model_name, version) if not arima_only else None
     print(f"\nWATCHLIST: {watchlist_name} | Samples: {num_samples}\n" + "="*90)
-    
+
     all_res = []
     for i, sym in enumerate(symbols):
         if not verbose: print(f"[{i+1}/{len(symbols)}] {sym:<8}...", end="", flush=True)
-        r = run_evaluation(sym, signal_type, architecture, input_days, num_samples, forecast_horizon, inference_forcast_horizon, compare_arima, arima_only, verbose, cm, breakdown_by_day, lag_test)
+        try:
+            r = run_evaluation(sym, signal_type, architecture, input_days, num_samples, forecast_horizon, inference_forcast_horizon, compare_arima, arima_only, verbose, cm, breakdown_by_day, lag_test, model_name, version, rollout, rollout_fill, rollout_delta)
+        except Exception as e:
+            # One bad symbol must not discard the whole pass — a watchlist run is
+            # ~30 min with --compare, and the loop below is the only place progress
+            # is accumulated.
+            r = {"error": f"{type(e).__name__}: {e}"}
         if "error" not in r:
             all_res.append(r)
             if not verbose: print(f" DONE (DA: {r['primary_metrics']['directional_accuracy']:.1%}, MAE: {r['primary_metrics']['mae']:.4f})")
@@ -408,7 +514,22 @@ def run_watchlist_evaluation(watchlist_name: str, signal_type: str, architecture
     if not all_res: return {"error": "No symbols evaluated"}
     
     # AGGREGATE
-    def avg(key, subkey): return np.mean([r[key][subkey] for r in all_res if r.get(key)])
+    def _vals(key, subkey): return [r[key][subkey] for r in all_res if r.get(key)]
+    def avg(key, subkey): return np.mean(_vals(key, subkey))
+    def med(key, subkey):
+        # MEAN WAPE is not the scale-free answer either: normalizing removes the price
+        # effect but not divergence, and one blown-up fit dominates it (measured
+        # 2026-09-04: a single symbol, ALGN, scored 63,469% ARIMA WAPE and pulled a
+        # 72-symbol mean to 915% against a median of 24.8%). Compare MEDIAN WAPE.
+        # Raw MAE is NOT scale-free: MACD magnitude scales with share price, so the
+        # mean over symbols is dominated by expensive names (measured 2026-09-04:
+        # the top 50 of 501 symbols carry 45% of the total MAE mass, led by NVR and
+        # AZO). WAPE normalizes by |actual| and is the number to compare across
+        # different symbol sets. The mean is taken over PER-SYMBOL scores, so divergent fits can
+        # dominate it — measured on 2026-09-04, ARIMA's watchlist mean MAE was 3.68 while
+        # its median across a 42-symbol sample was 0.72. Report both; when they disagree
+        # by a lot, the mean is describing the tail, not the typical symbol.
+        return np.median(_vals(key, subkey))
     
     p_mae, p_rmse, p_da = avg("primary_metrics", "mae"), avg("primary_metrics", "rmse"), avg("primary_metrics", "directional_accuracy")
     m_info = all_res[0]["model_info"]
@@ -418,6 +539,7 @@ def run_watchlist_evaluation(watchlist_name: str, signal_type: str, architecture
     print(f"Features:      {m_info['features']}")
     print(f"Normalization: {m_info['normalization']}")
     print(f"Horizons:      Seq={m_info['seq_len']}, Forecast={m_info['forecast_horizon']}, Eval={m_info['eval_horizon']}")
+    print(f"Mode:          {m_info.get('mode', 'direct')}")
     
     h, l, b = m_info.get("hidden_size"), m_info.get("num_layers"), m_info.get("batch_size")
     params = [f"Hidden={h if h else '?'}", f"Layers={l if l else '?'}", f"Batch={b if b else '?'}"]
@@ -426,6 +548,10 @@ def run_watchlist_evaluation(watchlist_name: str, signal_type: str, architecture
     print(f"Symbols:       {len(all_res)} / {len(symbols)} (Samples/Symbol: {num_samples})")
     print("-" * 90)
     print(f"MACD:  MAE={p_mae:.6f}, RMSE={p_rmse:.6f}, DA={p_da:.2%}")
+    print(f"       median MAE={med('primary_metrics','mae'):.6f}, "
+          f"median DA={med('primary_metrics','directional_accuracy'):.2%}, "
+          f"median WAPE={med('primary_metrics','wape'):.2f}% "
+          f"(mean {avg('primary_metrics','wape'):.2f}%)")
     
     if any(r.get("delta_metrics") for r in all_res):
         d_mae, d_rmse, d_da = avg("delta_metrics", "mae"), avg("delta_metrics", "rmse"), avg("delta_metrics", "directional_accuracy")
@@ -439,8 +565,21 @@ def run_watchlist_evaluation(watchlist_name: str, signal_type: str, architecture
             print(f"LAG (DELTA): MAE={dl_mae:.6f} (Ratio={dl_mae/d_mae:.2f}x)")
             
     if compare_arima and any(r.get("arima_metrics") for r in all_res):
+        n_arima = sum(1 for r in all_res if r.get("arima_metrics"))
         a_mae, a_da = avg("arima_metrics", "mae"), avg("arima_metrics", "directional_accuracy")
-        print(f"\nARIMA: MAE={a_mae:.6f}, DA={a_da:.2%}")
+        print(f"\nARIMA: MAE={a_mae:.6f}, DA={a_da:.2%}  (fitted on {n_arima}/{len(all_res)} symbols)")
+        a_med = med("arima_metrics", "mae")
+        print(f"       median MAE={a_med:.6f}, "
+              f"median DA={med('arima_metrics','directional_accuracy'):.2%}, "
+              f"median WAPE={med('arima_metrics','wape'):.2f}% "
+              f"(mean {avg('arima_metrics','wape'):.2f}%)")
+        if a_mae > 2 * a_med:
+            print(f"       WARNING: mean MAE is {a_mae/a_med:.1f}x the median — the average is "
+                  f"dominated by a minority of divergent ARIMA fits, not typical behaviour. "
+                  f"Compare medians.")
+        if n_arima < len(all_res):
+            print(f"       NOTE: {len(all_res) - n_arima} symbols have model metrics but no ARIMA "
+                  f"fit; the two rows above are averaged over different symbol sets.")
 
     if breakdown_by_day:
         print("\nPER-DAY (MACD):")
@@ -456,17 +595,34 @@ def run_watchlist_evaluation(watchlist_name: str, signal_type: str, architecture
                 d_da = np.mean([r["delta_per_day"][d]["directional_accuracy"] for r in all_res if r.get("delta_per_day") and d in r["delta_per_day"]])
                 d_mae = np.mean([r["delta_per_day"][d]["mae"] for r in all_res if r.get("delta_per_day") and d in r["delta_per_day"]])
                 print(f"  Day {d}: DA={d_da:.1%}, MAE={d_mae:.6f}")
-                
+
+        if any(r.get("arima_per_day") for r in all_res):
+            print("\nPER-DAY (ARIMA):")
+            for d in range(1, horizon + 1):
+                rows = [r["arima_per_day"][d] for r in all_res
+                        if r.get("arima_per_day") and d in r["arima_per_day"]]
+                if not rows:
+                    continue
+                print(f"  Day {d}: DA={np.mean([x['directional_accuracy'] for x in rows]):.1%}, "
+                      f"MAE={np.mean([x['mae'] for x in rows]):.6f}")
+
     print("="*90)
     return {"watchlist": watchlist_name, "avg_mae": p_mae, "avg_da": p_da}
 
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, default=None,
+                         help="Path to the JSON training config used for the model (see "
+                              "src/configs/). Pulls model_name and signal_type from it.")
+    parser.add_argument("--model-name", type=str, default=None,
+                         help="Look up models/{model_name}_{version}.* directly, without a config file.")
+    parser.add_argument("--model-version", type=int, default=None,
+                         help="Pin to this version instead of the latest (only with --config/--model-name).")
     parser.add_argument("--symbol", type=str)
     parser.add_argument("--watchlist", type=str)
     parser.add_argument("--exclude", type=str)
-    parser.add_argument("--signal-type", type=str, choices=["macd", "signal_line"], default="macd")
+    parser.add_argument("--signal-type", type=str, choices=["macd", "signal_line"], default=None)
     parser.add_argument("--architecture", type=str, default="bidirectional_gru")
     parser.add_argument("--input-days", type=int, default=30)
     parser.add_argument("--samples", type=int, default=10)
@@ -476,10 +632,23 @@ def main():
     parser.add_argument("--arima-only", action="store_true")
     parser.add_argument("--breakdown-by-day", action="store_true")
     parser.add_argument("--lag-test", action="store_true")
+    parser.add_argument("--rollout", action="store_true",
+                        help="Recursive multi-step forecasting: run the model once per forecast day, "
+                             "feeding each run's day-1 prediction back in as input, instead of taking "
+                             "all N days from a single direct prediction.")
+    parser.add_argument("--rollout-fill", type=str, default="mean", choices=["mean", "hold", "zero"],
+                        help="What to put in feature columns the model cannot predict (open-close, "
+                             "volume, ...) when synthesizing a rolled-forward row. mean = that column's "
+                             "mean over the input window (default), hold = its last observed value, "
+                             "zero = 0.0. Ignored for macd/delta-only models.")
+    parser.add_argument("--rollout-delta", type=str, default="predicted", choices=["predicted", "diff"],
+                        help="Where the delta column of a rolled-forward row comes from: the model's own "
+                             "delta head (default), or differencing the predicted primary series the way "
+                             "every other code path defines delta.")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--list-models", action="store_true")
     args = parser.parse_args()
-    
+
     if args.list_models:
         mdir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "models")
         if os.path.exists(mdir):
@@ -487,13 +656,23 @@ def main():
                 if f.endswith(".mlpackage") or f.endswith(".pt"): print(f"  - {f}")
         return
 
+    model_name = args.model_name
+    if args.config:
+        from config_utils import load_json_config, get_model_name
+        json_config = load_json_config(args.config)
+        model_name = get_model_name(json_config)
+        if args.signal_type is None:
+            args.signal_type = json_config.get("signal_type")
+    if args.signal_type is None:
+        args.signal_type = "macd"
+
     if not args.symbol and not args.watchlist: args.symbol = "MSFT"
     ex_list = [s.strip().upper() for s in args.exclude.split(",")] if args.exclude else []
-    
+
     if args.watchlist:
-        run_watchlist_evaluation(args.watchlist, args.signal_type, args.architecture, args.input_days, args.samples, args.forecast_horizon, args.inference_forcast_horizon, args.compare, args.arima_only, ex_list, args.breakdown_by_day, args.lag_test, args.verbose)
+        run_watchlist_evaluation(args.watchlist, args.signal_type, args.architecture, args.input_days, args.samples, args.forecast_horizon, args.inference_forcast_horizon, args.compare, args.arima_only, ex_list, args.breakdown_by_day, args.lag_test, args.verbose, model_name, args.model_version, args.rollout, args.rollout_fill, args.rollout_delta)
     else:
-        run_evaluation(args.symbol.upper(), args.signal_type, args.architecture, args.input_days, args.samples, args.forecast_horizon, args.inference_forcast_horizon, args.compare, args.arima_only, args.verbose, None, args.breakdown_by_day, args.lag_test)
+        run_evaluation(args.symbol.upper(), args.signal_type, args.architecture, args.input_days, args.samples, args.forecast_horizon, args.inference_forcast_horizon, args.compare, args.arima_only, args.verbose, None, args.breakdown_by_day, args.lag_test, model_name, args.model_version, args.rollout, args.rollout_fill, args.rollout_delta)
 
 if __name__ == "__main__":
     main()

@@ -50,6 +50,7 @@ class CoreMLForecaster:
         self.signal_type = signal_type
         self.include_delta = False
         self.residual_target = False
+        self.predict_deltas_only = False
         self.feature_names = ["macd"]
         self.input_size = 1
         self.target_size = 1
@@ -157,6 +158,7 @@ class CoreMLForecaster:
             "normalization_type": metadata.get("normalization_type", "global"),
             "include_delta": include_delta,
             "residual_target": metadata.get("residual_target", "False").lower() == "true",
+            "predict_deltas_only": metadata.get("predict_deltas_only", "False").lower() == "true",
             "feature_names": feature_names,
             "input_size": int(metadata.get("input_size", len(feature_names))),
             "target_size": int(metadata.get("target_size", 2 if include_delta else 1)),
@@ -232,7 +234,19 @@ class CoreMLForecaster:
         
         # Run inference on NPU
         output = self.model.predict({"input_sequence": input_data})
-        
+
+        if self.predict_deltas_only:
+            # A2: exported model's raw output is delta-only (horizon,); reconstruct
+            # the primary signal as anchor + cumsum(deltas), mirroring
+            # lstm_forecaster.py::MACDForecasterTrainer.predict(). Only valid with
+            # normalization_type='global' (enforced at training time), so s/m here
+            # are the fixed dataset-wide stats.
+            delta_pred_norm = output["forecast"][0].reshape(self.forecast_horizon)
+            delta_pred_raw = delta_pred_norm * s[1] + m[1]
+            anchor = float(input_features[-1, 0])
+            macd_pred_raw = anchor + np.cumsum(delta_pred_raw)
+            return np.stack([macd_pred_raw, delta_pred_raw], axis=1)
+
         # Get forecast and denormalize (horizon, target_size)
         forecast_raw = output["forecast"][0].reshape(self.forecast_horizon, self.target_size)
         s_target = s[:self.target_size] if isinstance(s, np.ndarray) else s

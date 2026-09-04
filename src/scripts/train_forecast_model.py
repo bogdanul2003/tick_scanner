@@ -150,111 +150,188 @@ def get_training_data(symbols: list, days: int = 365, signal_type: str = "macd",
     return per_symbol_data
 
 
+def split_symbols_by_time(per_symbol_data, test_split, seq_length, forecast_horizon):
+    """Split each symbol temporally into a train part and a test part (TS-009).
+
+    A symbol only contributes to the test set when BOTH sides are long enough to
+    yield at least one window (`seq_length + forecast_horizon` points). A symbol
+    that fails that check goes entirely into training — which is the right call,
+    but used to happen silently, so the caller could end up training with an empty
+    test set and never be told. This returns the skipped symbols alongside the
+    split so the caller can report and, if necessary, refuse to continue.
+
+    Returns (train_data, test_data, skipped) where `skipped` is a list of
+    (index, total_points, split_idx) for the symbols kept whole.
+    """
+    train_data, test_data, skipped = [], [], []
+    min_points = seq_length + forecast_horizon
+    for i, symbol_array in enumerate(per_symbol_data):
+        split_idx = int(len(symbol_array) * (1 - test_split))
+        if split_idx >= min_points and (len(symbol_array) - split_idx) >= min_points:
+            train_data.append(symbol_array[:split_idx])
+            test_data.append(symbol_array[split_idx:])
+        else:
+            train_data.append(symbol_array)
+            skipped.append((i, len(symbol_array), split_idx))
+    return train_data, test_data, skipped
+
+
+def check_test_set_usable(test_data, seq_length, forecast_horizon, skipped_count,
+                          total_symbols, split_strategy, test_split, allow_empty):
+    """Refuse to train when the split produced no usable test set (TS-009).
+
+    `evaluate()` needs at least one symbol with more than `seq_length +
+    forecast_horizon` points. Without that the run still trains, still saves a
+    model, and still prints a normal-looking summary — with no held-out number
+    anywhere. That has already cost a full sweep once (sizing seq_length at
+    `days: 600`), so it is now an error rather than a one-line notice.
+
+    Returns a list of error message lines: empty when the test set is usable.
+    `allow_empty` downgrades the failure to a warning for the deliberate case of
+    training a final model on every available point.
+    """
+    min_points = seq_length + forecast_horizon
+    usable = [d for d in (test_data or []) if len(d) > min_points]
+    if usable:
+        return []
+    lines = [
+        "Error: the train/test split produced no usable test set.",
+        f"  strategy={split_strategy}  test_split={test_split}  "
+        f"seq_length={seq_length}  forecast_horizon={forecast_horizon}",
+        f"  a test symbol needs more than {min_points} points to yield one window; "
+        f"none of the {len(test_data or [])} test symbols qualify.",
+    ]
+    if skipped_count:
+        lines.append(
+            f"  {skipped_count} of {total_symbols} symbols were kept whole for training "
+            f"because one side of their split was shorter than {min_points} points."
+        )
+    lines.append(
+        "  Fix by raising --days, lowering --seq-length/--forecast-horizon, or raising "
+        "--test-split. To train deliberately without a held-out set, pass "
+        "--allow-empty-test-set."
+    )
+    if allow_empty:
+        lines[0] = ("Warning: no usable test set, continuing because "
+                    "--allow-empty-test-set was passed.")
+        lines[-1] = "  This run will report no held-out metrics."
+    return lines
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train LSTM MACD Forecaster")
     parser.add_argument(
-        "--symbols", 
-        type=str, 
+        "--config",
+        type=str,
+        default=None,
+        help="Path to a JSON training config file (see src/configs/). Every flag below "
+             "becomes an optional override on top of it. Config-free runs (no --config) "
+             "keep each flag's old default and the legacy auto-suffix model filename."
+    )
+    parser.add_argument(
+        "--symbols",
+        type=str,
         default=None,
         help="Comma-separated list of symbols to train on"
     )
     parser.add_argument(
         "--watchlist",
         type=str,
-        default="sp500",
+        default=None,
         help="Watchlist name to use for training data (default: sp500)"
     )
     parser.add_argument(
         "--days",
         type=int,
-        default=365,
+        default=None,
         help="Days of historical data to use (default: 365)"
     )
     parser.add_argument(
         "--signal-type",
         type=str,
         choices=["macd", "signal_line"],
-        default="macd",
+        default=None,
         help="Type of signal to train on: 'macd' or 'signal_line' (default: macd)"
     )
     parser.add_argument(
         "--architecture",
         type=str,
         choices=["stacked_lstm", "bidirectional_gru", "stacked_gru", "standard_lstm", "gru"],
-        default="stacked_lstm",
+        default=None,
         help="Model architecture: stacked_lstm, bidirectional_gru, stacked_gru, standard_lstm, gru (default: stacked_lstm)"
     )
     parser.add_argument(
         "--normalization-type",
         type=str,
         choices=["global", "internal"],
-        default="global",
+        default=None,
         help="Normalization method: 'global' (dataset-wide stats) or 'internal' (per-sequence stats) (default: global)"
     )
     parser.add_argument(
         "--epochs",
         type=int,
-        default=100,
+        default=None,
         help="Number of training epochs (default: 100)"
     )
     parser.add_argument(
         "--seq-length",
         type=int,
-        default=30,
+        default=None,
         help="Input sequence length (default: 30)"
     )
     parser.add_argument(
         "--forecast-horizon",
         type=int,
-        default=5,
+        default=None,
         help="Number of days to forecast (default: 5)"
     )
     parser.add_argument(
         "--hidden-size",
         type=int,
-        default=64,
+        default=None,
         help="LSTM hidden size (default: 64)"
     )
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=32,
+        default=None,
         help="Training batch size (default: 32)"
     )
     parser.add_argument(
         "--learning-rate",
         type=float,
-        default=0.001,
+        default=None,
         help="Learning rate (default: 0.001)"
     )
     parser.add_argument(
         "--lr-scheduler",
         action="store_true",
+        default=None,
         help="Decay the learning rate via ReduceLROnPlateau, watching the same loss "
              "(val if available, else train) used for checkpoint selection."
     )
     parser.add_argument(
         "--lr-factor",
         type=float,
-        default=0.5,
+        default=None,
         help="Multiply the learning rate by this factor on each plateau (default: 0.5)"
     )
     parser.add_argument(
         "--lr-patience",
         type=int,
-        default=10,
+        default=None,
         help="Epochs with no improvement before decaying the learning rate (default: 10)"
     )
     parser.add_argument(
         "--lr-min",
         type=float,
-        default=1e-6,
+        default=None,
         help="Floor the learning rate never decays below (default: 1e-6)"
     )
     parser.add_argument(
         "--checkpoint-warmup-epochs",
         type=int,
-        default=0,
+        default=None,
         help="Epochs 1..N train normally but are ineligible to become the 'best' "
              "checkpoint, and are excluded from LR scheduler plateau tracking too "
              "(default: 0, i.e. every epoch is eligible from the start)"
@@ -268,29 +345,32 @@ def main():
     parser.add_argument(
         "--test-split",
         type=float,
-        default=0.15,
+        default=None,
         help="Fraction of data to hold out for testing (default: 0.15)"
     )
     parser.add_argument(
         "--split-strategy",
         type=str,
         choices=["symbol", "time"],
-        default="symbol",
+        default=None,
         help="How to split data into train/test sets: 'symbol' (separate stocks) or 'time' (past vs future for all stocks) (default: symbol)"
     )
     parser.add_argument(
         "--skip-coreml",
         action="store_true",
+        default=None,
         help="Skip Core ML conversion (useful for testing on non-Mac)"
     )
     parser.add_argument(
         "--include-delta",
         action="store_true",
+        default=None,
         help="Include MACD delta (today - yesterday) as a feature and predict it"
     )
     parser.add_argument(
         "--residual-target",
         action="store_true",
+        default=None,
         help="Train on (actual - drift baseline) instead of the actual values, where "
              "drift is macd[t+k] = macd[t] + (k+1)*delta[t]. Makes 'beat persistence' "
              "the training objective. Inference adds the drift back, so predictions "
@@ -300,9 +380,19 @@ def main():
         "--loss-decay-gamma",
         type=float,
         default=None,
-        help="Exponential decay factor per forecast step for weighted MSE loss (e.g. 0.8). "
-             "Discounts errors on far-horizon days so the model focuses on near-term accuracy. "
-             "If omitted, standard unweighted MSE is used."
+        help="Exponential decay factor per forecast step for weighted MSE loss (e.g. 0.8), "
+             "applied to the primary signal (macd/signal_line) column. Discounts errors on "
+             "far-horizon days so the model focuses on near-term accuracy. Also applies to the "
+             "delta column unless --loss-decay-gamma-delta overrides it. If omitted, standard "
+             "unweighted MSE is used."
+    )
+    parser.add_argument(
+        "--loss-decay-gamma-delta",
+        type=float,
+        default=None,
+        help="Independent decay gamma for the delta column (docs/FORECAST_MODEL_IMPROVEMENTS.md "
+             "A3), only meaningful with --include-delta. Defaults to --loss-decay-gamma when "
+             "omitted, so existing configs that only set --loss-decay-gamma are unaffected."
     )
     parser.add_argument(
         "--extra-features",
@@ -315,9 +405,67 @@ def main():
              "relative volume (today's volume / trailing 20-day average), not the raw count. "
              "Primary signal (MACD) and delta (if --include-delta) are always included."
     )
-    
+    parser.add_argument(
+        "--auxiliary-direction-lambda",
+        type=float,
+        default=None,
+        help="Weight for an auxiliary BCE loss term on sign(future change) per forecast "
+             "day (docs/FORECAST_MODEL_IMPROVEMENTS.md A1). None/omitted disables it. "
+             "Works with or without --include-delta."
+    )
+    parser.add_argument(
+        "--predict-deltas-only",
+        action="store_true",
+        default=None,
+        help="Predict delta only and reconstruct the primary signal as "
+             "macd[t] + cumsum(predicted_deltas), anchored to the last known real value "
+             "(docs/FORECAST_MODEL_IMPROVEMENTS.md A2). Requires --include-delta and "
+             "normalization-type=global; incompatible with --residual-target."
+    )
+
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for Python/NumPy/torch, applied before data shuffling and "
+             "weight initialization (docs/plans/SEED_CONTROL_PLAN.md, TS-017). Omitted "
+             "means unseeded — the historical, nondeterministic behaviour. Seeding gives "
+             "a controlled comparison between runs, not bitwise reproducibility: MPS and "
+             "cuDNN kernels can still reorder float reductions."
+    )
+    parser.add_argument(
+        "--allow-empty-test-set",
+        action="store_true",
+        default=None,
+        help="Continue even when the train/test split yields no usable held-out set. "
+             "Without this the run is refused (TS-009), because it would otherwise train, "
+             "save a model, and print a normal summary with no held-out metric anywhere."
+    )
+
     args = parser.parse_args()
+
+    from config_utils import DEFAULT_CONFIG, load_json_config, get_model_name, resolve_config
+
+    json_config = {}
+    config_model_name = None
+    if args.config:
+        json_config = load_json_config(args.config)
+        config_model_name = get_model_name(json_config)
+        print(f"Loaded config: {args.config} (model_name={config_model_name})")
+
+    cli_values = {key: getattr(args, key) for key in DEFAULT_CONFIG}
+    resolved = resolve_config(cli_values, json_config)
+    for key, value in resolved.items():
+        setattr(args, key, value)
     
+    # Seed before anything that consumes randomness (data order, weight init).
+    from models.lstm_forecaster import seed_everything
+    if seed_everything(args.seed) is not None:
+        print(f"Random seed: {args.seed} (controlled comparison; not bitwise reproducible "
+              f"— see seed_everything docstring)")
+    else:
+        print("Random seed: unseeded (run-to-run variance expected; pass --seed to control it)")
+
     # Determine output directory
     if args.output_dir:
         output_dir = args.output_dir
@@ -338,14 +486,19 @@ def main():
             if ex not in feature_names:
                 feature_names.append(ex)
                 
-    # Determine model name based on signal type, architecture and features
+    # Determine model name: the JSON config's user-chosen name when --config was
+    # given, otherwise the legacy auto-suffix name built from signal type,
+    # architecture and features (unchanged, config-free behavior).
     signal_label = "MACD" if args.signal_type == "macd" else "Signal Line"
     arch_label = args.architecture.replace("_", " ").title()
-    delta_suffix = "_with_delta" if args.include_delta else ""
-    residual_suffix = "_residual" if args.residual_target else ""
-    extra_suffix = f"_with_{'_'.join([f.strip().lower() for f in args.extra_features.split(',') if f.strip()])}" if args.extra_features else ""
-    # e.g. "macd_bidirectional_gru_with_delta_residual_with_open_close_volume".
-    model_name = f"{args.signal_type}_{args.architecture}{delta_suffix}{residual_suffix}{extra_suffix}"
+    if config_model_name:
+        model_name = config_model_name
+    else:
+        delta_suffix = "_with_delta" if args.include_delta else ""
+        residual_suffix = "_residual" if args.residual_target else ""
+        extra_suffix = f"_with_{'_'.join([f.strip().lower() for f in args.extra_features.split(',') if f.strip()])}" if args.extra_features else ""
+        # e.g. "macd_bidirectional_gru_with_delta_residual_with_open_close_volume".
+        model_name = f"{args.signal_type}_{args.architecture}{delta_suffix}{residual_suffix}{extra_suffix}"
     
     print("=" * 60)
     print(f"{arch_label} {signal_label} Forecaster Training")
@@ -358,6 +511,12 @@ def main():
     print(f"Residual Target: {args.residual_target}")
     if args.loss_decay_gamma is not None:
         print(f"Loss Decay Gamma: {args.loss_decay_gamma}")
+        if args.loss_decay_gamma_delta is not None:
+            print(f"Loss Decay Gamma (delta): {args.loss_decay_gamma_delta}")
+    if args.predict_deltas_only:
+        print(f"Predict Deltas Only: True")
+    if args.auxiliary_direction_lambda:
+        print(f"Auxiliary Direction Lambda: {args.auxiliary_direction_lambda}")
     print(f"Output directory: {output_dir}")
     print(f"Sequence length: {args.seq_length}")
     print(f"Forecast horizon: {args.forecast_horizon}")
@@ -403,21 +562,11 @@ def main():
             sys.exit(1)
     
     # Split data based on strategy
+    skipped = []
     if args.split_strategy == "time":
-        train_data = []
-        test_data = []
-        for i, symbol_array in enumerate(per_symbol_data):
-            # Each symbol is split temporally: first 85% for train, last 15% for test
-            split_idx = int(len(symbol_array) * (1 - args.test_split))
-            
-            # Ensure each part is long enough for model sequence + forecast requirements
-            if split_idx >= args.seq_length + args.forecast_horizon and \
-               (len(symbol_array) - split_idx) >= args.seq_length + args.forecast_horizon:
-                train_data.append(symbol_array[:split_idx])
-                test_data.append(symbol_array[split_idx:])
-            else:
-                # If symbol doesn't have enough data to split, add it all to training
-                train_data.append(symbol_array)
+        train_data, test_data, skipped = split_symbols_by_time(
+            per_symbol_data, args.test_split, args.seq_length, args.forecast_horizon
+        )
     else:
         # Default 'symbol' strategy: split by whole symbols (keeps symbol boundaries intact)
         test_size = int(len(per_symbol_data) * args.test_split)
@@ -432,11 +581,29 @@ def main():
         print(f"  Total: {len(per_symbol_data)} symbols, {total_points} data points")
         print(f"  Train: {len(train_data)} symbols (part 1), {train_points} data points")
         print(f"  Test:  {len(test_data)} symbols (part 2), {test_points} data points")
+        if skipped:
+            shortest = min(n for _, n, _ in skipped)
+            print(f"  WARNING: {len(skipped)} of {len(per_symbol_data)} symbols contributed "
+                  f"NOTHING to the test set — one side of their split was shorter than "
+                  f"{args.seq_length + args.forecast_horizon} points "
+                  f"(shortest symbol: {shortest} points). They were used for training only.")
     else:
         print(f"  Total: {len(per_symbol_data)} symbols, {total_points} data points")
         print(f"  Train: {len(train_data)} symbols, {train_points} data points")
         if test_data is not None:
             print(f"  Test:  {len(test_data)} symbols, {test_points} data points")
+
+    problems = check_test_set_usable(
+        test_data, args.seq_length, args.forecast_horizon, len(skipped),
+        len(per_symbol_data), args.split_strategy, args.test_split,
+        args.allow_empty_test_set,
+    )
+    if problems:
+        print()
+        for line in problems:
+            print(line)
+        if not args.allow_empty_test_set:
+            sys.exit(1)
     
     # Check for PyTorch
     try:
@@ -467,11 +634,15 @@ def main():
         include_delta=args.include_delta,
         residual_target=args.residual_target,
         loss_decay_gamma=args.loss_decay_gamma,
+        loss_decay_gamma_delta=args.loss_decay_gamma_delta,
         feature_names=feature_names,
         lr_scheduler=args.lr_scheduler,
         lr_factor=args.lr_factor,
         lr_patience=args.lr_patience,
-        lr_min=args.lr_min
+        lr_min=args.lr_min,
+        auxiliary_direction_lambda=args.auxiliary_direction_lambda,
+        predict_deltas_only=bool(args.predict_deltas_only),
+        seed=args.seed
     )
     
     print("\nTraining...")
@@ -485,8 +656,12 @@ def main():
         checkpoint_warmup_epochs=args.checkpoint_warmup_epochs
     )
     
-    print(f"\nFinal train loss: {history['train_loss'][-1]:.6f}")
-    print(f"Final val loss: {history['val_loss'][-1]:.6f}")
+    if history["train_loss"]:
+        print(f"\nFinal train loss: {history['train_loss'][-1]:.6f}")
+        print(f"Final val loss: {history['val_loss'][-1]:.6f}")
+    else:
+        print("\nInterrupted before completing a single epoch — nothing was learned; "
+              "the saved model below is just the random initialization.")
     print()
     print("Training Configuration:")
     print(f"  Architecture:       {args.architecture}")
@@ -494,6 +669,7 @@ def main():
     print(f"  Features:           {', '.join(feature_names)}")
     print(f"  Normalization:      {args.normalization_type}")
     print(f"  Split Strategy:     {args.split_strategy}")
+    print(f"  Seed:               {args.seed if args.seed is not None else 'unseeded'}")
     print(f"  Sequence Length:    {args.seq_length}")
     print(f"  Forecast Horizon:   {args.forecast_horizon}")
     print(f"  Hidden Size:        {args.hidden_size}")
@@ -506,6 +682,12 @@ def main():
         print(f"  Checkpoint Warmup:  {args.checkpoint_warmup_epochs} epochs")
     if args.loss_decay_gamma is not None:
         print(f"  Loss Decay Gamma:   {args.loss_decay_gamma}")
+        if args.loss_decay_gamma_delta is not None:
+            print(f"  Loss Decay Gamma (delta): {args.loss_decay_gamma_delta}")
+    if args.predict_deltas_only:
+        print(f"  Predict Deltas Only: True")
+    if args.auxiliary_direction_lambda:
+        print(f"  Auxiliary Direction Lambda: {args.auxiliary_direction_lambda}")
 
     # Evaluate on held-out test set
     if test_data is not None and len(test_data) > 0:
@@ -521,17 +703,31 @@ def main():
         print("\nSkipping test evaluation (no test symbols)")
         test_metrics = None
     
-    # Save PyTorch model (filename includes signal type and architecture)
-    pytorch_path = os.path.join(output_dir, f"{model_name}_forecaster.pt")
+    # Save PyTorch model. Config-driven runs get an auto-incrementing
+    # "{model_name}_{version}" filename (never overwritten); config-free runs
+    # keep the legacy "{model_name}_forecaster" naming. The version is resolved
+    # once, here, and reused for both the .pt and .mlpackage below so one
+    # training run's two artifacts always share the same version number.
+    if config_model_name:
+        from models.lstm_forecaster import get_latest_model_version
+        version = get_latest_model_version(output_dir, model_name) + 1
+        print(f"\nModel version: {version}")
+        pt_filename = f"{model_name}_{version}.pt"
+        coreml_filename = f"{model_name}_{version}.mlpackage"
+    else:
+        pt_filename = f"{model_name}_forecaster.pt"
+        coreml_filename = f"{model_name}_forecaster.mlpackage"
+
+    pytorch_path = os.path.join(output_dir, pt_filename)
     trainer.save(pytorch_path)
-    
+
     # Export to Core ML
     if not args.skip_coreml:
         try:
             import coremltools
             print(f"\nCore ML Tools version: {coremltools.__version__}")
-            
-            coreml_path = os.path.join(output_dir, f"{model_name}_forecaster.mlpackage")
+
+            coreml_path = os.path.join(output_dir, coreml_filename)
             trainer.export_to_coreml(coreml_path)
             
             print("\n" + "=" * 60)
