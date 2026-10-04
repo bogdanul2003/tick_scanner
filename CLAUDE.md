@@ -6,7 +6,7 @@ Tick Scanner is a stock market technical analysis platform that identifies bulli
 
 ## Tech Stack
 
-- **Backend**: Python 3.10+, FastAPI, Pydantic
+- **Backend**: Python 3.10-3.13, FastAPI, Pydantic (not 3.14: Core ML Tools has no build for it yet, apple/coremltools#2646)
 - **Frontend**: React 19, Vite 7
 - **Database**: PostgreSQL 15 (Docker)
 - **ML Training**: PyTorch (LSTM/GRU), exported to Core ML (.mlpackage)
@@ -20,7 +20,7 @@ Tick Scanner is a stock market technical analysis platform that identifies bulli
 src/
   api.py                      # FastAPI entry point
   routers/                    # API route modules (macd, watchlist, chart, forecast, pattern, price, notes)
-  services/                   # Business logic (forecast_service, chart_service)
+  services/                   # Business logic (forecast_service, chart_service, ensemble_service, ensemble_training)
   models/                     # Pydantic DTOs + ML models (lstm_forecaster, neural_forecast)
   core/                       # Config, database, middleware, dependencies
   utils/                      # Sanitization, exceptions, date helpers
@@ -92,13 +92,15 @@ python -m unittest tests.test_neural_forecast_features.MultiFeatureInputTest.tes
 python -m unittest discover src/tests
 ```
 
-Current coverage is the neural forecaster's inference plumbing only — the parts
-where a silent wrong answer is indistinguishable from a right one:
+Current coverage is the neural forecaster's inference, ensemble and retrain
+plumbing — the parts where a silent wrong answer is indistinguishable from a right one:
 
 | Module | Covers |
 |--------|--------|
 | `test_neural_forecast_cache.py` | `CoreMLForecaster._load_model`: a cache-hit instance must be identical to a freshly parsed one; a failed parse must leave the forecaster unavailable rather than predicting with default normalization stats |
 | `test_neural_forecast_features.py` | The multi-feature matrix `forecast_macd` builds: each feature reads the column it names, `delta` tracks the primary signal, columns stay length-aligned |
+| `test_ensemble_service.py` | `EnsembleForecaster` averaging and member checks; the ensemble registry and retrain-state override; `forecast_symbols` returning the ARIMA endpoint's shape |
+| `test_ensemble_training.py` | The retrain job: served versions switch only when every seed trained; one job at a time; `--model-version` never overwrites |
 
 When adding a feature to the `--extra-features` path, note it is built in three
 places (`scripts/train_forecast_model.py`, `scripts/evaluate_forecast_model.py`,
@@ -109,7 +111,8 @@ inference one.
 
 - The project was recently refactored from a monolithic `api.py` into a layered architecture (routers -> services -> utils). The refactoring is mostly complete on the `refactor1` branch.
 - `db_utils.py` uses `psycopg2` SimpleConnectionPool (min=1, max=15).
-- Neural forecasting auto-selects engine: Core ML (NPU) when available, ARIMA (CPU) as fallback.
+- "Show Bullish Forecast" serves a **seed ensemble** of the neural forecaster (three versions of one config, forecasts averaged) chosen from a dropdown; ARIMA remains as a legacy option. Ensembles are listed in `src/configs/ensembles.json` (pinned versions, one default); a retrain from the UI records its new versions in `models/ensemble_state.json`. See `docs/ENSEMBLE_PRODUCTION_PLAN.md` and `src/models/MODEL_CARD.md` §9.
+- Train forecast models on CPU (`--device cpu`): at this model size it is ~3.6x faster than MPS. Compare configs on at least three seeds — single-run directional accuracy differs by 5-10 points between seeds (`MODEL_CARD.md` §11).
 - Supported neural architectures: `bidirectional_gru` (recommended), `stacked_gru`, `gru`, `standard_lstm`, `stacked_lstm`.
 - Chart pattern detection uses YOLO via Core ML. The model is at `chart_scan/model.mlpackage`.
 
@@ -117,9 +120,11 @@ inference one.
 
 PostgreSQL with main table `stock_cache` (symbol, date, OHLC, volume, EMA/MA indicators, MACD, signal_line, forecast flags, chart_patterns JSONB). Supporting tables: `watchlists`, `watchlist_symbols`, `symbol_picks`, `forecast_util`, `company_names`.
 
+`forecast_predictions` records what each MACD forecast run predicted — one row per (model, symbol, as_of_date, horizon_day), where `model` is an ensemble id or `arima` — so accuracy can be measured once the forecast days have happened. Re-running a model from the same market date replaces its earlier run. The scoring query is in `docs/ENSEMBLE_PRODUCTION_PLAN.md`.
+
 Notes Dashboard tables (independent of the market-data tables): `note_watchlists`, `note_watchlist_symbols`, `symbol_notes`, `note_images` (image bytes as BYTEA plus a WEBP thumbnail).
 
-Default connection: `postgres://postgres:postgres@localhost:5432/postgres`
+Default connection: `postgres://postgres:postgres@localhost:5432/ticks`
 
 ## Code Conventions
 

@@ -126,7 +126,8 @@ def get_macd_for_range_bulk(symbols: list, start_date, end_date):
         cached_df = bulk_cache.get(symbol, pd.DataFrame())
         cached_dates = set(cached_df.index.date) if not cached_df.empty else set()
         missing_dates = get_missing_dates(symbol, start_date, end_date, cached_dates)
-        print(f"Missing dates for {symbol}: {missing_dates}")
+        if missing_dates:
+            print(f"Missing dates for {symbol}: {missing_dates}")
         cached_data_dict[symbol] = cached_df if not cached_df.empty else load_cached_data(symbol)
         missing_dates_dict[symbol] = missing_dates
 

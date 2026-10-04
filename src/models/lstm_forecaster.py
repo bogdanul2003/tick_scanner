@@ -957,8 +957,12 @@ class MACDForecasterTrainer:
                 self.model.train()
 
                 # Mini-batch training
-                indices = torch.randperm(len(X_train))
-                total_loss = 0.0
+                # Drawn on the CPU so a seeded run shuffles exactly as before, then
+                # moved once per epoch rather than once per batch lookup.
+                indices = torch.randperm(len(X_train)).to(self.device)
+                # Accumulated on-device: a per-batch .item() forces a device sync
+                # every step, which stalls MPS/CUDA between these tiny kernels.
+                total_loss = torch.zeros((), device=self.device)
                 num_batches = 0
 
                 for i in range(0, len(X_train), batch_size):
@@ -976,10 +980,10 @@ class MACDForecasterTrainer:
                     loss.backward()
                     self.optimizer.step()
 
-                    total_loss += loss.item()
+                    total_loss += loss.detach()
                     num_batches += 1
 
-                train_loss = total_loss / num_batches
+                train_loss = total_loss.item() / num_batches
 
                 # Validation
                 if has_val:

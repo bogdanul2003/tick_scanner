@@ -19,6 +19,55 @@ def sanitize_data(data):
         return data
 
 
+def macd_will_become_positive(last_macd: float, forecasted_values) -> bool:
+    """
+    True if the forecast crosses from negative to positive: MACD is negative now and
+    any forecasted value is positive, or the first forecasted value is negative and
+    a later one is positive.
+    """
+    values = list(forecasted_values)
+    if last_macd < 0 and any(v > 0 for v in values):
+        return True
+    if values and values[0] < 0:
+        return any(v > 0 for v in values[1:])
+    return False
+
+
+def next_weekday_dates(end_date, count: int) -> list:
+    """ISO dates of the `count` weekdays after end_date (holidays are not skipped)."""
+    dates = []
+    next_date = end_date
+    while len(dates) < count:
+        next_date += timedelta(days=1)
+        if next_date.weekday() < 5:  # 0=Monday, ..., 4=Friday
+            dates.append(next_date.isoformat())
+    return dates
+
+
+def forecast_prediction_rows(results: dict) -> list:
+    """
+    Flatten per-symbol MACD forecast results (the shape arima_macd_positive_forecast
+    and the ensemble endpoint return) into rows for db_utils.save_forecast_predictions:
+    (symbol, horizon_day, target_date, predicted_macd, last_macd, will_become_positive).
+
+    Symbols whose forecast failed, and individual values that are missing, are skipped.
+    """
+    rows = []
+    for symbol, result in results.items():
+        if not isinstance(result, dict):
+            continue
+        details = result.get("details") or {}
+        forecast = result.get("forecasted_macd")
+        if details.get("error") or not isinstance(forecast, dict):
+            continue
+        for horizon_day, (target_date, value) in enumerate(forecast.items(), start=1):
+            if value is None:
+                continue
+            rows.append((symbol, horizon_day, target_date, float(value),
+                         details.get("last_macd"), bool(result.get("will_become_positive"))))
+    return rows
+
+
 def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days: int = 3, end_date=None, skip_cache: bool = False, verbose: bool = True):
     """
     Uses ARIMA (with dynamic window and grid search) to forecast if MACD will become positive in the next `forecast_days` days
@@ -229,26 +278,10 @@ def arima_macd_positive_forecast(symbol: str, days_past: int = 30, forecast_days
         print(f"Forecasted MACD for {symbol} over the next {forecast_days} days: {forecasted_macd_values}")
 
     last_macd = float(macd_series[-1])
-    # will_become_positive: only if macd was negative and forecasted values become positive,
-    # or if first forecasted value is negative and they become positive later
-    will_become_positive = False
-    if last_macd < 0 and any(v > 0 for v in forecasted_macd_values):
-        will_become_positive = True
-    elif forecasted_macd_values and forecasted_macd_values[0] < 0:
-        for v in forecasted_macd_values[1:]:
-            if v > 0:
-                will_become_positive = True
-                break
+    will_become_positive = macd_will_become_positive(last_macd, forecasted_macd_values)
 
     # Add forecasted dates and build dict
-    forecasted_dates = []
-    next_date = end_date
-    days_added = 0
-    while days_added < forecast_days:
-        next_date += timedelta(days=1)
-        if next_date.weekday() < 5:  # 0=Monday, ..., 4=Friday
-            forecasted_dates.append(next_date.isoformat())
-            days_added += 1
+    forecasted_dates = next_weekday_dates(end_date, forecast_days)
 
     forecasted_macd = {date: value for date, value in zip(forecasted_dates, forecasted_macd_values)}
 

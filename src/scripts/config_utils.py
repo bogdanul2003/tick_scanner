@@ -43,6 +43,7 @@ DEFAULT_CONFIG = {
     "auxiliary_direction_lambda": None,
     "predict_deltas_only": False,
     "seed": None,
+    "device": None,
     "allow_empty_test_set": False,
 }
 

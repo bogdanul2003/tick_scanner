@@ -218,6 +218,24 @@ def check_test_set_usable(test_data, seq_length, forecast_horizon, skipped_count
     return lines
 
 
+def resolve_save_version(output_dir: str, model_name: str, requested: int = None) -> int:
+    """
+    Version to save a config-driven run under: `requested` when given, else the next
+    free one. A requested version that already exists on disk is refused — trained
+    models are never overwritten.
+    """
+    from models.lstm_forecaster import get_latest_model_version
+    if requested is None:
+        return get_latest_model_version(output_dir, model_name) + 1
+    if requested < 1:
+        raise ValueError(f"--model-version must be >= 1, got {requested}")
+    taken = [ext for ext in ("pt", "mlpackage")
+             if os.path.exists(os.path.join(output_dir, f"{model_name}_{requested}.{ext}"))]
+    if taken:
+        raise ValueError(f"{model_name}_{requested} already exists ({', '.join(taken)}); refusing to overwrite it")
+    return requested
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train LSTM MACD Forecaster")
     parser.add_argument(
@@ -434,6 +452,24 @@ def main():
              "cuDNN kernels can still reorder float reductions."
     )
     parser.add_argument(
+        "--model-version",
+        type=int,
+        default=None,
+        help="Save as {model_name}_{N} instead of the next free version (--config runs "
+             "only). Lets a caller that launches several runs of one config in parallel "
+             "reserve their versions up front; without it, runs that finish together can "
+             "resolve the same 'latest + 1'. Refused if that version already exists."
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        choices=["mps", "cuda", "cpu"],
+        default=None,
+        help="Device to train on. Omitted means auto-select (MPS -> CUDA -> CPU). At "
+             "this model size CPU may beat MPS (MODEL_CARD.md §12) — time both with "
+             "--epochs 5."
+    )
+    parser.add_argument(
         "--allow-empty-test-set",
         action="store_true",
         default=None,
@@ -499,7 +535,16 @@ def main():
         extra_suffix = f"_with_{'_'.join([f.strip().lower() for f in args.extra_features.split(',') if f.strip()])}" if args.extra_features else ""
         # e.g. "macd_bidirectional_gru_with_delta_residual_with_open_close_volume".
         model_name = f"{args.signal_type}_{args.architecture}{delta_suffix}{residual_suffix}{extra_suffix}"
-    
+
+    if args.model_version is not None:
+        if not config_model_name:
+            parser.error("--model-version requires --config")
+        # Fail before training rather than after it; the save path checks again.
+        try:
+            resolve_save_version(output_dir, model_name, args.model_version)
+        except ValueError as e:
+            parser.error(str(e))
+
     print("=" * 60)
     print(f"{arch_label} {signal_label} Forecaster Training")
     print("=" * 60)
@@ -642,7 +687,8 @@ def main():
         lr_min=args.lr_min,
         auxiliary_direction_lambda=args.auxiliary_direction_lambda,
         predict_deltas_only=bool(args.predict_deltas_only),
-        seed=args.seed
+        seed=args.seed,
+        device=args.device
     )
     
     print("\nTraining...")
@@ -670,6 +716,7 @@ def main():
     print(f"  Normalization:      {args.normalization_type}")
     print(f"  Split Strategy:     {args.split_strategy}")
     print(f"  Seed:               {args.seed if args.seed is not None else 'unseeded'}")
+    print(f"  Device:             {trainer.device}")
     print(f"  Sequence Length:    {args.seq_length}")
     print(f"  Forecast Horizon:   {args.forecast_horizon}")
     print(f"  Hidden Size:        {args.hidden_size}")
@@ -709,8 +756,7 @@ def main():
     # once, here, and reused for both the .pt and .mlpackage below so one
     # training run's two artifacts always share the same version number.
     if config_model_name:
-        from models.lstm_forecaster import get_latest_model_version
-        version = get_latest_model_version(output_dir, model_name) + 1
+        version = resolve_save_version(output_dir, model_name, args.model_version)
         print(f"\nModel version: {version}")
         pt_filename = f"{model_name}_{version}.pt"
         coreml_filename = f"{model_name}_{version}.mlpackage"

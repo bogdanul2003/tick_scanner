@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import '../App.css'
-import { API_BASE } from "../api";
+import { API_BASE, apiJson } from "../api";
 
 // Add this new component to render MACD history chart
 function MacdChart({ data }) {
@@ -893,11 +893,72 @@ function WatchlistBullishSignal({ watchlist, onClose }) {
   );
 }
 
+// Dropdown value for the pre-ensemble engine, which has its own endpoint.
+const ARIMA_ENGINE = "arima";
+const RETRAIN_ACTIVE_STATES = ["refreshing_data", "training", "evaluating"];
+const RETRAIN_STAGE_LABELS = {
+  refreshing_data: "refreshing price data",
+  training: "training",
+  evaluating: "evaluating",
+};
+
+function formatEnsembleOption(e) {
+  const parts = [e.label];
+  if (!e.available) {
+    parts.push("not trained");
+  } else {
+    parts.push(`v${e.versions.join(",")}`);
+    if (e.metrics && e.metrics.mae != null) parts.push(`MAE ${Number(e.metrics.mae).toFixed(3)}`);
+    if (e.metrics && e.metrics.directional_accuracy != null) {
+      parts.push(`DA ${(e.metrics.directional_accuracy * 100).toFixed(1)}%`);
+    }
+    if (e.trained_at) parts.push(`trained ${e.trained_at.slice(0, 10)}`);
+  }
+  return parts.join(" · ");
+}
+
+function formatElapsed(seconds) {
+  if (seconds == null) return "";
+  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
+}
+
+function RetrainStatus({ job }) {
+  if (!job || job.state === "idle") return null;
+  const active = RETRAIN_ACTIVE_STATES.includes(job.state);
+  const name = job.label || job.ensemble_id;
+  if (active) {
+    const runs = job.runs || [];
+    const done = runs.filter(r => r.state === "done").length;
+    const progress = job.state === "training" ? ` (${done}/${runs.length} seeds done)` : "";
+    return (
+      <div style={{ marginBottom: 10 }}>
+        Retraining "{name}": {RETRAIN_STAGE_LABELS[job.state]}{progress} — {formatElapsed(job.elapsed_seconds)}.
+        The current versions keep serving until it finishes.
+      </div>
+    );
+  }
+  if (job.state === "failed") {
+    return <div style={{ color: "red", marginBottom: 10 }}>Retrain of "{name}" failed: {job.error}</div>;
+  }
+  const m = job.metrics;
+  return (
+    <div style={{ color: "green", marginBottom: 10 }}>
+      Retrain of "{name}" finished in {formatElapsed(job.elapsed_seconds)}: now serving v{(job.new_versions || []).join(",")}
+      {m ? ` (MAE ${Number(m.mae).toFixed(3)}, DA ${(m.directional_accuracy * 100).toFixed(1)}%)` : ""}
+      {job.warning ? ` — ${job.warning}` : ""}
+    </div>
+  );
+}
+
 function WatchlistBullishForecast({ watchlist, symbols, onClose }) {
+  const [ensembles, setEnsembles] = useState([]);
+  const [engine, setEngine] = useState("");
   const [result, setResult] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [resultEngine, setResultEngine] = useState("");
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const didRun = React.useRef(false);
+  const [job, setJob] = useState(null);
+  const [confirmingRetrain, setConfirmingRetrain] = useState(false);
   const formatDecimal = (value) => {
     if (value === null || value === undefined) return "N/A";
     const num = typeof value === "number" ? value : Number(value);
@@ -914,43 +975,135 @@ function WatchlistBullishForecast({ watchlist, symbols, onClose }) {
     return String(value);
   };
 
+  const selected = ensembles.find(e => e.id === engine);
+  const isArima = engine === ARIMA_ENGINE;
+  const retrainActive = !!job && RETRAIN_ACTIVE_STATES.includes(job.state);
+  const engineLabel = (id) => {
+    if (id === ARIMA_ENGINE) return "ARIMA (legacy)";
+    const e = ensembles.find(x => x.id === id);
+    return e ? e.label : id;
+  };
+
+  const loadEnsembles = async () => {
+    const data = await apiJson("/forecast/ensembles");
+    setEnsembles(data.ensembles);
+    return data;
+  };
+
+  // Opening the panel only loads the choices; nothing runs until a button is pressed.
   React.useEffect(() => {
-    if (didRun.current) return;
-    didRun.current = true;
-    const fetchForecast = async () => {
-      setLoading(true);
-      setError("");
-      setResult(null);
+    let cancelled = false;
+    (async () => {
       try {
-        const res = await fetch(`${API_BASE}/forecast/macd/arima_positive`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ symbols }),
-        });
-        if (!res.ok) {
-          const err = await res.json();
-          setError(err.detail || "Error fetching forecast");
-        } else {
-          setResult(await res.json());
-        }
+        const data = await loadEnsembles();
+        if (!cancelled) setEngine(data.default);
+        const status = await apiJson("/forecast/ensembles/retrain/status");
+        if (!cancelled && RETRAIN_ACTIVE_STATES.includes(status.state)) setJob(status);
       } catch (e) {
-        setError("Error fetching forecast");
+        // Without the ensemble list the legacy engine is still usable.
+        if (!cancelled) {
+          setError(`Could not load ensembles: ${e.message}`);
+          setEngine(ARIMA_ENGINE);
+        }
       }
-      setLoading(false);
-    };
-    fetchForecast();
-    // Only run once per mount
-    // eslint-disable-next-line
+    })();
+    return () => { cancelled = true; };
   }, []);
+
+  // Poll while a retrain is running; on completion the served versions have changed.
+  React.useEffect(() => {
+    if (!retrainActive) return undefined;
+    const timer = setInterval(async () => {
+      try {
+        const status = await apiJson("/forecast/ensembles/retrain/status");
+        setJob(status);
+        if (status.state === "completed") await loadEnsembles();
+      } catch {
+        // A missed poll is retried on the next tick.
+      }
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [retrainActive]);
+
+  const runForecast = async () => {
+    setLoading(true);
+    setError("");
+    setResult(null);
+    try {
+      const data = isArima
+        ? await apiJson("/forecast/macd/arima_positive", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ symbols }),
+          })
+        : await apiJson("/forecast/macd/ensemble", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ symbols, ensemble_id: engine }),
+          });
+      setResult(data);
+      setResultEngine(engine);
+    } catch (e) {
+      setError(e.message || "Error fetching forecast");
+    }
+    setLoading(false);
+  };
+
+  const startRetrain = async () => {
+    setConfirmingRetrain(false);
+    setError("");
+    try {
+      setJob(await apiJson(`/forecast/ensembles/${encodeURIComponent(engine)}/retrain`, { method: "POST" }));
+    } catch (e) {
+      setError(`Could not start retraining: ${e.message}`);
+    }
+  };
 
   return (
     <div style={{ border: "1px solid #ccc", margin: "10px 0", padding: 10 }}>
       <h4>Bullish MACD Forecast for "{watchlist}"</h4>
       <button onClick={onClose} style={{ marginBottom: 10 }}>Close</button>
+      <div style={{ marginBottom: 10 }}>
+        <label>
+          Model:{" "}
+          <select value={engine} onChange={e => { setEngine(e.target.value); setConfirmingRetrain(false); }}>
+            {ensembles.map(e => (
+              <option key={e.id} value={e.id}>{formatEnsembleOption(e)}</option>
+            ))}
+            <option value={ARIMA_ENGINE}>ARIMA (legacy)</option>
+          </select>
+        </label>
+        <button
+          onClick={runForecast}
+          style={{ marginLeft: 10 }}
+          disabled={loading || !engine || (!isArima && (!selected || !selected.available))}
+        >
+          Run forecast
+        </button>
+        <button
+          onClick={() => setConfirmingRetrain(true)}
+          style={{ marginLeft: 10 }}
+          disabled={isArima || !selected || retrainActive || confirmingRetrain}
+        >
+          Retrain
+        </button>
+      </div>
+      {confirmingRetrain && selected && (
+        <div style={{ marginBottom: 10 }}>
+          Retrain "{selected.label}" on the {selected.watchlist} watchlist? It trains three models on the CPU and
+          takes about 10-15 minutes.
+          <button onClick={startRetrain} style={{ marginLeft: 10 }}>Start retraining</button>
+          <button onClick={() => setConfirmingRetrain(false)} style={{ marginLeft: 10 }}>Cancel</button>
+        </div>
+      )}
+      <RetrainStatus job={job} />
       {loading && <div>Loading...</div>}
       {error && <div style={{ color: "red" }}>{error}</div>}
       {result && (
         <div style={{ marginTop: 10 }}>
+          <div style={{ marginBottom: 8, fontSize: "0.95em", color: "#555" }}>
+            Forecast by {engineLabel(resultEngine)}
+          </div>
           {Object.entries(result).map(([symbol, forecast]) => (
             <div key={symbol} style={{ marginBottom: 8 }}>
               <a

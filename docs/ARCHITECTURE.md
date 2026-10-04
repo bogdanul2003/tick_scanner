@@ -133,7 +133,7 @@ The platform scans watchlists of stocks and prioritizes opportunities based on b
 | ema12, ema26 | NUMERIC | Exponential moving averages |
 | ma20, ma50 | NUMERIC | Simple moving averages |
 | macd, signal_line | NUMERIC | MACD indicators |
-| will_become_positive | BOOLEAN | ARIMA forecast flag |
+| will_become_positive | BOOLEAN | MACD forecast flag, written by whichever engine (ensemble or ARIMA) ran last |
 | ma20_will_be_above_ma50 | BOOLEAN | MA crossover forecast |
 | chart_patterns | JSONB | Detected visual patterns |
 
@@ -143,6 +143,7 @@ The platform scans watchlists of stocks and prioritizes opportunities based on b
 - `watchlist_symbols` - Watchlist membership
 - `symbol_picks` - Cached bullish signal results
 - `forecast_util` - Trained ARIMA model cache
+- `forecast_predictions` - What each MACD forecast run predicted (ensemble or ARIMA), keyed by (model, symbol, as_of_date, horizon_day); the last run from a given market date wins
 - `company_names` - Company metadata
 
 ### Notes Dashboard Tables
@@ -179,6 +180,23 @@ research notes, not market data.
 - `GET /macd/{symbol}/history` - Get MACD history
 - `POST /macd/bullish_signal` - Check for crossover signals
 - `POST /macd/arima_positive_forecast` - Forecast MACD becoming positive
+
+### Forecast Endpoints (ensemble)
+The "Show Bullish Forecast" panel lets the user pick a model, run it, or retrain it
+(`docs/ENSEMBLE_PRODUCTION_PLAN.md`):
+- `GET /forecast/ensembles` - Selectable seed ensembles, the default, availability and metrics
+- `POST /forecast/macd/ensemble` - Forecast MACD becoming positive with a seed ensemble (same response shape as the ARIMA endpoint)
+- `POST /forecast/ensembles/{id}/retrain` - Retrain an ensemble in the background (one job at a time)
+- `GET /forecast/ensembles/retrain/status` - Progress of the running or most recent retrain
+- `POST /forecast/macd/arima_positive` - The previous ARIMA engine, kept as a legacy option
+
+Both forecast endpoints record each run in `forecast_predictions` (via
+`ensemble_service.record_forecast_run`); the last run of a model from a given market date
+replaces the earlier one.
+
+Registry: `src/configs/ensembles.json`. Retrain state: `models/ensemble_state.json`.
+Code: `services/ensemble_service.py` (registry, inference), `services/ensemble_training.py`
+(retrain job), `models/neural_forecast.py` (`EnsembleForecaster`).
 
 ### Watchlist Endpoints
 - `POST /watchlist` - Create watchlist
@@ -811,8 +829,10 @@ with no trained model and no database, which is where a fresh checkout starts.
 |--------|------------------|-----------|
 | `tests/test_neural_forecast_cache.py` | `models/neural_forecast.py` → `CoreMLForecaster._load_model` | The module-level `_model_cache` entry *is* the instance attribute set, so a cached load and a cold load are indistinguishable; a `.mlpackage` that fails to parse leaves `is_available` false rather than forecasting with default normalization stats |
 | `tests/test_neural_forecast_features.py` | `models/neural_forecast.py` → `NeuralForecastService.forecast_macd` | The multi-feature input matrix: each feature reads the DB column it names (not the service's primary signal), `delta` tracks the primary column, and a NULL never shortens one column out of alignment with the rest |
+| `tests/test_ensemble_service.py` | `models/neural_forecast.py` → `EnsembleForecaster`; `services/ensemble_service.py` | The ensemble is the plain mean of its members and refuses mismatched ones; retrain state overrides the registry's versions; an ensemble with a missing model file is unavailable, not served short-handed; `forecast_symbols` returns the ARIMA endpoint's shape and caches `will_become_positive` |
+| `tests/test_ensemble_training.py` | `services/ensemble_training.py`; `scripts/train_forecast_model.py` → `resolve_save_version` | Served versions switch only when every seed produced a Core ML model; one job at a time; a job orphaned by a server restart reports failed; an existing model version is never overwritten |
 
-Both modules cover inference plumbing rather than model quality — the class of
+These modules cover inference and retraining plumbing rather than model quality — the class of
 defect where the pipeline returns a confident number that is quietly built from
 the wrong inputs. Model *accuracy* is measured separately and by hand, via
 `scripts/evaluate_forecast_model.py` and `scripts/persistence_baseline.py`; see

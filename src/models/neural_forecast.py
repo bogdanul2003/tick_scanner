@@ -273,6 +273,38 @@ class CoreMLForecaster:
         return [self.predict(seq) for seq in sequences]
 
 
+class EnsembleForecaster:
+    """
+    Several loaded forecasters presented as one whose predict() is their mean.
+
+    Members are meant to be seeds of one config: seeds agree on day 1 but spread by
+    10+ points of MACD DA on days 3-5, and their average is 2-4% better on MAE than a
+    typical member (MODEL_CARD.md §11). Anything a caller reads off a forecaster
+    before predicting must therefore be identical across members.
+    """
+
+    SHARED_ATTRS = ("seq_length", "forecast_horizon", "include_delta", "feature_names", "input_size")
+
+    def __init__(self, members: List[Any]):
+        if not members:
+            raise ValueError("An ensemble needs at least one member")
+        self.members = list(members)
+        for attr in self.SHARED_ATTRS:
+            values = [getattr(m, attr, None) for m in self.members]
+            if any(v != values[0] for v in values):
+                raise ValueError(f"Ensemble members disagree on {attr}: {values}")
+            setattr(self, attr, values[0])
+
+    @property
+    def is_available(self) -> bool:
+        """True only when every member is loaded; a partial ensemble is not served."""
+        return all(getattr(m, "is_available", True) for m in self.members)
+
+    def predict(self, sequence: np.ndarray, prev_value: float = None) -> np.ndarray:
+        """Mean of the members' forecasts, shape (forecast_horizon, target_size)."""
+        return np.mean([m.predict(sequence, prev_value=prev_value) for m in self.members], axis=0)
+
+
 class NeuralForecastService:
     """
     Service for neural network-based MACD forecasting using NPU.
@@ -282,15 +314,22 @@ class NeuralForecastService:
         self, 
         model_path: Optional[str] = None, 
         fallback_to_arima: bool = True,
-        signal_type: str = "macd"
+        signal_type: str = "macd",
+        forecaster: Optional[Any] = None
     ):
         """
         Initialize the neural forecast service.
+
+        `forecaster` supplies an already-built forecaster (e.g. an
+        EnsembleForecaster) instead of loading a single model from `model_path`.
         """
         self.fallback_to_arima = fallback_to_arima
         self.signal_type = signal_type
-        self.forecaster: Optional[CoreMLForecaster] = None
-        
+        self.forecaster: Optional[Any] = forecaster
+
+        if forecaster is not None:
+            return
+
         try:
             self.forecaster = CoreMLForecaster(model_path, signal_type)
         except Exception as e:
@@ -301,14 +340,34 @@ class NeuralForecastService:
         """Check if neural forecasting is available."""
         return self.forecaster is not None and self.forecaster.is_available
     
+    def calendar_days_needed(self, days_past: int = 100) -> int:
+        """
+        Calendar days of history to fetch so predict() gets a full input window.
+
+        days_past is CALENDAR days but seq_length is TRADING days (~1.45x ratio;
+        1.6 for safety). Sizing the window off days_past alone lets a small value
+        silently underfeed the model, and predict() then pads with synthetic
+        points. Widening is free: predict() truncates to the last seq_length
+        points anyway, and it gives predict() the extra observation it needs to
+        reconstruct delta[0].
+        """
+        has_volume_feature = any(f.lower() == "volume" for f in self.forecaster.feature_names)
+        needed = self.forecaster.seq_length + 6 + (20 if has_volume_feature else 0)
+        return max(days_past, int(needed * 1.6) + 1)
+
     def forecast_macd(
         self,
         symbol: str,
         days_past: int = 100,   # calendar days; matches config.forecast_days_past
-        forecast_days: int = 5
+        forecast_days: int = 5,
+        macd_data: Optional[List[Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
         """
         Forecast if MACD/Signal Line will become positive using neural network (NPU).
+
+        `macd_data` supplies rows already fetched for this symbol (the shape
+        get_macd_for_range returns), so a bulk caller pays for one query rather
+        than one per symbol.
         """
         # Import here to avoid circular imports
         from macd_utils import get_macd_for_range, get_latest_market_date
@@ -331,19 +390,11 @@ class NeuralForecastService:
                 }
         
         try:
-            # Get historical data.
-            # days_past is CALENDAR days but seq_length is TRADING days (~1.45x
-            # ratio; 1.6 for safety). Sizing the window off days_past alone lets a
-            # small value silently underfeed the model, and predict() then pads
-            # with synthetic points. Widening is free: predict() truncates to the
-            # last seq_length points anyway, and it gives predict() the extra
-            # observation it needs to reconstruct delta[0].
-            end_date = get_latest_market_date()
-            has_volume_feature = any(f.lower() == "volume" for f in self.forecaster.feature_names)
-            needed = self.forecaster.seq_length + 6 + (20 if has_volume_feature else 0)
-            calendar_days = max(days_past, int(needed * 1.6) + 1)
-            start_date = end_date - timedelta(days=calendar_days)
-            macd_data = get_macd_for_range(symbol, start_date, end_date)
+            # Get historical data (window sizing: see calendar_days_needed).
+            if macd_data is None:
+                end_date = get_latest_market_date()
+                start_date = end_date - timedelta(days=self.calendar_days_needed(days_past))
+                macd_data = get_macd_for_range(symbol, start_date, end_date)
             
             if len(self.forecaster.feature_names) > (2 if self.forecaster.include_delta else 1):
                 # Multi-feature input

@@ -4,10 +4,14 @@ Reference for the neural MACD forecaster in `lstm_forecaster.py` (training) and
 `neural_forecast.py` (inference). Covers what the model consumes, what it
 predicts, how to read its metrics, and what it has actually measured.
 
-Last updated 2026-09-03. Current best model: **`gru_v1_residual_plainloss_warm5`**
-(residual target, `macd,delta,open-close`, plain MSE, `checkpoint_warmup_epochs=5`) —
-config at `../configs/gru_v1_residual_plainloss_warm5.json`. Supersedes the
-previous best (Model C, §11) on both DA and MAE.
+Last updated 2026-10-04. **Recommended configuration: `gru_v1_residual_macdonly_warm5`**
+(residual target, `macd,delta`, plain MSE, `checkpoint_warmup_epochs=5`) — config at
+`../configs/gru_v1_residual_macdonly_warm5.json`. A 2026-10-04 multi-seed
+re-measurement (§11) found that **no configuration is distinguishable from another on
+DA** — seeds of one config spread by 7-10pp — so this is picked for simplicity, not
+because it won. Averaging three seeds of it gives the best MAE measured (0.901).
+`gru_v1_residual_plainloss_warm5` (the same recipe plus `open-close`) was named best on
+2026-09-03 from single runs; that ranking did not survive reseeding.
 
 **For the full investigation log — every experiment, why it was run, and what it
 ruled in or out — see `../../docs/FORECAST_MODEL_IMPROVEMENTS.md`.** That file is
@@ -30,7 +34,7 @@ below. Symbols with fewer than 50 points are skipped.
 |---|---|---|
 | `macd` | primary signal, always present | — |
 | `delta` | `macd[t] - macd[t-1]`, via `--include-delta` | recommended on — see §3 |
-| `open-close` | `(close - open) / open`, scale-invariant daily return | kept — see §11, a real (if modest) win once checkpoint selection was fixed |
+| `open-close` | `(close - open) / open`, scale-invariant daily return | optional — called a modest win on 2026-09-03 from single runs; the 2026-10-04 seeded runs show no benefit over `macd,delta` alone (§11), though it was only run on one seed there |
 | `volume` | 20-day relative volume | tried, flat-to-negative on DA, not currently used |
 
 **Close price (level), MA20 and MA50 are present in `stock_cache` and unused.**
@@ -163,11 +167,13 @@ lever, more *information* is (§14).
 
 A second `Linear(feature_dim, forecast_horizon)` head off the same shared
 representation, trained with binary cross-entropy on `sign(future delta)` per
-forecast day, added to the MSE loss as `mse + lambda * bce`. This is the one loss
-change that reliably helped (kept at `lambda=0.3`, though that value was tuned
-under a since-removed `loss_decay_gamma` handicap and should be re-swept — see
-`docs/FORECAST_MODEL_IMPROVEMENTS.md`). At inference the head is stripped before
-Core ML export (`_ForecastOnly` wrapper), so it costs nothing in production.
+forecast day, added to the MSE loss as `mse + lambda * bce`. It was described on
+2026-09-03 as the one loss change that reliably helped, at `lambda=0.3` tuned under
+a since-removed `loss_decay_gamma` handicap. **Re-tested 2026-10-04 on the current
+recipe with three seeds, `lambda=0.3` showed no benefit**: 46.6% mean MACD DA against
+51.4% without it, and ~2% worse MAE (§11). No current config should enable it; other
+`lambda` values are untested. At inference the head is stripped before Core ML export
+(`_ForecastOnly` wrapper), so it costs nothing in production.
 
 ### Shelved: `predict_deltas_only` (A2)
 
@@ -216,8 +222,9 @@ experiment run**, not just as a one-off tension:
 
 Two things follow. First, `loss_decay_gamma` should stay off. Second, the
 auxiliary directional BCE head (§5) is the only lever tried so far that pushes on
-DA directly rather than hoping it falls out of a magnitude objective — it is a
-real, if modest, win, and is the most promising direction for further loss work.
+DA directly rather than hoping it falls out of a magnitude objective. It was
+recorded here as a modest win, but a three-seed re-test on the current recipe found
+none (§5, §11) — as of 2026-10-04 no loss-side change has a confirmed DA benefit.
 
 MSE also has two structural properties worth keeping in mind independent of any
 of the above:
@@ -371,7 +378,9 @@ days 3-5 DA still trails drift — is the open problem tracked in
 
 ## 9. Artifacts, naming, and inference
 
-**Two naming schemes exist, and only one is reachable from the running app.**
+**Two naming schemes exist. The app serves config-based models through seed
+ensembles; the legacy scheme is only reachable through `NeuralForecastService`'s
+default path, which nothing in the UI calls.**
 
 **Config-based (current, recommended)** — `train_forecast_model.py --config
 path/to/config.json`. `model_name` comes from the JSON config
@@ -400,19 +409,54 @@ Pass the **whole suffixed string** as `--architecture` to
 `evaluate_forecast_model.py` to load one of these (e.g.
 `bidirectional_gru_with_delta_residual`).
 
-**⚠️ Production is on neither scheme, and this is the most consequential open gap
-in the whole pipeline.** `NeuralForecastService.__init__` calls
-`get_model_path(signal_type)` with no `model_name` and no `architecture`
-override (`neural_forecast.py`), which resolves to the legacy path with
-`architecture="stacked_lstm"` and no delta/residual suffix at all —
-`models/macd_stacked_lstm_forecaster.mlpackage`. **Every model measured in this
-investigation, including the current best (`gru_v1_residual_plainloss_warm5`),
-was trained via `--config` and lives under the versioned scheme; production
-cannot see any of them.** If that file doesn't exist, `forecast_macd` silently
-falls back to ARIMA. Fix: thread `model_name`/`version` (or at minimum the full
-suffixed architecture string) through `NeuralForecastService` and
-`core/config.py`, and pick a policy for how production learns which model to
-load (pinned name in config vs. "latest version of a named model").
+**Production serves seed ensembles (since 2026-10-04).** Until then the "Show
+Bullish Forecast" button called ARIMA directly and no config-based model was
+reachable from the app — the gap this section used to flag as the most
+consequential in the pipeline. Now:
+
+- `../configs/ensembles.json` lists the selectable ensembles. Each pins a config
+  and exact versions (seeds 42 / 7 / 123); the default is
+  `gru_v1_residual_macdonly_warm5` v1,2,3. Versions are pinned rather than "latest
+  three" because stray runs share a model name.
+- `POST /forecast/macd/ensemble` (`../services/ensemble_service.py`) averages the
+  members' forecasts with `EnsembleForecaster` (`neural_forecast.py`) and returns
+  the ARIMA endpoint's shape. It reproduces `evaluate_ensemble.py`'s predictions
+  exactly for the same window, and forecasts all 501 sp500 symbols in about 4 s.
+  It writes `will_become_positive` to `stock_cache` the way the ARIMA path does,
+  so the combined forecast reflects whichever engine ran last.
+- `POST /forecast/ensembles/{id}/retrain` (`../services/ensemble_training.py`)
+  retrains an ensemble in the background: bulk data refresh, three seeds in
+  parallel on CPU with reserved `--model-version` numbers, evaluation, then the
+  served versions switch — only if every seed produced a Core ML model. What a
+  retrain changes is recorded in `models/ensemble_state.json`, which overrides the
+  registry's versions; old versions stay on disk.
+- ARIMA remains selectable in the UI as a legacy option. §11 measured it as worse
+  than both the ensemble and drift.
+
+`NeuralForecastService()` with no arguments still resolves to the legacy
+`models/macd_stacked_lstm_forecaster.mlpackage` and falls back to ARIMA when that
+file is absent; `ForecastService` (`../services/forecast_service.py`) still uses
+it, but no UI path goes through either.
+
+**Every forecast run is stored** in the `forecast_predictions` table (one row per
+model, symbol, market date and forecast day; `model` is an ensemble id or `arima`),
+with the model versions and training date that produced it. A later run of the same
+model from the same market date replaces the earlier one. This is the record to score
+a frozen model against as time passes — see §13.
+
+**Training date.** Model files carry none. For an ensemble retrained through the app
+it is recorded in `models/ensemble_state.json`; otherwise it is read from the newest
+member's `.pt` file time. The `.mlpackage`'s own time is "last served", not
+"trained": loading a Core ML model rewrites its `Manifest.json`.
+
+**A retrain on unchanged data changes nothing.** The 2026-10-04 end-to-end test
+retrained `hidden16` (seeds 42 / 7 / 123, CPU, 11m41s) and the new versions 4-6
+scored exactly what versions 1-3 had (MAE 0.905742, DA 51.48%): seeded CPU training
+is reproducible. Retraining is only worth doing once new trading days are in the
+database — and then the new models are different models, so score a frozen ensemble
+by its pinned version numbers.
+
+Design and decisions: `../../docs/ENSEMBLE_PRODUCTION_PLAN.md`.
 
 Core ML export traces the model (`torch.jit.trace`), converts at FP16 with
 `compute_units=ct.ComputeUnit.ALL`, and stores everything needed to reproduce
@@ -604,7 +648,7 @@ the strongest baseline in this entire investigation on that metric.
 
 ### Model lineage
 
-| | Model C (08-28) | `plain_macdonly` (09-03) | **`plainloss_warm5` (09-03, current best)** |
+| | Model C (08-28) | `plain_macdonly` (09-03) | **`plainloss_warm5` (09-03, best at the time)** |
 |---|---|---|---|
 | Features | macd, delta | macd, delta | macd, delta, open-close |
 | Target | residual | residual | residual |
@@ -625,19 +669,144 @@ training runs, worth 4-8% MAE, before being lowered to 5. Full detail, including
 the falsified A2/A3/A4 candidates and the checkpoint-selection nuance, is in
 `docs/FORECAST_MODEL_IMPROVEMENTS.md`.
 
+Everything above this line was measured on or before 2026-09-03 from **single,
+unseeded runs**. The next subsection shows why that matters.
+
+### 2026-10-04 re-measurement (multi-seed)
+
+Fresh database, sp500 (501 symbols), data through 2026-10-02, `--days 600`, 20
+samples/symbol, Core ML inference. All models retrained on CPU (`--device cpu`,
+torch 2.14.1, Python 3.13) with explicit seeds. Raw outputs are the
+`eval_*_2026-10-0{3,4}.txt` files in the repo root. Numbers are **not** comparable
+to the tables above — different data window — only to each other.
+
+**Baselines on this window**
+
+| | MACD MAE | MACD DA | Day 1 / 2 / 3 / 4 / 5 DA | Day 1 / 2 / 3 / 4 / 5 MAE |
+|---|---|---|---|---|
+| `flat` | 1.2565 | 30.84%* | — | 0.480 / 0.904 / 1.291 / 1.641 / 1.967 |
+| **`drift`** | 1.1466 | **57.81%** | 80.8 / 62.6 / 52.1 / 47.7 / 45.7 | 0.311 / 0.684 / 1.117 / 1.576 / 2.044 |
+
+\* degenerate, see trap #1.
+
+**Seed variance is the headline finding.** Three configs were each trained on seeds
+42, 7 and 123:
+
+| Config | DA seed 42 / 7 / 123 | Mean DA | MAE seed 42 / 7 / 123 | Mean MAE |
+|---|---|---|---|---|
+| `gru_v1_residual_macdonly_warm5` | 56.65 / 50.86 / 46.63 | 51.4% | 0.936 / 0.928 / 0.940 | 0.935 |
+| `gru_v1_exp_hidden16` | 55.28 / 47.97 / 49.78 | 51.0% | 0.925 / 0.922 / 0.924 | 0.924 |
+| `gru_v1_residual_seq60_d750` | 52.68 / 47.46 / 48.59 | 49.6% | 0.901 / 0.930 / 0.942 | 0.925 |
+
+- **Aggregate MACD DA spans 5-10pp between seeds of one config**, almost all of it
+  on days 3-5 (`macdonly_warm5` day 5: 46.2 / 37.6 / 31.2). The noise floor quoted
+  in `../configs/experiments/README.md` (sd 0.77pp, range 1.71pp) badly understates
+  this. **A single run cannot rank two configs on DA.**
+- MAE is steadier but not fixed: range 0.003 for `hidden16`, 0.041 for `seq60_d750`.
+- Seed 42 was the best DA seed in all three configs, which is why single-seed
+  tables at that seed looked more promising than they were.
+- Day-1 DA is the stable part: `macdonly_warm5` scored 80.9-81.2% on every seed,
+  level with drift (80.8%). Two other runs had an unexplained low day 1
+  (`hidden16` seed 7: 73.2%; `seq60_d750` seed 123: 76.3%).
+
+**Single-seed results (seed 42) — read with the spread above in mind**
+
+| Config | Change from `plainloss_warm5` | MACD DA | MACD MAE |
+|---|---|---|---|
+| `gru_v1_exp_baseline` | none (adds `open-close` vs `macdonly`) | 49.82% | 0.941 |
+| `gru_v1_exp_lr_patience2` | `lr_patience` 2 | identical to baseline — same checkpoint, the scheduler fires after the best epoch | |
+| `gru_v1_exp_lr_3e4` | `learning_rate` 3e-4 | 48.42% | 0.901 |
+| `gru_v1_exp_lr_1e4` | `learning_rate` 1e-4 | 47.46% | 0.920 |
+| `gru_v1_exp_hidden16_lr3e4` | hidden 16, lr 3e-4 | 49.29% | 0.900 |
+| `gru_v1_exp_hidden8` | hidden 8 | 44.19% | 0.982 |
+| `gru_v1_residual_seq15` | `seq_length` 15 | 46.64% | 0.964 |
+| `gru_v1_residual_seq20` | `seq_length` 20 | 48.46% | 0.947 |
+| `gru_v1_residual_seq45` | `seq_length` 45 | 49.09% | 0.969 |
+
+None of these is outside the seed spread on DA. The ~0.90 MAE of the lower-LR arms
+is unconfirmed (one seed; `seq60_d750`'s 0.901 did not repeat).
+
+**Shorter horizons** (seed 42; compare per day against drift at the same horizon,
+never on the aggregate):
+
+| | Day 1 DA / MAE | Day 2 DA / MAE | Day 3 DA / MAE |
+|---|---|---|---|
+| `gru_v1_residual_h2_w0` (= `plainloss_warm5_h2`, same checkpoint) | 80.6% / 0.283 | 61.3% / 0.594 | — |
+| drift, horizon 2 | 80.4% / 0.309 | 62.9% / 0.683 | — |
+| `gru_v1_residual_h3` | 79.3% / 0.281 | 57.9% / 0.575 | 42.7% / 0.885 |
+| drift, horizon 3 | 80.8% / 0.306 | 63.4% / 0.679 | 52.7% / 1.118 |
+
+About 5% better day-1/2 MAE than the 5-day models; direction no better than drift.
+
+**Auxiliary direction loss** (`gru_v1_residual_macdonly_warm5_aux03`: the
+`macdonly_warm5` recipe plus `auxiliary_direction_lambda: 0.3`, same three seeds):
+
+| | Seed 42 | Seed 7 | Seed 123 | Mean |
+|---|---|---|---|---|
+| MACD DA with aux / without | 45.27 / 56.65 | 46.33 / 50.86 | 48.18 / 46.63 | 46.6% / 51.4% |
+| MACD MAE with aux / without | 0.963 / 0.936 | 0.977 / 0.928 | 0.929 / 0.940 | 0.956 / 0.935 |
+
+Lower DA on every forecast day on average (78.2 / 50.5 / 36.8 / 34.3 / 33.3 vs
+81.0 / 56.1 / 42.1 / 39.3 / 38.3). Not proof it hurts at n=3, but no sign it helps.
+
+**Seed ensembles** (`../scripts/evaluate_ensemble.py`: mean of the three seeds'
+forecasts per window, scored by the stock evaluation code):
+
+| Family | Ensemble MAE | Members' mean (best) MAE | Ensemble DA | Members' mean DA |
+|---|---|---|---|---|
+| `macdonly_warm5` v1,2,3 | **0.901** | 0.935 (0.928) | 51.28% | 51.38% |
+| `hidden16` v1,2,3 | 0.906 | 0.924 (0.922) | 51.48% | 51.01% |
+| `seq60_d750` v2,3,4 | 0.906 | 0.925 (0.901) | 49.41% | 49.58% |
+
+Averaging buys 2-4% MAE and removes the dependence on a lucky seed. It does
+**nothing** for DA — the ensemble lands on the members' average, so the seeds are
+not cancelling each other's day 3-5 errors; the weak direction is a shared bias,
+not seed noise.
+
+**ARIMA comparison** (`evaluate_forecast_model.py --compare` on
+`gru_v1_residual_macdonly_warm5` v2, the seed-7 model closest to the family mean;
+ARIMA fitted on 501/501 symbols; `eval_arima_compare_2026-10-04.txt`):
+
+| | Mean MAE | Median MAE | Median WAPE | MACD DA | Day 1 / 2 / 3 / 4 / 5 DA |
+|---|---|---|---|---|---|
+| Neural, 3-seed ensemble | **0.901** | **0.452** | **21.6%** | 51.28% | 81.0 / 56.4 / 42.1 / 38.9 / 38.0 |
+| Neural, v2 | 0.928 | 0.456 | 22.1% | 50.86% | 80.9 / 55.4 / 41.8 / 38.6 / 37.6 |
+| ARIMA | 1.682 | 0.577 | 27.2% | 46.41% | 77.7 / 48.9 / 36.9 / 34.8 / 33.7 |
+| `drift` | 1.147 | — | — | **57.81%** | 80.8 / 62.6 / 52.1 / 47.7 / 45.7 |
+
+- **ARIMA is the weakest of the four.** On the typical symbol the neural model's MAE
+  is ~21% lower (median 0.456 vs 0.577). ARIMA's mean MAE is 2.9x its median — a
+  minority of divergent fits dominate it — so compare medians (its per-day mean MAE,
+  0.891 on day 1 rising to 2.503 on day 5, is inflated the same way).
+- ARIMA's DA is 3-6.5pp below the neural model on every day and 3-15pp below drift.
+  Its 46.41% aggregate is level with the worst neural seed measured (46.63%).
+- `persistence_baseline.py` prints no medians, so drift has none here.
+- **Production serves ARIMA today** (§9: it cannot load any config-based model), i.e.
+  the weakest option measured — the neural model is better on magnitude and plain
+  drift is better on direction.
+
 ### Verdict
 
-**`gru_v1_residual_plainloss_warm5` is the best model measured**, on both
-aggregate DA (51.52%, vs Model C's 50.75%) and MAE (1.0356, vs Model C's 1.1410 —
-24% better than drift). Day-1 DA (78.4%) is within 0.2-0.5pp of drift depending on
-protocol; the held-out single-step check has it within 0.13pp.
+**As of 2026-10-04 no configuration is measurably better than another.** Hidden
+size, learning rate, scheduler patience, input window, the `open-close` feature and
+the auxiliary direction loss all land at 46-51% aggregate MACD DA on a three-seed
+mean, or inside the seed spread where only one seed was run, with MAE 0.90-0.97.
+The one arm that looks worse on both measures is `hidden_size` 8 (one seed).
+`gru_v1_residual_macdonly_warm5` is recommended as the simplest of them (two
+inputs) with the best three-seed mean by a small margin; its three-seed ensemble
+has the best MAE measured (0.901, 21% below drift). ARIMA, the production
+fallback, is behind it on both MAE and DA.
+
+The 2026-09-03 verdict — `gru_v1_residual_plainloss_warm5` best on DA (51.52%) and
+MAE (1.0356) — came from single unseeded runs on an earlier window and should be
+read as one draw from the spread documented above, not as a ranking.
 
 What has not improved, and is the open problem:
 
-- **Drift still leads aggregate DA by 3.65pp** (55.17% vs 51.52%), and at every
-  individual day 2-5. The gap has narrowed steadily across the investigation
-  (from ~12pp on day 1 down to parity; from ~8pp on day 3 down to ~5pp) but not
-  closed.
+- **Drift still leads aggregate DA by about 6pp** (57.81% vs ~51% three-seed means)
+  and on every individual day 2-5; models match it only on day 1. No trained model
+  or ensemble has beaten it on aggregate DA. The models' reliable advantage is
+  magnitude: MAE ~18-21% below drift.
 - **Days 3-5 direction remains the weakest part of every model measured.** A
   2026-09-03 dispersion analysis found the model's predicted variance at these
   horizons is well-calibrated to the actual variance (ratio ≈1.0-1.1), but its
@@ -659,8 +828,22 @@ genuinely scarce in this feature set, not merely unmodeled.
 
 **Device.** Training auto-selects MPS → CUDA → CPU. The ANE is inference-only
 (reachable only through Core ML, which has no training API), so it cannot be used
-for the backward pass. At 28K-110K parameters and batch 64 these kernels are small
-enough that CPU may beat MPS — worth timing with `--epochs 5`.
+for the backward pass. Pass `--device {mps,cuda,cpu}` (or `"device"` in the config)
+to override the auto-selection.
+
+**At this model size CPU beats MPS.** Measured 2026-10-04 on an Apple M5 (torch
+2.14.1), bidirectional GRU, hidden 32, batch 64, synthetic data: 4.7 s/epoch on CPU
+against 17.2 s/epoch on MPS — about 3.6x. GPU utilization sits near 30% on MPS
+because each batch is a few tiny kernels separated by Python overhead. A real
+40-epoch sp500 run takes about 9 minutes on CPU. CPU and MPS runs differ in the
+third decimal of the loss, so do not mix devices inside one comparison.
+
+**Run several trainings in parallel on CPU.** One thread per process is as fast as
+the default (4.6 vs 4.8 s/epoch), and four at once on the four performance cores
+cost only ~5.3 s/epoch each — about 3.5x the throughput. Set
+`OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1`; without them four parallel runs slow
+to ~7.0 s/epoch each. Runs of the **same** `model_name` resolve their version number
+just before saving, so stagger or serialize those; different model names are safe.
 
 **Horizon and loss weighting — do not add per-day decay weighting.** An earlier
 version of this note recommended per-horizon decay weights as a mitigation for
@@ -683,12 +866,20 @@ lowest val loss is the best model for DA.
 ## 13. Commands
 
 ```bash
-# Train the current best configuration (from src/)
-python scripts/train_forecast_model.py --config configs/gru_v1_residual_plainloss_warm5.json
+# Train the recommended configuration (from src/). Always seed, and train at least
+# three seeds before comparing configs — see §11's seed-variance finding.
+for s in 42 7 123; do
+  python scripts/train_forecast_model.py --config configs/gru_v1_residual_macdonly_warm5.json \
+    --seed $s --device cpu
+done
 
-# Evaluate it
-python scripts/evaluate_forecast_model.py --config configs/gru_v1_residual_plainloss_warm5.json \
-  --watchlist sp500 --samples 20 --lag-test --breakdown-by-day
+# Evaluate one version (latest if --model-version is omitted)
+python scripts/evaluate_forecast_model.py --config configs/gru_v1_residual_macdonly_warm5.json \
+  --model-version 1 --watchlist sp500 --samples 20 --lag-test --breakdown-by-day
+
+# Evaluate the average of several versions (seed ensemble)
+python scripts/evaluate_ensemble.py --model-name gru_v1_residual_macdonly_warm5 \
+  --versions 1,2,3 --watchlist sp500 --samples 20 --lag-test --breakdown-by-day
 
 # Persistence/drift baselines (no model needed — run this first for any new comparison)
 python scripts/persistence_baseline.py \
@@ -697,6 +888,30 @@ python scripts/persistence_baseline.py \
 # List all trained models on disk
 python scripts/evaluate_forecast_model.py --list-models
 ```
+
+**Checking a frozen ensemble as time passes.** Two ways, both after refreshing the
+watchlist so the new trading days are in `stock_cache`:
+
+```bash
+# Recompute what the pinned versions would have forecast, and score it. Use
+# --samples = (trading days since the last day the models were trained on) - 4, so
+# every forecast counted was made on or after that day: 6 after two weeks, 16 after four.
+python scripts/evaluate_ensemble.py --model-name gru_v1_residual_macdonly_warm5 \
+  --versions 1,2,3 --watchlist sp500 --samples 6 --breakdown-by-day --lag-test
+python scripts/persistence_baseline.py \
+  --watchlist sp500 --samples 6 --seq-length 30 --forecast-horizon 5
+```
+
+Or score the forecasts that were actually run from the UI, with the SQL query in
+`docs/ENSEMBLE_PRODUCTION_PLAN.md` §6 against `forecast_predictions`. That only covers
+days on which the forecast was run, and it pools all forecasts where the scripts
+average per symbol first, so the two differ slightly. Either way the bar is drift on
+the same window: the ensemble should keep an MAE roughly 20% below drift's. Two weeks
+is about 3,000 forecasts but stocks move together, so treat it as a noisy read; a
+month is more convincing.
+
+`train_forecast_model.py --model-version N` saves under an explicit version (refused
+if it exists). The retrain job uses it to reserve versions for parallel runs.
 
 Legacy CLI-only form (no `--config`, still supported — see §9 for the resulting
 filename):
@@ -738,19 +953,33 @@ get_macd_for_range_bulk(get_watchlist_symbols('sp500'), end - timedelta(days=140
 The live, ranked list of what to try next lives in `docs/FORECAST_MODEL_IMPROVEMENTS.md`'s
 "Suggested order" (updated after every experiment) — refer to it rather than this
 section, which would otherwise duplicate it and go stale the way this whole card
-did between 2026-08-29 and 2026-09-03. As of this update, the top items are:
+did between 2026-08-29 and 2026-09-03. As of the 2026-10-04 update, the top items are:
 
-1. Evaluate multiple early checkpoints on the watchlist rather than trusting the
-   single lowest-val-loss one (§7's open caution).
-2. Re-sweep `auxiliary_direction_lambda` now that `loss_decay_gamma` is off — the
-   value in use (0.3) was tuned under that since-removed handicap.
+1. **Run every comparison on at least three seeds.** Single-run DA differences
+   under ~10pp are inside the seed spread (§11); most earlier rankings in this
+   investigation were made on one unseeded run each and should be treated as open.
+2. Evaluate multiple early checkpoints on the watchlist rather than trusting the
+   single lowest-val-loss one (§7's open caution). The seed spread sits almost
+   entirely on days 3-5, the same place checkpoint choice moves.
 3. Add naive baselines (persistence, drift, repeat-delta) to
    `evaluate_forecast_model.py` directly, so every future result is printed next
    to the bar it needs to beat rather than requiring a separate audit script.
-4. Cheap new input features (`macd_signal_dist`, MA20/MA50 trend ratio,
-   price-vs-MA20 ratio) — §1's B-list.
-5. `chart_patterns` — the only genuinely different information source available,
+4. `chart_patterns` — the only genuinely different information source available,
    and the most work.
+5. Cheap new input features (`macd_signal_dist`, MA20/MA50 trend ratio,
+   price-vs-MA20 ratio) — §1's B-list. Low prior: like `open-close`, they are
+   derived from the same price series.
+6. Seed ensembles are now what production serves (§9): 2-4% better MAE and
+   steadier than a single seed (§11). The direction gap to drift is unchanged.
+7. Check the frozen default ensemble against live data after two to four weeks
+   (§13). Every number in §11 is from one window ending 2026-10-02; whether the MAE
+   advantage over drift holds out of sample is still unmeasured.
+
+**Tried 2026-10-04 with no confirmed benefit** (§11): `hidden_size` 16 and 8;
+`learning_rate` 3e-4 and 1e-4; `lr_patience` 2 (a no-op — it fires after the best
+epoch); `seq_length` 15, 20, 45, 60; dropping `open-close`;
+`auxiliary_direction_lambda` 0.3 on the current recipe; forecast horizons 2 and 3;
+three-seed averaging (helps MAE, not DA).
 
 **Ruled out, do not revisit without new evidence:** per-day/per-column loss decay
 weighting (`loss_decay_gamma`); the delta-only architectural consistency variant

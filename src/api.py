@@ -51,6 +51,7 @@ from db_utils import (
     create_table,
     create_watchlist_tables,
     create_forecast_util_table,
+    create_forecast_predictions_table,
 )
 from notes_db import create_note_tables
 
@@ -64,6 +65,7 @@ def init_database():
     create_forecast_util_table()
     create_symbol_picks_table()
     create_symbol_properties_table()
+    create_forecast_predictions_table()
     create_note_tables()
     logger.info("Database initialization complete")
 

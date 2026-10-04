@@ -37,6 +37,19 @@ class ForecastRequest(BaseModel):
         return [s.upper().strip() for s in v]
 
 
+class EnsembleForecastRequest(BaseModel):
+    """Request model for seed-ensemble MACD forecasting."""
+    symbols: List[str] = Field(..., min_length=1, description="List of stock symbols")
+    ensemble_id: Optional[str] = Field(default=None, description="Ensemble id from GET /forecast/ensembles; omitted means the registry default")
+    days_past: int = Field(default=100, ge=30, le=365, description="CALENDAR days of historical data; widened internally to cover the model's sequence length")
+    forecast_days: int = Field(default=5, ge=1, le=30, description="Days to forecast, capped at the model's trained horizon")
+
+    @field_validator("symbols")
+    @classmethod
+    def uppercase_symbols(cls, v: List[str]) -> List[str]:
+        return [s.upper().strip() for s in v]
+
+
 class ChartGenerationRequest(BaseModel):
     """Request model for chart generation."""
     selected_date: Optional[str] = Field(

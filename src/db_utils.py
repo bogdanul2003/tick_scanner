@@ -861,6 +861,83 @@ def cache_macd_positive_forecast(symbol, forecast_date, will_become_positive):
     finally:
         put_connection(conn)
 
+def create_forecast_predictions_table():
+    """
+    Create the table recording what each MACD forecast run predicted, so accuracy can
+    later be measured against what actually happened.
+
+    One row per (model, symbol, as_of_date, horizon_day). `model` is an ensemble id or
+    'arima'; `as_of_date` is the last market date the forecast was made from.
+    `target_date` is the nominal date shown in the UI (weekdays, holidays not skipped) —
+    to score a prediction, match on `horizon_day` trading days after `as_of_date`.
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS forecast_predictions (
+                    model TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    as_of_date DATE NOT NULL,
+                    horizon_day SMALLINT NOT NULL,
+                    target_date DATE NOT NULL,
+                    predicted_macd DOUBLE PRECISION NOT NULL,
+                    last_macd DOUBLE PRECISION,
+                    will_become_positive BOOLEAN,
+                    model_name TEXT,
+                    model_versions INTEGER[],
+                    model_trained_at TIMESTAMPTZ,
+                    run_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    PRIMARY KEY (model, symbol, as_of_date, horizon_day)
+                )
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS forecast_predictions_symbol_date
+                ON forecast_predictions (symbol, as_of_date)
+            """)
+            conn.commit()
+    finally:
+        put_connection(conn)
+
+def save_forecast_predictions(model, as_of_date, rows, model_name=None, model_versions=None, model_trained_at=None):
+    """
+    Store one forecast run. `rows` are (symbol, horizon_day, target_date,
+    predicted_macd, last_macd, will_become_positive) tuples, as built by
+    forecast_utils.forecast_prediction_rows.
+
+    A later run of the same model from the same as_of_date replaces the earlier one
+    for the symbols it covers: only the last run of a day is kept.
+    Returns the number of rows written.
+    """
+    if not rows:
+        return 0
+    from psycopg2.extras import execute_values
+    symbols = sorted({row[0] for row in rows})
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                DELETE FROM forecast_predictions
+                WHERE model = %s AND as_of_date = %s AND symbol = ANY(%s)
+            """, (model, as_of_date, symbols))
+            execute_values(cur, """
+                INSERT INTO forecast_predictions
+                    (model, symbol, as_of_date, horizon_day, target_date, predicted_macd,
+                     last_macd, will_become_positive, model_name, model_versions, model_trained_at)
+                VALUES %s
+            """, [
+                (model, symbol, as_of_date, horizon_day, target_date, predicted_macd,
+                 last_macd, will_become_positive, model_name, model_versions, model_trained_at)
+                for symbol, horizon_day, target_date, predicted_macd, last_macd, will_become_positive in rows
+            ])
+            conn.commit()
+        return len(rows)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        put_connection(conn)
+
 def cache_ma20_above_ma50_forecast(symbol, forecast_date, ma20_will_be_above_ma50):
     """
     Cache the ma20_will_be_above_ma50 result for a symbol and forecast_date in stock_cache table.

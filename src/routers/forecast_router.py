@@ -5,6 +5,8 @@ from typing import List, Optional
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import traceback
 
+from models.requests import EnsembleForecastRequest
+
 router = APIRouter(prefix="/forecast", tags=["Forecast"])
 
 
@@ -92,6 +94,21 @@ def get_sorting_keys(symbol, results):
     return (will_become_positive, is_increasing, first_value_positive, first_positive_index, first_positive_value)
 
 
+def order_forecast_results(results):
+    """Order per-symbol forecast results most-bullish first."""
+    ordered_symbols = sorted(
+        results.keys(),
+        key=lambda sym: (
+            not results[sym].get("will_become_positive", False),
+            not get_sorting_keys(sym, results)[1],
+            not get_sorting_keys(sym, results)[2],
+            get_sorting_keys(sym, results)[3],
+            get_sorting_keys(sym, results)[4]
+        )
+    )
+    return {sym: results[sym] for sym in ordered_symbols}
+
+
 @router.post("/macd/arima_positive")
 async def get_arima_macd_positive_forecast_bulk(
     symbols: List[str] = Body(..., embed=True),
@@ -112,18 +129,83 @@ async def get_arima_macd_positive_forecast_bulk(
             symbol, result = future.result()
             results[symbol] = result
 
-    ordered_symbols = sorted(
-        results.keys(),
-        key=lambda sym: (
-            not results[sym].get("will_become_positive", False),
-            not get_sorting_keys(sym, results)[1],
-            not get_sorting_keys(sym, results)[2],
-            get_sorting_keys(sym, results)[3],
-            get_sorting_keys(sym, results)[4]
-        )
+    from macd_utils import get_latest_market_date
+    from services.ensemble_service import record_forecast_run
+    record_forecast_run("arima", get_latest_market_date(), results)
+
+    return order_forecast_results(results)
+
+
+@router.get("/ensembles")
+def list_forecast_ensembles():
+    """
+    List the selectable seed ensembles: which is the default, which versions each
+    serves, whether its model files are present, and its last measured metrics.
+    """
+    from services.ensemble_service import describe_ensembles
+    try:
+        return describe_ensembles()
+    except Exception as e:
+        print(f"Exception in list_forecast_ensembles: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/ensembles/retrain/status")
+def get_ensemble_retrain_status():
+    """The running or most recent ensemble retrain job, or {"state": "idle"}."""
+    from services.ensemble_training import get_status
+    return get_status()
+
+
+@router.post("/ensembles/{ensemble_id}/retrain", status_code=202)
+def retrain_forecast_ensemble(ensemble_id: str):
+    """
+    Start retraining an ensemble in the background (one job at a time). The ensemble
+    keeps serving its current versions until every seed has trained; poll
+    /ensembles/retrain/status for progress.
+    """
+    from services.ensemble_service import EnsembleNotFoundError
+    from services.ensemble_training import start_retrain, RetrainInProgressError
+    try:
+        return start_retrain(ensemble_id)
+    except EnsembleNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RetrainInProgressError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        print(f"Exception in retrain_forecast_ensemble: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/macd/ensemble")
+def get_ensemble_macd_positive_forecast(request: EnsembleForecastRequest):
+    """
+    For a list of symbols, forecast if MACD will become positive using a seed
+    ensemble of the neural forecaster. Same response shape and ordering as
+    /macd/arima_positive.
+
+    A sync `def` on purpose: loading data and running inference for a whole
+    watchlist blocks for seconds with nothing to await, so Starlette runs it in
+    its threadpool instead of on the event loop.
+    """
+    from services.ensemble_service import (
+        forecast_symbols, EnsembleNotFoundError, EnsembleUnavailableError
     )
-    ordered_results = {sym: results[sym] for sym in ordered_symbols}
-    return ordered_results
+    try:
+        results = forecast_symbols(
+            request.symbols, request.ensemble_id, request.days_past, request.forecast_days
+        )
+    except EnsembleNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except EnsembleUnavailableError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        print(f"Exception in get_ensemble_macd_positive_forecast: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+    return order_forecast_results(results)
 
 
 @router.post("/ma/arima_above_50")
