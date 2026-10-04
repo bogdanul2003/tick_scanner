@@ -7,6 +7,11 @@ from .requests import (
     PatternRequest,
     WatchlistSymbolsRequest,
     ClosingPricesRequest,
+    NoteCreateRequest,
+    NoteSymbolsRequest,
+    NoteUpdateRequest,
+    NoteWatchlistCreateRequest,
+    NoteWatchlistUpdateRequest,
 )
 from .responses import (
     MacdResponse,
@@ -17,6 +22,11 @@ from .responses import (
     PatternResponse,
     BulkPatternResponse,
     ErrorResponse,
+    NoteImageResponse,
+    NoteResponse,
+    NoteSymbolSummary,
+    NoteWatchlistDetailResponse,
+    NoteWatchlistSummary,
 )
 
 __all__ = [
@@ -28,6 +38,11 @@ __all__ = [
     "PatternRequest",
     "WatchlistSymbolsRequest",
     "ClosingPricesRequest",
+    "NoteCreateRequest",
+    "NoteSymbolsRequest",
+    "NoteUpdateRequest",
+    "NoteWatchlistCreateRequest",
+    "NoteWatchlistUpdateRequest",
     # Responses
     "MacdResponse",
     "MacdHistoryResponse",
@@ -37,4 +52,10 @@ __all__ = [
     "PatternResponse",
     "BulkPatternResponse",
     "ErrorResponse",
+    "NoteImageResponse",
+    "NoteResponse",
+    "NoteSymbolSummary",
+    "NoteWatchlistDetailResponse",
+    "NoteWatchlistSummary",
 ]
+

@@ -1,0 +1,247 @@
+Loaded config: configs/gru_v1_residual_seq15.json (model_name=gru_v1_residual_seq15)
+Random seed: 42 (controlled comparison; not bitwise reproducible — see seed_everything docstring)
+============================================================
+Bidirectional Gru MACD Forecaster Training
+============================================================
+Architecture: bidirectional_gru
+Signal type: MACD
+Features: macd, delta, open-close
+Normalization: global
+Include Delta: True
+Residual Target: True
+Output directory: /Users/home_mac/Documents/proj/tick_scanner/models
+Sequence length: 15
+Forecast horizon: 5
+Hidden size: 32
+Epochs: 40
+Batch size: 64
+Learning rate: 0.001
+LR Scheduler: ReduceLROnPlateau (factor=0.5, patience=10, min_lr=1e-06)
+Checkpoint warmup: 5 epochs (ineligible as 'best', excluded from LR scheduler tracking)
+Test split: 15%
+
+Using 501 symbols for training
+
+Gathering training data...
+Gathering features (macd, delta, open-close) from 2025-02-09 to 2026-10-02
+Processing 501 symbols...
+  [1/501] MMM: 414 data points
+  [2/501] AOS: 414 data points
+  [3/501] ABT: 414 data points
+  [4/501] ABBV: 414 data points
+  [5/501] ACN: 414 data points
+  [6/501] ADBE: 414 data points
+  [7/501] AMD: 414 data points
+  [8/501] AES: 414 data points
+  [9/501] AFL: 414 data points
+  [10/501] A: 414 data points
+  [11/501] APD: 414 data points
+  [12/501] ABNB: 414 data points
+  [13/501] AKAM: 414 data points
+  [14/501] ALB: 414 data points
+  [15/501] ARE: 414 data points
+  [16/501] ALGN: 414 data points
+  [17/501] ALLE: 414 data points
+  [18/501] LNT: 414 data points
+  [19/501] ALL: 414 data points
+  [20/501] GOOGL: 414 data points
+  [21/501] GOOG: 414 data points
+  [22/501] MO: 414 data points
+  [23/501] AMZN: 414 data points
+  [24/501] AMCR: 414 data points
+  [25/501] AEE: 414 data points
+  [26/501] AEP: 414 data points
+  [27/501] AXP: 414 data points
+  [28/501] AIG: 414 data points
+  [29/501] AMT: 414 data points
+  [30/501] AWK: 414 data points
+  [31/501] AMP: 414 data points
+  [32/501] AME: 414 data points
+  [33/501] AMGN: 414 data points
+  [34/501] APH: 414 data points
+  [35/501] ADI: 414 data points
+  [36/501] AON: 414 data points
+  [37/501] APA: 414 data points
+  [38/501] APO: 414 data points
+  [39/501] AAPL: 414 data points
+  [40/501] AMAT: 414 data points
+  [41/501] APP: 414 data points
+  [42/501] APTV: 414 data points
+  [43/501] ACGL: 414 data points
+  [44/501] ADM: 414 data points
+  [45/501] ARES: 414 data points
+  [46/501] ANET: 414 data points
+  [47/501] AJG: 414 data points
+  [48/501] AIZ: 414 data points
+  [49/501] T: 414 data points
+  [50/501] ATO: 414 data points
+  [51/501] ADSK: 414 data points
+  [52/501] ADP: 414 data points
+  [53/501] AZO: 414 data points
+  [54/501] AVY: 414 data points
+  [55/501] AXON: 414 data points
+  [56/501] BKR: 414 data points
+  [57/501] BALL: 414 data points
+  [58/501] BAC: 414 data points
+  [59/501] BAX: 414 data points
+  [60/501] BDX: 414 data points
+  [61/501] BBY: 414 data points
+  [62/501] TECH: 414 data points
+  [63/501] BIIB: 414 data points
+  [64/501] BLK: 414 data points
+  [65/501] BX: 414 data points
+  [66/501] XYZ: 414 data points
+  [67/501] BNY: 414 data points
+  [68/501] BA: 414 data points
+  [69/501] BKNG: 414 data points
+  [70/501] BSX: 414 data points
+  [71/501] BMY: 414 data points
+  [72/501] AVGO: 414 data points
+  [73/501] BR: 414 data points
+  [74/501] BRO: 414 data points
+  [75/501] BLDR: 414 data points
+  [76/501] BG: 414 data points
+  [77/501] BXP: 414 data points
+  [78/501] CHRW: 414 data points
+  [79/501] CDNS: 414 data points
+  [80/501] CPT: 414 data points
+  [81/501] COF: 414 data points
+  [82/501] CAH: 414 data points
+  [83/501] CCL: 414 data points
+  [84/501] CARR: 414 data points
+  [85/501] CVNA: 414 data points
+  [86/501] CASY: 414 data points
+  [87/501] CAT: 414 data points
+  [88/501] CBOE: 414 data points
+  [89/501] CBRE: 414 data points
+  [90/501] CDW: 414 data points
+  [91/501] COR: 414 data points
+  [92/501] CNC: 414 data points
+  [93/501] CNP: 414 data points
+  [94/501] CF: 414 data points
+  [95/501] CRL: 414 data points
+  [96/501] SCHW: 414 data points
+  [97/501] CHTR: 414 data points
+  [98/501] CVX: 414 data points
+  [99/501] CMG: 414 data points
+  [100/501] CB: 414 data points
+  [101/501] CHD: 414 data points
+  [102/501] CIEN: 414 data points
+  [103/501] CI: 414 data points
+  [104/501] CINF: 414 data points
+  [105/501] CTAS: 414 data points
+  [106/501] CSCO: 414 data points
+  [107/501] C: 414 data points
+  [108/501] CFG: 414 data points
+  [109/501] CLX: 414 data points
+  [110/501] CME: 414 data points
+  [111/501] CMS: 414 data points
+  [112/501] KO: 414 data points
+  [113/501] CTSH: 414 data points
+  [114/501] COHR: 414 data points
+  [115/501] COIN: 414 data points
+  [116/501] CL: 414 data points
+  [117/501] CMCSA: 414 data points
+  [118/501] FIX: 414 data points
+  [119/501] COP: 414 data points
+  [120/501] ED: 414 data points
+  [121/501] STZ: 414 data points
+  [122/501] CEG: 414 data points
+  [123/501] COO: 414 data points
+  [124/501] CPRT: 414 data points
+  [125/501] GLW: 414 data points
+  [126/501] CPAY: 414 data points
+  [127/501] CTVA: 414 data points
+  [128/501] CSGP: 414 data points
+  [129/501] COST: 414 data points
+  [130/501] CRH: 414 data points
+  [131/501] CRWD: 414 data points
+  [132/501] CCI: 414 data points
+  [133/501] CSX: 414 data points
+  [134/501] CMI: 414 data points
+  [135/501] CVS: 414 data points
+  [136/501] DHR: 414 data points
+  [137/501] DRI: 414 data points
+  [138/501] DDOG: 414 data points
+  [139/501] DVA: 414 data points
+  [140/501] DECK: 414 data points
+  [141/501] DE: 414 data points
+  [142/501] DELL: 414 data points
+  [143/501] DAL: 414 data points
+  [144/501] DVN: 414 data points
+  [145/501] DXCM: 414 data points
+  [146/501] FANG: 414 data points
+  [147/501] DLR: 414 data points
+  [148/501] DG: 414 data points
+  [149/501] DLTR: 414 data points
+  [150/501] D: 414 data points
+  [151/501] DPZ: 414 data points
+  [152/501] DASH: 414 data points
+  [153/501] DOV: 414 data points
+  [154/501] DOW: 414 data points
+  [155/501] DHI: 414 data points
+  [156/501] DTE: 414 data points
+  [157/501] DUK: 414 data points
+  [158/501] DD: 414 data points
+  [159/501] ETN: 414 data points
+  [160/501] EBAY: 414 data points
+  [161/501] ECHO: 414 data points
+  [162/501] ECL: 414 data points
+  [163/501] EIX: 414 data points
+  [164/501] EW: 414 data points
+  [165/501] ELV: 414 data points
+  [166/501] EME: 414 data points
+  [167/501] EMR: 414 data points
+  [168/501] ETR: 414 data points
+  [169/501] EOG: 414 data points
+  [170/501] EQT: 414 data points
+  [171/501] EFX: 414 data points
+  [172/501] EQIX: 414 data points
+  [173/501] ERIE: 414 data points
+  [174/501] ESS: 414 data points
+  [175/501] EL: 414 data points
+  [176/501] EG: 414 data points
+  [177/501] EVRG: 414 data points
+  [178/501] ES: 414 data points
+  [179/501] EXC: 414 data points
+  [180/501] EXE: 414 data points
+  [181/501] EXPE: 414 data points
+  [182/501] EXPD: 414 data points
+  [183/501] EXR: 414 data points
+  [184/501] XOM: 414 data points
+  [185/501] FFIV: 414 data points
+  [186/501] FDS: 414 data points
+  [187/501] FICO: 414 data points
+  [188/501] FAST: 414 data points
+  [189/501] FRT: 414 data points
+  [190/501] FDX: 414 data points
+  [191/501] FDXF: 90 data points
+  [192/501] FERG: 414 data points
+  [193/501] FIS: 414 data points
+  [194/501] FITB: 414 data points
+  [195/501] FSLR: 414 data points
+  [196/501] FE: 414 data points
+  [197/501] FISV: 413 data points
+  [198/501] FLEX: 414 data points
+  [199/501] F: 414 data points
+  [200/501] FTNT: 414 data points
+  [201/501] FTV: 414 data points
+  [202/501] FOXA: 414 data points
+  [203/501] FOX: 414 data points
+  [204/501] BEN: 414 data points
+  [205/501] FCX: 414 data points
+  [206/501] GRMN: 414 data points
+  [207/501] IT: 414 data points
+  [208/501] GE: 414 data points
+  [209/501] GEHC: 414 data points
+  [210/501] GEV: 414 data points
+  [211/501] GEN: 414 data points
+  [212/501] GNRC: 414 data points
+  [213/501] GD: 414 data points
+  [214/501] GIS: 414 data points
+  [215/501] GM: 414 data points
+  [216/501] GPC: 414 data points
+  [217/501] GILD: 414 data points
+  [218/501] GPN: 414 data points
+  [219/501] GL: 414 data points
+  [220/501] GDDY: 414 data points

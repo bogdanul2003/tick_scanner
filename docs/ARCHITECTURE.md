@@ -80,8 +80,12 @@ The platform scans watchlists of stocks and prioritizes opportunities based on b
 
 | File | Purpose |
 |------|---------|
-| `App.jsx` | Main React components (~500 lines) |
-| `index.jsx` / `main.jsx` | React entry points |
+| `App.jsx` | Shell: hash-routed switch between dashboards (`#/`, `#/macd`, `#/notes`) |
+| `pages/HomePage.jsx` | Start page with a card per dashboard |
+| `dashboards/MacdDashboard.jsx` | MACD, forecast and pattern UI (formerly `App.jsx`) |
+| `dashboards/notes/` | Notes Dashboard: notes watchlists, dated notes, images |
+| `api.js` | Shared API base URL and fetch/error helpers |
+| `main.jsx` | React entry point |
 | `vite.config.js` | Vite development server config |
 
 ---
@@ -129,7 +133,7 @@ The platform scans watchlists of stocks and prioritizes opportunities based on b
 | ema12, ema26 | NUMERIC | Exponential moving averages |
 | ma20, ma50 | NUMERIC | Simple moving averages |
 | macd, signal_line | NUMERIC | MACD indicators |
-| will_become_positive | BOOLEAN | ARIMA forecast flag |
+| will_become_positive | BOOLEAN | MACD forecast flag, written by whichever engine (ensemble or ARIMA) ran last |
 | ma20_will_be_above_ma50 | BOOLEAN | MA crossover forecast |
 | chart_patterns | JSONB | Detected visual patterns |
 
@@ -139,7 +143,18 @@ The platform scans watchlists of stocks and prioritizes opportunities based on b
 - `watchlist_symbols` - Watchlist membership
 - `symbol_picks` - Cached bullish signal results
 - `forecast_util` - Trained ARIMA model cache
+- `forecast_predictions` - What each MACD forecast run predicted (ensemble or ARIMA), keyed by (model, symbol, as_of_date, horizon_day); the last run from a given market date wins
 - `company_names` - Company metadata
+
+### Notes Dashboard Tables
+
+Deliberately independent of `stock_cache` and `watchlists` - they hold only the
+research notes, not market data.
+
+- `note_watchlists` - Named collections of symbols to write notes about
+- `note_watchlist_symbols` - Symbol membership of a notes watchlist
+- `symbol_notes` - One dated markdown note for a symbol (composite FK to the symbol row, so removing a symbol cascades its notes)
+- `note_images` - Images attached to a note, stored as `BYTEA` with a WEBP thumbnail
 
 ---
 
@@ -166,6 +181,23 @@ The platform scans watchlists of stocks and prioritizes opportunities based on b
 - `POST /macd/bullish_signal` - Check for crossover signals
 - `POST /macd/arima_positive_forecast` - Forecast MACD becoming positive
 
+### Forecast Endpoints (ensemble)
+The "Show Bullish Forecast" panel lets the user pick a model, run it, or retrain it
+(`docs/ENSEMBLE_PRODUCTION_PLAN.md`):
+- `GET /forecast/ensembles` - Selectable seed ensembles, the default, availability and metrics
+- `POST /forecast/macd/ensemble` - Forecast MACD becoming positive with a seed ensemble (same response shape as the ARIMA endpoint)
+- `POST /forecast/ensembles/{id}/retrain` - Retrain an ensemble in the background (one job at a time)
+- `GET /forecast/ensembles/retrain/status` - Progress of the running or most recent retrain
+- `POST /forecast/macd/arima_positive` - The previous ARIMA engine, kept as a legacy option
+
+Both forecast endpoints record each run in `forecast_predictions` (via
+`ensemble_service.record_forecast_run`); the last run of a model from a given market date
+replaces the earlier one.
+
+Registry: `src/configs/ensembles.json`. Retrain state: `models/ensemble_state.json`.
+Code: `services/ensemble_service.py` (registry, inference), `services/ensemble_training.py`
+(retrain job), `models/neural_forecast.py` (`EnsembleForecaster`).
+
 ### Watchlist Endpoints
 - `POST /watchlist` - Create watchlist
 - `DELETE /watchlist/{name}` - Delete watchlist
@@ -184,6 +216,20 @@ The platform scans watchlists of stocks and prioritizes opportunities based on b
 ### Chart Endpoints
 - `GET /watchlist/{name}/available_dates` - Get available dates
 - `POST /watchlist/{name}/generate_charts` - Generate & scan charts
+
+### Notes Endpoints
+
+Addressed by id rather than name, so renaming a notes watchlist keeps links valid.
+
+- `GET|POST /notes/watchlists` - List / create notes watchlists
+- `GET|PATCH|DELETE /notes/watchlists/{id}` - Detail / rename / delete (cascades)
+- `POST /notes/watchlists/{id}/symbols` - Add symbols
+- `DELETE /notes/watchlists/{id}/symbols/{symbol}` - Remove a symbol and its notes
+- `GET|POST /notes/watchlists/{id}/symbols/{symbol}/notes` - List / create notes
+- `PATCH|DELETE /notes/entries/{note_id}` - Edit / delete a note
+- `POST /notes/entries/{note_id}/images` - Attach images (multipart, validated all-or-nothing)
+- `GET /notes/images/{id}` and `/notes/images/{id}/thumb` - Serve image bytes
+- `DELETE /notes/images/{id}` - Delete one image
 
 ---
 
@@ -754,6 +800,50 @@ npm run dev
 | `DATABASE_URL` | `postgres://postgres:postgres@localhost:5432/postgres` | PostgreSQL connection |
 | `API_HOST` | `0.0.0.0` | API bind host |
 | `API_PORT` | `8000` | API bind port |
+
+### Running the Tests
+
+```bash
+# Whole suite (from src/)
+cd src
+python -m unittest discover tests
+
+# Single module, verbose
+python -m unittest tests.test_neural_forecast_cache -v
+
+# Single test
+python -m unittest tests.test_neural_forecast_features.MultiFeatureInputTest.test_signal_line_feature_reads_the_signal_line_column
+
+# From the repo root instead — the test modules put src/ on sys.path themselves
+python -m unittest discover src/tests
+```
+
+Stdlib `unittest`, no pytest and no runner config. Every test file is
+self-contained: `coremltools` and `macd_utils` are replaced in `sys.modules`, and
+the Core ML forecaster is swapped for a recording double, so the suite touches
+**no PostgreSQL, no `.mlpackage`, and no Neural Engine** and finishes in well
+under a second. That is deliberate — these tests have to be runnable on a machine
+with no trained model and no database, which is where a fresh checkout starts.
+
+| Module | Layer under test | Invariant |
+|--------|------------------|-----------|
+| `tests/test_neural_forecast_cache.py` | `models/neural_forecast.py` → `CoreMLForecaster._load_model` | The module-level `_model_cache` entry *is* the instance attribute set, so a cached load and a cold load are indistinguishable; a `.mlpackage` that fails to parse leaves `is_available` false rather than forecasting with default normalization stats |
+| `tests/test_neural_forecast_features.py` | `models/neural_forecast.py` → `NeuralForecastService.forecast_macd` | The multi-feature input matrix: each feature reads the DB column it names (not the service's primary signal), `delta` tracks the primary column, and a NULL never shortens one column out of alignment with the rest |
+| `tests/test_ensemble_service.py` | `models/neural_forecast.py` → `EnsembleForecaster`; `services/ensemble_service.py` | The ensemble is the plain mean of its members and refuses mismatched ones; retrain state overrides the registry's versions; an ensemble with a missing model file is unavailable, not served short-handed; `forecast_symbols` returns the ARIMA endpoint's shape and caches `will_become_positive` |
+| `tests/test_ensemble_training.py` | `services/ensemble_training.py`; `scripts/train_forecast_model.py` → `resolve_save_version` | Served versions switch only when every seed produced a Core ML model; one job at a time; a job orphaned by a server restart reports failed; an existing model version is never overwritten |
+
+These modules cover inference and retraining plumbing rather than model quality — the class of
+defect where the pipeline returns a confident number that is quietly built from
+the wrong inputs. Model *accuracy* is measured separately and by hand, via
+`scripts/evaluate_forecast_model.py` and `scripts/persistence_baseline.py`; see
+`src/models/MODEL_CARD.md` for what those numbers currently look like.
+
+Not yet covered, in rough priority order: the feature-matrix builders in
+`scripts/train_forecast_model.py` and `scripts/evaluate_forecast_model.py` (the
+same logic as the tested one, duplicated twice more), the residual-target drift
+arithmetic in `models/lstm_forecaster.py`, `utils/sanitization.py`, and the
+service layer. The "Add tests" items still marked ⏳ in the Migration Strategy
+above refer to that untested surface, not to the two modules here.
 
 ---
 

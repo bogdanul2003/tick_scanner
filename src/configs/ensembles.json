@@ -1,0 +1,27 @@
+{
+  "default": "macdonly_warm5",
+  "seeds": [42, 7, 123],
+  "ensembles": [
+    {
+      "id": "macdonly_warm5",
+      "label": "MACD + delta (recommended)",
+      "config": "gru_v1_residual_macdonly_warm5.json",
+      "versions": [1, 2, 3],
+      "metrics": {"mae": 0.9006, "directional_accuracy": 0.5128, "measured": "2026-10-04"}
+    },
+    {
+      "id": "hidden16",
+      "label": "MACD + delta + open-close, hidden 16",
+      "config": "experiments/gru_v1_exp_hidden16.json",
+      "versions": [1, 2, 3],
+      "metrics": {"mae": 0.9057, "directional_accuracy": 0.5148, "measured": "2026-10-04"}
+    },
+    {
+      "id": "seq60_d750",
+      "label": "MACD + delta + open-close, 60-day window",
+      "config": "gru_v1_residual_seq60_d750.json",
+      "versions": [2, 3, 4],
+      "metrics": {"mae": 0.9058, "directional_accuracy": 0.4941, "measured": "2026-10-04"}
+    }
+  ]
+}

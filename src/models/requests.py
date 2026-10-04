@@ -28,9 +28,22 @@ class BullishSignalRequest(BaseModel):
 class ForecastRequest(BaseModel):
     """Request model for ARIMA forecasting."""
     symbols: List[str] = Field(..., min_length=1, description="List of stock symbols")
-    days_past: int = Field(default=100, ge=30, le=365, description="Days of historical data")
+    days_past: int = Field(default=100, ge=30, le=365, description="CALENDAR days of historical data (~1.45x trading days). The neural path widens this internally when it is too small for the model's sequence length, so a low value no longer underfeeds the model.")
     forecast_days: int = Field(default=5, ge=1, le=30, description="Days to forecast")
     
+    @field_validator("symbols")
+    @classmethod
+    def uppercase_symbols(cls, v: List[str]) -> List[str]:
+        return [s.upper().strip() for s in v]
+
+
+class EnsembleForecastRequest(BaseModel):
+    """Request model for seed-ensemble MACD forecasting."""
+    symbols: List[str] = Field(..., min_length=1, description="List of stock symbols")
+    ensemble_id: Optional[str] = Field(default=None, description="Ensemble id from GET /forecast/ensembles; omitted means the registry default")
+    days_past: int = Field(default=100, ge=30, le=365, description="CALENDAR days of historical data; widened internally to cover the model's sequence length")
+    forecast_days: int = Field(default=5, ge=1, le=30, description="Days to forecast, capped at the model's trained horizon")
+
     @field_validator("symbols")
     @classmethod
     def uppercase_symbols(cls, v: List[str]) -> List[str]:
@@ -115,3 +128,85 @@ class WatchlistBullishSignalRequest(BaseModel):
     """Request model for watchlist bullish signal check."""
     days: int = Field(default=30, ge=1, le=365, description="Number of days to analyze")
     threshold: float = Field(default=0.05, ge=0, le=1, description="Signal threshold")
+
+
+class NoteWatchlistCreateRequest(BaseModel):
+    """Request model for creating a notes watchlist."""
+    name: str = Field(..., min_length=1, max_length=100, description="Notes watchlist name")
+    description: Optional[str] = Field(default=None, description="Notes watchlist description")
+
+
+class NoteWatchlistUpdateRequest(BaseModel):
+    """Request model for updating a notes watchlist."""
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100, description="New notes watchlist name")
+    description: Optional[str] = Field(default=None, description="New notes watchlist description")
+
+
+class NoteSymbolsRequest(BaseModel):
+    """Request model for adding symbols to a notes watchlist."""
+    symbols: List[str] = Field(..., min_length=1, description="List of stock symbols")
+
+    @field_validator("symbols")
+    @classmethod
+    def uppercase_symbols(cls, v: List[str]) -> List[str]:
+        return [s.upper().strip() for s in v]
+
+
+class NoteCreateRequest(BaseModel):
+    """Request model for creating a note."""
+    body: str = Field(..., description="Note content in Markdown")
+    note_date: Optional[str] = Field(default=None, description="Note date (YYYY-MM-DD)")
+    status: Optional[str] = Field(default="INITIAL", description="Note status: INITIAL, CONFIRMED, WRONG")
+
+    @field_validator("note_date")
+    @classmethod
+    def validate_date_format(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        from datetime import datetime
+        try:
+            datetime.strptime(v, "%Y-%m-%d")
+            return v
+        except ValueError:
+            raise ValueError("Date must be in YYYY-MM-DD format")
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return "INITIAL"
+        val = v.upper().strip()
+        if val not in ("INITIAL", "CONFIRMED", "WRONG"):
+            raise ValueError("status must be INITIAL, CONFIRMED, or WRONG")
+        return val
+
+
+class NoteUpdateRequest(BaseModel):
+    """Request model for updating a note."""
+    body: Optional[str] = Field(default=None, description="Updated note content in Markdown")
+    note_date: Optional[str] = Field(default=None, description="Updated note date (YYYY-MM-DD)")
+    status: Optional[str] = Field(default=None, description="Updated note status: INITIAL, CONFIRMED, WRONG")
+
+    @field_validator("note_date")
+    @classmethod
+    def validate_date_format(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        from datetime import datetime
+        try:
+            datetime.strptime(v, "%Y-%m-%d")
+            return v
+        except ValueError:
+            raise ValueError("Date must be in YYYY-MM-DD format")
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        val = v.upper().strip()
+        if val not in ("INITIAL", "CONFIRMED", "WRONG"):
+            raise ValueError("status must be INITIAL, CONFIRMED, or WRONG")
+        return val
+
+

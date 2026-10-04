@@ -12,8 +12,11 @@ DB_PARAMS = {
     "port": 5432
 }
 
-# Create a global connection pool (adjust minconn/maxconn as needed)
-CONN_POOL = psycopg2.pool.SimpleConnectionPool(
+# Create a global connection pool (adjust minconn/maxconn as needed).
+# Must be the Threaded variant: SimpleConnectionPool is not thread safe, and
+# any sync (non-async def) route handler is dispatched to Starlette's threadpool,
+# so getconn/putconn can be called from several threads at once.
+CONN_POOL = psycopg2.pool.ThreadedConnectionPool(
     minconn=1,
     maxconn=15,
     **DB_PARAMS
@@ -199,14 +202,21 @@ def save_bulk_to_cache(symbol, df):
     finally:
         put_connection(conn)
 
-def get_missing_ohlcv_dates(symbols, days_back=365):
+def get_missing_ohlcv_dates(symbols, days_back=365, end_date=None):
     """
-    Identifies dates within the last 'days_back' for which symbols are either 
+    Identifies dates within the last 'days_back' for which symbols are either
     missing from the DB or have NULL values in OHLCV columns.
+
+    end_date bounds the newest date considered. Callers should pass the latest
+    date with *final* market data (see macd_utils.get_latest_market_date), so an
+    in-progress daily bar is never reported as missing -- fetching it would cache
+    an intraday "close" that afterwards looks complete and is never refetched.
+    Defaults to today, and is never allowed past today.
     Returns a dict: {symbol: set(dates)}
     """
     from datetime import datetime, timedelta
-    end_date = datetime.now().date()
+    today = datetime.now().date()
+    end_date = today if end_date is None else min(end_date, today)
     start_date = end_date - timedelta(days=days_back)
     
     # Generate all expected business dates (approximate)
@@ -239,6 +249,11 @@ def get_missing_ohlcv_dates(symbols, days_back=365):
     return result
 
 def get_missing_dates(symbol, start_date, end_date, cached_dates):
+    from datetime import datetime
+    today = datetime.now().date()
+    # Cap end_date at today to avoid requesting future dates as "missing"
+    effective_end_date = min(end_date, today)
+    
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -255,7 +270,7 @@ def get_missing_dates(symbol, start_date, end_date, cached_dates):
 
         all_missing_dates = []
         d = first_missing_date
-        while d <= end_date:
+        while d <= effective_end_date:
             if d.weekday() < 5:
                 all_missing_dates.append(d)
             d += timedelta(days=1)
@@ -704,6 +719,38 @@ def get_symbol_picks(watchlist_name, applied_date):
         put_connection(conn)
     return None
 
+def get_symbol_picks_history(watchlist_name, days=180):
+    """
+    Retrieve all symbol_picks rows for a watchlist over the past `days` days.
+    Returns a list of dicts: [{date: str, filter_results: {signal_name: [symbols]}}, ...]
+    sorted ascending by date.
+    """
+    import json
+    from datetime import date as dt_date, timedelta
+    conn = get_connection()
+    start_date = dt_date.today() - timedelta(days=days)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT applied_date, filter_results
+                FROM symbol_picks
+                WHERE watchlist_name = %s AND applied_date >= %s
+                ORDER BY applied_date ASC
+            """, (watchlist_name, start_date))
+            rows = cur.fetchall()
+            result = []
+            for row in rows:
+                applied_date, filter_results = row
+                if isinstance(filter_results, str):
+                    filter_results = json.loads(filter_results)
+                result.append({
+                    "date": applied_date.isoformat() if hasattr(applied_date, "isoformat") else str(applied_date),
+                    "filter_results": filter_results
+                })
+            return result
+    finally:
+        put_connection(conn)
+
 def create_symbol_properties_table():
     """
     Create the symbol_properties table with unique symbol and company_name columns.
@@ -811,6 +858,83 @@ def cache_macd_positive_forecast(symbol, forecast_date, will_become_positive):
                 SET will_become_positive = EXCLUDED.will_become_positive
             """, (symbol, forecast_date, will_become_positive))
             conn.commit()
+    finally:
+        put_connection(conn)
+
+def create_forecast_predictions_table():
+    """
+    Create the table recording what each MACD forecast run predicted, so accuracy can
+    later be measured against what actually happened.
+
+    One row per (model, symbol, as_of_date, horizon_day). `model` is an ensemble id or
+    'arima'; `as_of_date` is the last market date the forecast was made from.
+    `target_date` is the nominal date shown in the UI (weekdays, holidays not skipped) —
+    to score a prediction, match on `horizon_day` trading days after `as_of_date`.
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS forecast_predictions (
+                    model TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    as_of_date DATE NOT NULL,
+                    horizon_day SMALLINT NOT NULL,
+                    target_date DATE NOT NULL,
+                    predicted_macd DOUBLE PRECISION NOT NULL,
+                    last_macd DOUBLE PRECISION,
+                    will_become_positive BOOLEAN,
+                    model_name TEXT,
+                    model_versions INTEGER[],
+                    model_trained_at TIMESTAMPTZ,
+                    run_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    PRIMARY KEY (model, symbol, as_of_date, horizon_day)
+                )
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS forecast_predictions_symbol_date
+                ON forecast_predictions (symbol, as_of_date)
+            """)
+            conn.commit()
+    finally:
+        put_connection(conn)
+
+def save_forecast_predictions(model, as_of_date, rows, model_name=None, model_versions=None, model_trained_at=None):
+    """
+    Store one forecast run. `rows` are (symbol, horizon_day, target_date,
+    predicted_macd, last_macd, will_become_positive) tuples, as built by
+    forecast_utils.forecast_prediction_rows.
+
+    A later run of the same model from the same as_of_date replaces the earlier one
+    for the symbols it covers: only the last run of a day is kept.
+    Returns the number of rows written.
+    """
+    if not rows:
+        return 0
+    from psycopg2.extras import execute_values
+    symbols = sorted({row[0] for row in rows})
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                DELETE FROM forecast_predictions
+                WHERE model = %s AND as_of_date = %s AND symbol = ANY(%s)
+            """, (model, as_of_date, symbols))
+            execute_values(cur, """
+                INSERT INTO forecast_predictions
+                    (model, symbol, as_of_date, horizon_day, target_date, predicted_macd,
+                     last_macd, will_become_positive, model_name, model_versions, model_trained_at)
+                VALUES %s
+            """, [
+                (model, symbol, as_of_date, horizon_day, target_date, predicted_macd,
+                 last_macd, will_become_positive, model_name, model_versions, model_trained_at)
+                for symbol, horizon_day, target_date, predicted_macd, last_macd, will_become_positive in rows
+            ])
+            conn.commit()
+        return len(rows)
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         put_connection(conn)
 

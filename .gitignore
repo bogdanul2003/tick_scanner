@@ -3,14 +3,16 @@ src/pgdata/
 
 # Model inputs and outputs
 chart_scan/pics/
-chart_scan/runs/
+chart_scan/
 generated_charts/
+models/
 
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
 venv/
+train_logs/
 .env
 
 # macOS

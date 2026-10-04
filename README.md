@@ -6,8 +6,9 @@ A stock market technical analysis platform that identifies bullish trading signa
 
 - **MACD Technical Indicators**: Detects bullish crossover signals
 - **Moving Average Crossovers**: Identifies MA20/MA50 trend changes
-- **ARIMA Time-Series Forecasting**: Predicts future MACD and Signal Line values
-- **Neural Network Forecasting**: LSTM-based predictions running on Apple Neural Engine (NPU)
+- **Neural Network Forecasting**: The bullish MACD forecast is served by a seed ensemble of GRU models (three versions of one config, forecasts averaged) running through Core ML; pick the ensemble in the UI, run it, or retrain it from there
+- **ARIMA Time-Series Forecasting**: Still used for the MA20/MA50 forecast, and selectable as a legacy engine for the MACD forecast
+- **Forecast History**: Every forecast run is stored, so accuracy can be measured against what actually happened
 - **Chart Pattern Detection**: YOLO-based ML to detect visual patterns (Head & Shoulders, etc.)
 - **Watchlist Management**: Track and analyze groups of stocks
 
@@ -15,7 +16,7 @@ A stock market technical analysis platform that identifies bullish trading signa
 
 ### Prerequisites
 
-- Python 3.10+
+- Python 3.10 to 3.13 (Core ML Tools has no Python 3.14 build yet: apple/coremltools#2646)
 - PostgreSQL 15+
 - Node.js 18+ (for frontend)
 - macOS with Apple Silicon (for NPU inference)
@@ -51,11 +52,68 @@ cd frontend && npm run dev
 - **API Docs**: http://localhost:8000/docs
 - **Frontend**: http://localhost:5173
 
+### Running the Tests
+
+The suite lives in `src/tests/` and uses Python's built-in `unittest` — nothing to
+install beyond `requirements.txt`. Core ML and the database layer are stubbed, so
+the tests need no PostgreSQL, no trained `.mlpackage`, and no Apple Neural Engine.
+
+```bash
+# Whole suite (from src/)
+cd src && python -m unittest discover tests
+
+# Or from the repo root
+python -m unittest discover src/tests
+
+# A single module, with per-test names
+cd src && python -m unittest tests.test_neural_forecast_cache -v
+```
+
+Expected output:
+
+```
+----------------------------------------------------------------------
+Ran 154 tests in 0.659s
+
+OK
+```
+
+| Test module | What it pins down |
+|-------------|-------------------|
+| `test_neural_forecast_cache.py` | The `CoreMLForecaster` metadata cache: an instance built from the cache must be identical to one that parsed the `.mlpackage`, and a model that fails to parse must report itself unavailable instead of forecasting with default normalization stats |
+| `test_neural_forecast_features.py` | The multi-feature input matrix (`--extra-features` models): every feature reads the DB column it names, `delta` tracks the primary signal, and all columns stay length-aligned |
+| `test_ensemble_service.py` | Seed ensembles: the ensemble is the mean of its members and refuses mismatched ones, the registry and retrain state resolve to the right versions, and the ensemble forecast returns the ARIMA endpoint's shape and records the run |
+| `test_ensemble_training.py` | The retrain job: served versions switch only when every seed trained, one job runs at a time, and an existing model version is never overwritten |
+
+The table lists the modules most relevant to serving forecasts; `src/tests/` has more
+(training, splits, seeding, model versioning).
+
+To add a test, drop a `test_*.py` file into `src/tests/`; discovery picks it up with
+no registration step. The existing modules show the two stubbing patterns —
+`mock.patch.dict(sys.modules, ...)` for `coremltools` / `macd_utils`, and a small
+recording double in place of the forecaster.
+
 ---
 
 ## Neural Forecasting System
 
-The platform includes an LSTM-based neural forecasting system that can run on Apple's Neural Engine (NPU) for fast inference.
+The platform includes a GRU/LSTM-based neural forecasting system that runs through Core ML on Apple Silicon.
+
+### Bullish Forecast: ensembles, retraining and history
+
+**Show Bullish Forecast** in the MACD dashboard opens a panel with a model dropdown and two buttons.
+
+- **Model dropdown** — the selectable seed ensembles, each showing the versions it serves, its last measured MAE and directional accuracy, and when it was trained. The default is `gru_v1_residual_macdonly_warm5` (versions 1, 2, 3). "ARIMA (legacy)" is the last option.
+- **Run forecast** — forecasts every symbol in the watchlist with the chosen model and lists the results most-bullish first. The whole sp500 watchlist takes about 4 seconds with an ensemble.
+- **Retrain** — after a confirmation, retrains the chosen ensemble in the background: refreshes the price data, trains seeds 42, 7 and 123 in parallel on the CPU (10-15 minutes), evaluates the result and switches to the new versions. The current versions keep serving until every seed has trained, and old versions are never deleted. Retraining on unchanged data reproduces the same models, so it is only useful once new trading days are in the database.
+
+An ensemble is three versions (seeds) of one training config whose forecasts are averaged. Which ensembles exist is defined in `src/configs/ensembles.json`; what a retrain changed is recorded in `models/ensemble_state.json`. `models/` is not in git, so on a fresh checkout every ensemble shows as "not trained" until it is retrained (or trained from the command line, below).
+
+**Forecast history.** Every run — ensemble or ARIMA — is stored in the `forecast_predictions` table: the model, the symbol, the market date it was forecast from, the five predicted values, and which model versions (and training date) produced them. Running the same model again from the same market date replaces the earlier run. Once the forecast days have happened, the scoring query in `docs/ENSEMBLE_PRODUCTION_PLAN.md` gives MAE and directional accuracy per model and forecast day.
+
+**How good is it?** Measured 2026-10-04 on the sp500 watchlist, the default ensemble's forecast error is about 21% lower than naive drift's on average and about 22% lower than ARIMA's on the typical symbol, but its direction calls (51%) are no better than drift's (58%). See `src/models/MODEL_CARD.md` §11 before relying on the "will become positive" flag.
+
+The rest of this section describes training and evaluating single models from the command line. `src/models/MODEL_CARD.md` is the up-to-date reference for configs, commands and measured results — in particular, train on the CPU (`--device cpu`, about 3.6x faster than the GPU at this model size) and compare configs on at least three seeds.
 
 ### Architecture
 
@@ -315,7 +373,8 @@ Response:
 
 #### Automatic Engine Selection
 
-The forecast service automatically selects the best available engine:
+The dashboard does not use this path: it calls the ensemble endpoints described above.
+`forecast_service` remains for programmatic use and selects an engine automatically:
 
 1. **Neural (NPU)**: Used when Core ML model exists and NPU is available
 2. **ARIMA (CPU)**: Fallback when neural model is unavailable
@@ -356,15 +415,21 @@ tick_scanner/
 │   ├── forecast_utils.py      # ARIMA forecasting
 │   ├── charts_generator.py    # Chart generation
 │   ├── routers/               # API route modules
+│   ├── configs/               # Training configs + ensembles.json (the ensemble registry)
 │   ├── services/              # Business logic services
 │   │   ├── forecast_service.py
+│   │   ├── ensemble_service.py   # Ensemble registry, bulk inference, forecast history
+│   │   ├── ensemble_training.py  # Background retrain job
 │   │   └── chart_service.py
 │   ├── models/                # Data models & neural networks
 │   │   ├── lstm_forecaster.py # LSTM training & export
 │   │   └── neural_forecast.py # NPU inference
-│   └── scripts/
-│       ├── train_forecast_model.py      # Train LSTM/GRU models
-│       └── evaluate_forecast_model.py   # Evaluate model accuracy
+│   ├── scripts/
+│   │   ├── train_forecast_model.py      # Train LSTM/GRU models
+│   │   ├── evaluate_forecast_model.py   # Evaluate model accuracy
+│   │   ├── evaluate_ensemble.py         # Evaluate the average of several model versions
+│   │   └── persistence_baseline.py      # Naive flat/drift baselines to compare against
+│   └── tests/                 # unittest suite (DB and Core ML stubbed)
 ├── chart_scan/
 │   ├── detector_neural.py     # YOLO pattern detection
 │   └── model.mlpackage/       # YOLO Core ML model
@@ -372,7 +437,10 @@ tick_scanner/
 ├── models/                     # Trained forecast models
 ├── watchlists/                 # Watchlist files
 ├── requirements.txt
-└── ARCHITECTURE.md            # Full architecture docs
+└── docs/
+    ├── ARCHITECTURE.md        # Full architecture docs
+    ├── FORECAST_*.md          # Forecaster fix plan, improvement proposals and results log
+    └── ENSEMBLE_PRODUCTION_PLAN.md  # Ensemble serving, retraining and forecast history
 ```
 
 ---
@@ -384,7 +452,11 @@ tick_scanner/
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/forecast/engine/status` | Get forecasting engine status |
-| POST | `/forecast/macd/arima_positive` | Bulk MACD forecast |
+| GET | `/forecast/ensembles` | Selectable seed ensembles, the default, availability, metrics and training date |
+| POST | `/forecast/macd/ensemble` | Bulk MACD forecast with a seed ensemble (`{symbols, ensemble_id}`) |
+| POST | `/forecast/ensembles/{id}/retrain` | Retrain an ensemble in the background (one job at a time) |
+| GET | `/forecast/ensembles/retrain/status` | Progress of the running or most recent retrain |
+| POST | `/forecast/macd/arima_positive` | Bulk MACD forecast with ARIMA (legacy engine) |
 | POST | `/forecast/ma/arima_above_50` | Bulk MA20/MA50 forecast |
 | POST | `/forecast/combined/{watchlist}` | Combined forecast |
 
@@ -412,11 +484,17 @@ See full API documentation at http://localhost:8000/docs
 
 ### Neural Forecasting vs ARIMA
 
-| Metric | ARIMA | Neural (NPU) |
-|--------|-------|--------------|
-| Single Symbol | ~200ms | ~5ms |
-| 500 Symbols | ~100s (parallel) | ~2.5s |
-| Accuracy (Directional) | ~65% | ~68-72% |
+| Metric | ARIMA | Neural ensemble (3 seeds) | Naive drift |
+|--------|-------|---------------------------|-------------|
+| 500 symbols | ~100s (parallel) | ~4s (measured, 501 symbols) | — |
+| Directional accuracy, 5-day | 46.4% | 51.3% | 57.8% |
+| Typical forecast error (median MAE) | 0.577 | 0.452 | — |
+| Mean MAE | 1.682 | 0.901 | 1.147 |
+
+Accuracy measured 2026-10-04 on the sp500 watchlist, 20 samples per symbol
+(`src/models/MODEL_CARD.md` §11). The ensemble is the most accurate on the size of the
+move; simply extrapolating the last day's change (drift) is the most accurate on its
+direction.
 
 ### Hardware Requirements
 

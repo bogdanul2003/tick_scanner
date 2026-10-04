@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     
     # Pattern detection settings
     pattern_days_default: int = 120
+
+    # Notes dashboard settings
+    note_image_max_bytes: int = 10 * 1024 * 1024
+    note_image_thumb_px: int = 400
     
     class Config:
         env_prefix = "TICK_SCANNER_"

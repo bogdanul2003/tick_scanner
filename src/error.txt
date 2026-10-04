@@ -1,0 +1,92 @@
+Refetching data for 63 symbols in watchlist 'bogdan'
+Calculating MACD and Signal Line for 63 symbols on date 2026-04-26 00:00:00
+Exception in api_refresh_watchlist: [Errno 24] Too many open files
+Traceback (most recent call last):
+  File "/Users/dabo/Documents/tick_scanner/src/routers/watchlist_router.py", line 85, in api_refresh_watchlist
+    result = refresh_watchlist_data(watchlist_name, days_back=days_back)
+  File "/Users/dabo/Documents/tick_scanner/src/macd_utils.py", line 665, in refresh_watchlist_data
+    calculate_macd_and_signal_bulk(
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        refetched_symbols,
+        ^^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+        missing_dates_dict
+        ^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/dabo/Documents/tick_scanner/src/macd_utils.py", line 331, in calculate_macd_and_signal_bulk
+    with multiprocessing.Pool(processes=num_chunks) as pool:
+         ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.4/Frameworks/Python.framework/Versions/3.14/lib/python3.14/multiprocessing/context.py", line 119, in Pool
+    return Pool(processes, initializer, initargs, maxtasksperchild,
+                context=self.get_context())
+  File "/opt/homebrew/Cellar/python@3.14/3.14.4/Frameworks/Python.framework/Versions/3.14/lib/python3.14/multiprocessing/pool.py", line 215, in __init__
+    self._repopulate_pool()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.4/Frameworks/Python.framework/Versions/3.14/lib/python3.14/multiprocessing/pool.py", line 306, in _repopulate_pool
+    return self._repopulate_pool_static(self._ctx, self.Process,
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+                                        self._processes,
+                                        ^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+                                        self._maxtasksperchild,
+                                        ^^^^^^^^^^^^^^^^^^^^^^^
+                                        self._wrap_exception)
+                                        ^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.4/Frameworks/Python.framework/Versions/3.14/lib/python3.14/multiprocessing/pool.py", line 329, in _repopulate_pool_static
+    w.start()
+    ~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.4/Frameworks/Python.framework/Versions/3.14/lib/python3.14/multiprocessing/process.py", line 121, in start
+    self._popen = self._Popen(self)
+                  ~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.4/Frameworks/Python.framework/Versions/3.14/lib/python3.14/multiprocessing/context.py", line 294, in _Popen
+    return Popen(process_obj)
+  File "/opt/homebrew/Cellar/python@3.14/3.14.4/Frameworks/Python.framework/Versions/3.14/lib/python3.14/multiprocessing/popen_spawn_posix.py", line 32, in __init__
+    super().__init__(process_obj)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.4/Frameworks/Python.framework/Versions/3.14/lib/python3.14/multiprocessing/popen_fork.py", line 20, in __init__
+    self._launch(process_obj)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.4/Frameworks/Python.framework/Versions/3.14/lib/python3.14/multiprocessing/popen_spawn_posix.py", line 58, in _launch
+    self.pid = util.spawnv_passfds(spawn.get_executable(),
+               ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+                                   cmd, self._fds)
+                                   ^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.4/Frameworks/Python.framework/Versions/3.14/lib/python3.14/multiprocessing/util.py", line 521, in spawnv_passfds
+    errpipe_read, errpipe_write = os.pipe()
+                                  ~~~~~~~^^
+OSError: [Errno 24] Too many open files
+INFO:     127.0.0.1:56624 - "POST /watchlist/bogdan/refresh HTTP/1.1" 500 Internal Server Error
+^CINFO:     Shutting down
+INFO:     Waiting for application shutdown.
+2026-04-26 18:48:22,500 - api - INFO - Shutting down Tick Scanner API...
+INFO:     Application shutdown complete.
+INFO:     Finished server process [90312]
+INFO:     Stopping reloader process [90310]
+(venv) dabo@home-macs-MacBook-Pro src % python api.py
+INFO:     Will watch for changes in these directories: ['/Users/dabo/Documents/tick_scanner/src']
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [91180] using WatchFiles
+INFO:     Started server process [91182]
+INFO:     Waiting for application startup.
+2026-04-26 18:48:25,484 - api - INFO - Starting Tick Scanner API...
+2026-04-26 18:48:25,484 - api - INFO - Initializing database tables...
+2026-04-26 18:48:25,494 - api - INFO - Database initialization complete
+2026-04-26 18:48:25,494 - api - INFO - API running on 0.0.0.0:8000
+INFO:     Application startup complete.
+Refetching data for 63 symbols in watchlist 'bogdan'
+Calculating MACD and Signal Line for 63 symbols on date 2026-04-26 00:00:00
+Fetching bulk data from 2025-03-27 to 2026-04-04 for 50 symbols: ['AAL', 'AAPL', 'ADBE', 'AMD', 'AMZN', 'APLD', 'ARM', 'ASML', 'ASTS', 'AVGO', 'BB', 'CEG', 'COIN', 'CRWD', 'CTRA', 'CVX', 'DELL', 'DVN', 'ENLT', 'ERIC', 'ETN', 'FTAI', 'GOOGL', 'GRMN', 'HOOD', 'IBM', 'INTC', 'IRDM', 'LEU', 'LITE', 'MDB', 'METC', 'MRVL', 'MSFT', 'MU', 'NET', 'NFLX', 'NOK', 'NTAP', 'NVDA', 'NVO', 'OKLO', 'OXY', 'PATH', 'PLTR', 'PSTG', 'QCOM', 'SERV', 'SMR', 'SNDK']
+[**********************60%****                   ]  30 of 50 completed2026-04-26 18:48:29,404 - yfinance - ERROR - $PSTG: possibly delisted; no price data found  (1d 2025-03-27 -> 2026-04-04)
+[**********************62%*****                  ]  31 of 50 completed2026-04-26 18:48:29,406 - yfinance - ERROR - $HOOD: possibly delisted; no price data found  (1d 2025-03-27 -> 2026-04-04)
+[*********************100%***********************]  50 of 50 completed
+2026-04-26 18:48:29,569 - yfinance - ERROR -
+10 Failed downloads:
+2026-04-26 18:48:29,569 - yfinance - ERROR - ['PSTG', 'HOOD']: possibly delisted; no price data found  (1d 2025-03-27 -> 2026-04-04)
+2026-04-26 18:48:29,569 - yfinance - ERROR - ['BB', 'AMZN', 'MRVL', 'AVGO', 'IRDM', 'DVN', 'CTRA', 'MDB']: OperationalError('unable to open database file')
+Fetching bulk data from 2025-03-27 to 2026-04-04 for 13 symbols: ['SNOW', 'SOFI', 'STX', 'SYM', 'TDC', 'TLN', 'TRGP', 'TRP', 'UAL', 'UBER', 'VLO', 'WDC', 'XOM']
+[*********************100%***********************]  10 of 13 completed
+[*********************100%***********************]  10 of 13 completed2026-04-26 18:48:30,796 - yfinance - ERROR -
+13 Failed downloads:
+[*********************100%***********************]  10 of 13 completed2026-04-26 18:48:30,797 - yfinance - ERROR - ['TDC', 'XOM', 'TLN', 'STX', 'UBER', 'TRGP', 'SNOW', 'VLO', 'WDC', 'SYM', 'SOFI', 'UAL', 'TRP']: OperationalError('unable to open database file')
+[*********************100%***********************]  10 of 13 completedINFO:     127.0.0.1:56631 - "POST /watchlist/bogdan/refresh HTTP/1.1" 200 OK

@@ -5,6 +5,7 @@ from .pattern_router import router as pattern_router
 from .chart_router import router as chart_router
 from .price_router import router as price_router
 from .forecast_router import router as forecast_router
+from .notes_router import router as notes_router
 
 __all__ = [
     "macd_router",
@@ -13,4 +14,5 @@ __all__ = [
     "chart_router",
     "price_router",
     "forecast_router",
+    "notes_router",
 ]

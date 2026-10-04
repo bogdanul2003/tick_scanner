@@ -172,12 +172,17 @@ class ChartService:
                 pattern = d.get("rightmost_pattern", "")
                 url = f"/charts/{safe_watchlist}/{today_str}/{interval_label}/filtered/{fname}"
                 
-                is_bullish = pattern and "bottom" in pattern.lower()
+                is_bullish = False
+                if pattern:
+                    p_lower = pattern.lower()
+                    if "bottom" in p_lower or "triangle" in p_lower:
+                        is_bullish = True
                 
                 if is_bullish:
                     bullish_images.append(url)
                 else:
                     bearish_images.append(url)
+
         
         process_detections(detections_3m, "3m")
         process_detections(detections_6m, "6m")

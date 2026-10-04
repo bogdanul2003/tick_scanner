@@ -1,8 +1,8 @@
 import multiprocessing
 import pandas as pd
 from datetime import datetime, time, timedelta
-from fastapi import HTTPException
 import pytz
+import time as time_module
 from db_utils import (
     fetch_bulk_from_cache,
     load_cached_data,
@@ -10,7 +10,16 @@ from db_utils import (
     save_bulk_to_cache,
     fetch_from_cache
 )
-import yfinance as yf
+
+# US equity regular session close, Eastern Time.
+MARKET_CLOSE_ET = time(16, 0)
+
+# The consolidated closing print and the upstream daily bar do not settle at the
+# bell. Until this buffer has elapsed past the close, yfinance still serves an
+# in-progress daily bar whose "close" is just the last intraday trade -- caching
+# that bar poisons stock_cache, because it then looks complete (no NULL columns)
+# and is never refetched. Wait it out before treating today as final.
+MARKET_DATA_SETTLE_BUFFER = timedelta(hours=1)
 
 def get_macd_for_date(symbols: list, date):
     """
@@ -117,7 +126,8 @@ def get_macd_for_range_bulk(symbols: list, start_date, end_date):
         cached_df = bulk_cache.get(symbol, pd.DataFrame())
         cached_dates = set(cached_df.index.date) if not cached_df.empty else set()
         missing_dates = get_missing_dates(symbol, start_date, end_date, cached_dates)
-        print(f"Missing dates for {symbol}: {missing_dates}")
+        if missing_dates:
+            print(f"Missing dates for {symbol}: {missing_dates}")
         cached_data_dict[symbol] = cached_df if not cached_df.empty else load_cached_data(symbol)
         missing_dates_dict[symbol] = missing_dates
 
@@ -238,11 +248,9 @@ def process_symbols(args):
         for col in ['EMA12', 'EMA26', 'MA20', 'MA50', 'MACD', 'Signal_Line']:
             all_data[col] = all_data_for_indicators[col]
 
-        # Cache only the missing dates for this symbol
+        # Collect data to cache (saved by the main process, not the worker)
         missing_dates_set = set(missing_dates_dict[symbol])
         to_cache = all_data[all_data.index.map(lambda x: x.date() in missing_dates_set)]
-        if not to_cache.empty:
-            save_bulk_to_cache(symbol, to_cache)
 
         # Prepare result for the requested date
         date_data = all_data[all_data.index.map(lambda x: x.date() == date)]
@@ -254,15 +262,18 @@ def process_symbols(args):
             actual_date = date
             note = None
         chunk_results[symbol] = {
-            "symbol": symbol,
-            "date": actual_date.isoformat(),
-            "open": float(date_data['Open'].iloc[0]) if 'Open' in date_data.columns and not pd.isna(date_data['Open'].iloc[0]) else None,
-            "high": float(date_data['High'].iloc[0]) if 'High' in date_data.columns and not pd.isna(date_data['High'].iloc[0]) else None,
-            "low": float(date_data['Low'].iloc[0]) if 'Low' in date_data.columns and not pd.isna(date_data['Low'].iloc[0]) else None,
-            "close": float(date_data['Close'].iloc[0]),
-            "macd": float(date_data['MACD'].iloc[0]),
-            "signal_line": float(date_data['Signal_Line'].iloc[0]),
-            "note": note
+            "result": {
+                "symbol": symbol,
+                "date": actual_date.isoformat(),
+                "open": float(date_data['Open'].iloc[0]) if 'Open' in date_data.columns and not pd.isna(date_data['Open'].iloc[0]) else None,
+                "high": float(date_data['High'].iloc[0]) if 'High' in date_data.columns and not pd.isna(date_data['High'].iloc[0]) else None,
+                "low": float(date_data['Low'].iloc[0]) if 'Low' in date_data.columns and not pd.isna(date_data['Low'].iloc[0]) else None,
+                "close": float(date_data['Close'].iloc[0]),
+                "macd": float(date_data['MACD'].iloc[0]),
+                "signal_line": float(date_data['Signal_Line'].iloc[0]),
+                "note": note
+            },
+            "to_cache": to_cache if not to_cache.empty else None
         }
     return chunk_results
 
@@ -282,7 +293,7 @@ def calculate_macd_and_signal_bulk(symbols: list, date: pd.Timestamp, cached_dat
         if dates:
             interval_info.append((symbol, min(dates), max(dates)))
     if not interval_info:
-        raise HTTPException(status_code=400, detail="No missing dates for any symbol.")
+        raise ValueError("No missing dates for any symbol.")
 
     # Sort intervals by start date
     interval_info.sort(key=lambda x: x[1])
@@ -318,34 +329,181 @@ def calculate_macd_and_signal_bulk(symbols: list, date: pd.Timestamp, cached_dat
 
     # print(f"Total partitions created: {len(partitions)} partitions: {partitions}")
     results = {}
-    for partition, partition_start, partition_end in partitions:
-        partition_symbols = [item[0] for item in partition]
-        # Add lookback buffer
-        lookback_buffer = 10
-        fetch_start = partition_start - timedelta(days=lookback_buffer)
-        fetch_end = partition_end
+    num_chunks = 4
+    with multiprocessing.Pool(processes=num_chunks) as pool:
+        for partition, partition_start, partition_end in partitions:
+            partition_symbols = [item[0] for item in partition]
+            # Add lookback buffer
+            lookback_buffer = 60
+            fetch_start = partition_start - timedelta(days=lookback_buffer)
+            fetch_end = partition_end
 
-        # Fetch bulk closing prices using get_closing_prices_bulk
-        closing_prices_bulk = get_closing_prices_bulk(partition_symbols, fetch_start, fetch_end)
-        # print("closing_prices_bulk:", closing_prices_bulk)
+            # Fetch bulk closing prices using get_closing_prices_bulk
+            closing_prices_bulk = get_closing_prices_bulk(partition_symbols, fetch_start, fetch_end)
+            # print("closing_prices_bulk:", closing_prices_bulk)
 
-        # Split partition_symbols into 4 chunks
-        num_chunks = 4
-        chunks = [partition_symbols[i::num_chunks] for i in range(num_chunks)]
+            # Split partition_symbols into 4 chunks
+            chunks = [partition_symbols[i::num_chunks] for i in range(num_chunks)]
 
-        # Prepare arguments for each chunk
-        pool_args = [
-            (chunk, closing_prices_bulk, cached_data_dict, missing_dates_dict, date)
-            for chunk in chunks
-        ]
+            # Prepare arguments for each chunk
+            pool_args = [
+                (chunk, closing_prices_bulk, cached_data_dict, missing_dates_dict, date)
+                for chunk in chunks
+            ]
 
-        with multiprocessing.Pool(processes=num_chunks) as pool:
             chunk_results_list = pool.map(process_symbols, pool_args)
 
-        # Merge results from all chunks
-        for chunk_results in chunk_results_list:
-            results.update(chunk_results)
+            # Save to DB from main process and merge results
+            for chunk_results in chunk_results_list:
+                for symbol, data in chunk_results.items():
+                    if isinstance(data, dict) and "result" in data:
+                        if data.get("to_cache") is not None:
+                            save_bulk_to_cache(symbol, data["to_cache"])
+                        results[symbol] = data["result"]
+                    else:
+                        # Error case (e.g., {"error": "No data found..."})
+                        results[symbol] = data
     return results
+
+def compute_signals_for_symbol_data(macd_data: list, threshold: float = 0.05, days: int = 30, with_details: bool = False):
+    """
+    Computes MACD and MA signals given a sorted list of daily records up to a target date.
+    Each record must have: date, macd, signal_line, and optionally ma20, ma50.
+    """
+    macd_data = [d for d in macd_data if d.get("macd") is not None and d.get("signal_line") is not None]
+    if not macd_data or len(macd_data) < 2:
+        res = {
+            "about_to_cross": False,
+            "recent_crossover": False,
+            "bullish_macd_above_signal": False,
+            "about_to_become_positive": False,
+            "about_to_become_negative": False,
+            "macd_just_became_positive": False,
+            "macd_is_positive": False,
+            "ma20_just_became_above_ma50": False,
+            "ma20_just_became_above_ma50_date": None,
+            "ma20_is_above_ma50": False
+        }
+        if with_details:
+            res["details"] = {"error": "Not enough data"}
+        return res
+
+    last = macd_data[-1]
+    prev = macd_data[-2]
+    macd_diff = float(abs(last["macd"] - last["signal_line"]))
+    about_to_cross = (
+        bool(prev["macd"] < prev["signal_line"])
+        and bool(last["macd"] > prev["macd"])
+        and bool(last["macd"] < last["signal_line"])
+        and macd_diff <= float(threshold)
+    )
+
+    about_to_become_positive = (
+        (float(last["macd"]) < 0 and abs(float(last["macd"])) <= float(threshold))
+        or (float(last["signal_line"]) < 0 and abs(float(last["signal_line"])) <= float(threshold))
+    )
+
+    about_to_become_negative = (
+        (float(last["macd"]) > 0 and abs(float(last["macd"])) <= float(threshold))
+        or (float(last["signal_line"]) > 0 and abs(float(last["signal_line"])) <= float(threshold))
+    )
+
+    macd_above_signal = float(last["macd"]) > float(last["signal_line"])
+
+    lookback = max(2, days // 2)
+    crossover_dates = []
+    for i in range(1, min(lookback, len(macd_data))):
+        prev_row = macd_data[-i-1]
+        curr_row = macd_data[-i]
+        if prev_row["macd"] < prev_row["signal_line"] and curr_row["macd"] >= curr_row["signal_line"]:
+            crossover_dates.append(curr_row["date"])
+    recent_crossover = bool(len(crossover_dates) > 0)
+
+    # --- Add macd_just_became_positive signal ---
+    macd_just_became_positive = False
+    recent_positive_dates = []
+    if len(macd_data) >= 2:
+        if prev["macd"] < 0 and last["macd"] > 0:
+            macd_just_became_positive = True
+        elif len(macd_data) >= 3:
+            prev2 = macd_data[-3]
+            if prev2["macd"] < 0 and prev["macd"] < 0 and last["macd"] > 0:
+                macd_just_became_positive = True
+    for i in range(1, min(3, len(macd_data))):
+        curr = macd_data[-i]
+        if i >= 2:
+            p = macd_data[-i-1]
+            if p["macd"] < 0 and curr["macd"] > 0:
+                recent_positive_dates.append(curr["date"])
+            elif i >= 3:
+                p2 = macd_data[-i-2]
+                if p2["macd"] < 0 and p["macd"] < 0 and curr["macd"] > 0:
+                    recent_positive_dates.append(curr["date"])
+    if recent_positive_dates:
+        macd_just_became_positive = True
+
+    # --- Add ma20_just_became_above_ma50 signal ---
+    ma20_just_became_above_ma50 = False
+    ma20_just_became_above_ma50_date = None
+    lookback_days = 8
+    if len(macd_data) >= 2:
+        for i in range(1, min(lookback_days + 1, len(macd_data))):
+            curr = macd_data[-i]
+            p = macd_data[-i-1] if (len(macd_data) > i) else None
+            if p and curr.get("ma20") is not None and curr.get("ma50") is not None and p.get("ma20") is not None and p.get("ma50") is not None:
+                try:
+                    if float(p["ma20"]) <= float(p["ma50"]) and float(curr["ma20"]) > float(curr["ma50"]):
+                        ma20_just_became_above_ma50 = True
+                        ma20_just_became_above_ma50_date = curr.get("date")
+                        break
+                except Exception:
+                    pass
+
+    # --- Add ma20_is_above_ma50 signal ---
+    ma20_is_above_ma50 = False
+    if last.get("ma20") is not None and last.get("ma50") is not None:
+        try:
+            if float(last["ma20"]) > float(last["ma50"]):
+                ma20_is_above_ma50 = True
+        except Exception:
+            pass
+
+    macd_is_positive = False
+    if last.get("macd") is not None:
+        try:
+            macd_is_positive = float(last["macd"]) > 0
+        except Exception:
+            pass
+
+    result_dict = {
+        "about_to_cross": bool(about_to_cross),
+        "recent_crossover": recent_crossover,
+        "bullish_macd_above_signal": macd_above_signal,
+        "about_to_become_positive": about_to_become_positive,
+        "about_to_become_negative": about_to_become_negative,
+        "macd_just_became_positive": macd_just_became_positive,
+        "macd_is_positive": bool(macd_is_positive),
+        "ma20_just_became_above_ma50": ma20_just_became_above_ma50,
+        "ma20_just_became_above_ma50_date": ma20_just_became_above_ma50_date,
+        "ma20_is_above_ma50": ma20_is_above_ma50
+    }
+
+    if with_details:
+        result_dict["details"] = {
+            "last_macd": float(last["macd"]),
+            "last_signal": float(last["signal_line"]),
+            "prev_macd": float(prev["macd"]),
+            "prev_signal": float(prev["signal_line"]),
+            "crossover_dates": crossover_dates,
+            "macd_just_became_positive_dates": recent_positive_dates,
+            "last_ma20": last.get("ma20"),
+            "last_ma50": last.get("ma50"),
+            "prev_ma20": prev.get("ma20"),
+            "prev_ma50": prev.get("ma50"),
+            "ma20_just_became_above_ma50_date": ma20_just_became_above_ma50_date
+        }
+
+    return result_dict
 
 def macd_crossover_signal(
     symbols: list,
@@ -360,151 +518,28 @@ def macd_crossover_signal(
     """
     end_date = get_latest_market_date()
     start_date = datetime.now().date() - timedelta(days=days)
-    # Ensure we have data for the end date for all symbols
-    # get_macd_for_date(symbols, end_date)
-    # Get MACD data for the range for all symbols
     macd_bulk_data = get_macd_for_range_bulk(symbols, end_date - timedelta(days=365), end_date)
     print(f"Got MACD data for {len(macd_bulk_data)} symbols from {end_date - timedelta(days=365)} to {end_date}")
 
-    # Extract from macd_bulk_data just the dates between start_date and end_date and assign it back to macd_bulk_data
     for symbol in macd_bulk_data:
         macd_bulk_data[symbol] = [
             entry for entry in macd_bulk_data[symbol]
             if "date" in entry and start_date <= datetime.fromisoformat(entry["date"]).date() <= end_date
         ]
 
-    print(f"Exrtacted MACD data for {len(macd_bulk_data)} symbols from {start_date} to {end_date}")
+    print(f"Extracted MACD data for {len(macd_bulk_data)} symbols from {start_date} to {end_date}")
 
     results = {}
 
     for symbol in symbols:
         try:
             macd_data = macd_bulk_data.get(symbol, [])
-            # Filter out entries with errors
-            macd_data = [d for d in macd_data if "macd" in d and "signal_line" in d]
-            if not macd_data or len(macd_data) < 2:
-                results[symbol] = {
-                    "about_to_cross": False,
-                    "recent_crossover": False,
-                    "about_to_become_positive": False,
-                    "details": {"error": "Not enough data"}
-                }
-                continue
-
-            last = macd_data[-1]
-            prev = macd_data[-2]
-            macd_diff = float(abs(last["macd"] - last["signal_line"]))
-            about_to_cross = (
-                bool(prev["macd"] < prev["signal_line"])
-                and bool(last["macd"] > prev["macd"])
-                and bool(last["macd"] < last["signal_line"])
-                and macd_diff <= float(threshold)
+            results[symbol] = compute_signals_for_symbol_data(
+                macd_data,
+                threshold=threshold,
+                days=days,
+                with_details=with_details
             )
-
-            about_to_become_positive = (
-                (float(last["macd"]) < 0 and abs(float(last["macd"])) <= float(threshold))
-                or (float(last["signal_line"]) < 0 and abs(float(last["signal_line"])) <= float(threshold))
-            )
-
-            about_to_become_negative = (
-                (float(last["macd"]) > 0 and abs(float(last["macd"])) <= float(threshold))
-                or (float(last["signal_line"]) > 0 and abs(float(last["signal_line"])) <= float(threshold))
-            )
-
-            macd_above_signal = False
-            if "macd" in last and "signal_line" in last:
-                macd_above_signal = float(last["macd"]) > float(last["signal_line"])
-
-            lookback = max(2, days // 2)
-            crossover_dates = []
-            for i in range(1, min(lookback, len(macd_data))):
-                prev_row = macd_data[-i-1]
-                curr_row = macd_data[-i]
-                if prev_row["macd"] < prev_row["signal_line"] and curr_row["macd"] >= curr_row["signal_line"]:
-                    crossover_dates.append(curr_row["date"])
-            recent_crossover = bool(len(crossover_dates) > 0)
-
-            # --- Add macd_just_became_positive signal ---
-            macd_just_became_positive = False
-            recent_positive_dates = []
-            # Check today
-            if len(macd_data) >= 2:
-                last = macd_data[-1]
-                prev = macd_data[-2]
-                if prev["macd"] < 0 and last["macd"] > 0:
-                    macd_just_became_positive = True
-                elif len(macd_data) >= 3:
-                    prev2 = macd_data[-3]
-                    if prev2["macd"] < 0 and prev["macd"] < 0 and last["macd"] > 0:
-                        macd_just_became_positive = True
-            # Check last 5 days for the pattern
-            for i in range(1, min(3, len(macd_data))):
-                curr = macd_data[-i]
-                if i >= 2:
-                    prev = macd_data[-i-1]
-                    if prev["macd"] < 0 and curr["macd"] > 0:
-                        recent_positive_dates.append(curr["date"])
-                    elif i >= 3:
-                        prev2 = macd_data[-i-2]
-                        if prev2["macd"] < 0 and prev["macd"] < 0 and curr["macd"] > 0:
-                            recent_positive_dates.append(curr["date"])
-            if recent_positive_dates:
-                macd_just_became_positive = True
-
-            # --- Add ma20_just_became_above_ma50 signal ---
-            # print(f"Checking MA20/MA50 crossover for {symbol} with data {macd_data}")
-            ma20_just_became_above_ma50 = False
-            ma20_just_became_above_ma50_date = None
-            lookback_days = 8
-            if len(macd_data) >= 2:
-                for i in range(1, min(lookback_days + 1, len(macd_data))):
-                    curr = macd_data[-i]
-                    prev = macd_data[-i-1] if (len(macd_data) > i) else None
-                    if prev and "ma20" in curr and "ma50" in curr and "ma20" in prev and "ma50" in prev:
-                        try:
-                            if prev["ma20"] is not None and prev["ma50"] is not None and curr["ma20"] is not None and curr["ma50"] is not None:
-                                if float(prev["ma20"]) <= float(prev["ma50"]) and float(curr["ma20"]) > float(curr["ma50"]):
-                                    ma20_just_became_above_ma50 = True
-                                    ma20_just_became_above_ma50_date = curr.get("date")
-                                    break
-                        except Exception:
-                            pass
-
-            # --- Add ma20_is_above_ma50 signal ---
-            ma20_is_above_ma50 = False
-            if "ma20" in last and "ma50" in last and last["ma20"] is not None and last["ma50"] is not None:
-                try:
-                    if float(last["ma20"]) > float(last["ma50"]):
-                        ma20_is_above_ma50 = True
-                except Exception:
-                    pass
-
-            result_dict = {
-                "about_to_cross": bool(about_to_cross),
-                "recent_crossover": recent_crossover,
-                "bullish_macd_above_signal": macd_above_signal,
-                "about_to_become_positive": about_to_become_positive,
-                "about_to_become_negative": about_to_become_negative,
-                "macd_just_became_positive": macd_just_became_positive,
-                "ma20_just_became_above_ma50": ma20_just_became_above_ma50,
-                "ma20_just_became_above_ma50_date": ma20_just_became_above_ma50_date,
-                "ma20_is_above_ma50": ma20_is_above_ma50
-            }
-            if with_details:
-                result_dict["details"] = {
-                    "last_macd": float(last["macd"]),
-                    "last_signal": float(last["signal_line"]),
-                    "prev_macd": float(prev["macd"]),
-                    "prev_signal": float(prev["signal_line"]),
-                    "crossover_dates": crossover_dates,
-                    "macd_just_became_positive_dates": recent_positive_dates,
-                    "last_ma20": last.get("ma20"),
-                    "last_ma50": last.get("ma50"),
-                    "prev_ma20": prev.get("ma20"),
-                    "prev_ma50": prev.get("ma50"),
-                    "ma20_just_became_above_ma50_date": ma20_just_became_above_ma50_date
-                }
-            results[symbol] = result_dict
         except Exception as e:
             print(f"Error processing symbol {symbol}: {e}")
             continue
@@ -517,6 +552,7 @@ def macd_crossover_signal(
             not results[sym].get("ma20_just_became_above_ma50", False),
             not results[sym].get("bullish_macd_above_signal", False),
             not results[sym].get("about_to_cross", False),
+
             not results[sym].get("about_to_become_positive", False)
         )
     )
@@ -527,52 +563,73 @@ def get_closing_prices_bulk(symbols: list, start_date, end_date):
     """
     Fetches closing prices for a list of symbols between start_date and end_date (inclusive).
     Returns a dict: {symbol: [{date: ..., open: ..., high: ..., low: ..., close: ...}, ...]}
+    Symbols are fetched in batches to avoid yfinance failures on large requests.
     """
     import yfinance as yf
     import pandas as pd
 
-    yf_tickers = yf.Tickers(" ".join(symbols))
-    print(f"Fetching bulk data from {start_date} to {end_date + timedelta(days=1)} for symbols: {symbols}")
-    history = yf_tickers.history(start=start_date, end=end_date + timedelta(days=1), interval="1d", group_by='ticker')
+    BATCH_SIZE = 50
     results = {}
+    batches = [symbols[i:i + BATCH_SIZE] for i in range(0, len(symbols), BATCH_SIZE)]
 
-    for symbol in symbols:
-        symbol_data = None
-        if isinstance(history.columns, pd.MultiIndex):
-            try:
-                # Select Open, High, Low, Close, and Volume columns for the symbol
-                symbol_data = history.xs(symbol, level=1 if history.columns.names[0] == 'Price' else 0, axis=1)[['Open', 'High', 'Low', 'Close', 'Volume']]
-            except Exception:
+    for i, batch in enumerate(batches):
+        if i > 0:
+            time_module.sleep(1)
+        print(f"Fetching bulk data from {start_date} to {end_date + timedelta(days=1)} for {len(batch)} symbols: {batch}")
+        try:
+            history = yf.download(
+                batch,
+                start=start_date,
+                end=end_date + timedelta(days=1),
+                interval="1d",
+                group_by='ticker',
+                threads=False,
+                auto_adjust=False,
+                progress=False,
+            )
+        except Exception as e:
+            print(f"Batch download failed: {e}")
+            for symbol in batch:
+                results[symbol] = []
+            continue
+
+        for symbol in batch:
+            symbol_data = None
+            if isinstance(history.columns, pd.MultiIndex):
                 try:
-                    symbol_data = history[symbol][['Open', 'High', 'Low', 'Close', 'Volume']]
+                    # Select Open, High, Low, Close, and Volume columns for the symbol
+                    symbol_data = history.xs(symbol, level=1 if history.columns.names[0] == 'Price' else 0, axis=1)[['Open', 'High', 'Low', 'Close', 'Volume']]
                 except Exception:
+                    try:
+                        symbol_data = history[symbol][['Open', 'High', 'Low', 'Close', 'Volume']]
+                    except Exception:
+                        results[symbol] = []
+                        continue
+            else:
+                if 'Close' in history.columns:
+                    cols = [c for c in ['Open', 'High', 'Low', 'Close', 'Volume'] if c in history.columns]
+                    symbol_data = history[cols]
+                else:
                     results[symbol] = []
                     continue
-        else:
-            if 'Close' in history.columns:
-                cols = [c for c in ['Open', 'High', 'Low', 'Close', 'Volume'] if c in history.columns]
-                symbol_data = history[cols]
-            else:
-                results[symbol] = []
-                continue
 
-        # Remove timezone and normalize index
-        if symbol_data.index.tz is not None:
-            symbol_data.index = symbol_data.index.tz_convert(None)
-        symbol_data.index = symbol_data.index.normalize()
+            # Remove timezone and normalize index
+            if symbol_data.index.tz is not None:
+                symbol_data.index = symbol_data.index.tz_convert(None)
+            symbol_data.index = symbol_data.index.normalize()
 
-        # Prepare output as list of dicts
-        symbol_results = []
-        for idx, row in symbol_data.iterrows():
-            symbol_results.append({
-                "date": idx.date().isoformat(),
-                "open": float(row['Open']) if 'Open' in row and not pd.isna(row['Open']) else None,
-                "high": float(row['High']) if 'High' in row and not pd.isna(row['High']) else None,
-                "low": float(row['Low']) if 'Low' in row and not pd.isna(row['Low']) else None,
-                "close": float(row['Close']) if not pd.isna(row['Close']) else None,
-                "volume": int(row['Volume']) if 'Volume' in row and not pd.isna(row['Volume']) else None
-            })
-        results[symbol] = symbol_results
+            # Prepare output as list of dicts
+            symbol_results = []
+            for idx, row in symbol_data.iterrows():
+                symbol_results.append({
+                    "date": idx.date().isoformat(),
+                    "open": float(row['Open']) if 'Open' in row and not pd.isna(row['Open']) else None,
+                    "high": float(row['High']) if 'High' in row and not pd.isna(row['High']) else None,
+                    "low": float(row['Low']) if 'Low' in row and not pd.isna(row['Low']) else None,
+                    "close": float(row['Close']) if not pd.isna(row['Close']) else None,
+                    "volume": int(row['Volume']) if 'Volume' in row and not pd.isna(row['Volume']) else None
+                })
+            results[symbol] = symbol_results
 
     return results
 
@@ -584,6 +641,7 @@ def get_closing_prices(symbol: str, start_date, end_date):
     import yfinance as yf
     import pandas as pd
 
+    time_module.sleep(1)
     ticker = yf.Ticker(symbol)
     history = ticker.history(start=start_date, end=end_date + timedelta(days=1), interval="1d")
     results = []
@@ -607,72 +665,197 @@ def get_closing_prices(symbol: str, start_date, end_date):
 
     return results
 
+def backfill_symbol_picks_for_watchlist(watchlist_name: str, days_back: int = 180, threshold: float = 0.05) -> int:
+    """
+    Backfills symbol_picks rows for any missing dates where stock_cache has data for the watchlist symbols.
+    Only computes for dates that are missing in symbol_picks for this watchlist.
+    """
+    from db_utils import get_connection, put_connection, get_watchlist_symbols
+    from picks import store_symbol_picks
+    from datetime import date as dt_date, timedelta
+    from collections import defaultdict
+    import bisect
+
+    try:
+        symbols = get_watchlist_symbols(watchlist_name)
+    except Exception:
+        return 0
+
+    if not symbols:
+        return 0
+
+    conn = get_connection()
+    try:
+        start_date = dt_date.today() - timedelta(days=days_back)
+
+        with conn.cursor() as cur:
+            # 1. Find existing dates in symbol_picks for this watchlist that have modern schema (with macd_is_positive)
+            cur.execute("""
+                SELECT applied_date FROM symbol_picks
+                WHERE watchlist_name = %s AND applied_date >= %s
+                  AND filter_results ? 'macd_is_positive'
+            """, (watchlist_name, start_date))
+            existing_dates = set(row[0] for row in cur.fetchall())
+
+
+            # 2. Fetch all historical stock_cache records for these symbols
+            # Buffer 60 days before start_date so we have enough lookback to compute crossovers
+            buffer_start = start_date - timedelta(days=60)
+            cur.execute("""
+                SELECT symbol, date, ma20, ma50, macd, signal_line
+                FROM stock_cache
+                WHERE symbol = ANY(%s) AND date >= %s
+                ORDER BY symbol, date ASC
+            """, (symbols, buffer_start))
+            rows = cur.fetchall()
+
+        if not rows:
+            return 0
+
+        # Group data by symbol
+        symbol_data_by_sym = defaultdict(list)
+        dates_in_cache = set()
+
+        for sym, d, ma20, ma50, macd, signal_line in rows:
+            if d >= start_date:
+                dates_in_cache.add(d)
+            symbol_data_by_sym[sym].append({
+                "date": d.isoformat() if hasattr(d, "isoformat") else str(d),
+                "d_obj": d,
+                "ma20": ma20,
+                "ma50": ma50,
+                "macd": macd,
+                "signal_line": signal_line
+            })
+
+        # Dates to backfill: in cache within days_back window, but missing from symbol_picks
+        missing_dates = sorted(list(dates_in_cache - existing_dates))
+        if not missing_dates:
+            return 0
+
+        print(f"Backfilling {len(missing_dates)} missing dates for watchlist '{watchlist_name}'...")
+
+        symbol_date_lists = {}
+        for sym, records in symbol_data_by_sym.items():
+            symbol_date_lists[sym] = [r["d_obj"] for r in records]
+
+        backfilled_count = 0
+        for target_date in missing_dates:
+            results_for_date = {}
+            for sym in symbols:
+                records = symbol_data_by_sym.get(sym, [])
+                date_list = symbol_date_lists.get(sym, [])
+                if not records or not date_list:
+                    continue
+
+                idx = bisect.bisect_right(date_list, target_date)
+                if idx < 2:
+                    continue
+
+                # Ensure symbol has data on target_date
+                if date_list[idx - 1] != target_date:
+                    continue
+
+                # Take up to 45 records up to target_date
+                slice_data = records[max(0, idx - 45):idx]
+                signals = compute_signals_for_symbol_data(slice_data, threshold=threshold, days=30)
+                results_for_date[sym] = signals
+
+            if results_for_date:
+                store_symbol_picks(target_date, watchlist_name, results_for_date)
+                backfilled_count += 1
+
+        print(f"Completed backfill: saved {backfilled_count} dates to symbol_picks for '{watchlist_name}'")
+        return backfilled_count
+    finally:
+        put_connection(conn)
+
 def refresh_watchlist_data(watchlist_name, days_back=365):
     """
-    Identifies symbols in a watchlist with missing/null OHLCV data and refetches from yfinance.
+    Identifies symbols in a watchlist with missing/null OHLCV data, refetches from yfinance,
+    and backfills missing daily records in symbol_picks for all dates present in stock_cache.
     """
     from db_utils import get_watchlist_symbols, get_missing_ohlcv_dates, load_cached_data
     
     symbols = get_watchlist_symbols(watchlist_name)
     if not symbols:
-        return {"message": f"No symbols found in watchlist '{watchlist_name}'", "refetched": []}
+        return {"message": f"No symbols found in watchlist '{watchlist_name}'", "refetched": [], "backfilled_days": 0}
     
-    # 1. Identify missing data/dates
-    missing_dates_dict = get_missing_ohlcv_dates(symbols, days_back=days_back)
-    if not missing_dates_dict:
-        return {"message": f"No missing data found for symbols in '{watchlist_name}'", "refetched": []}
-    
-    refetched_symbols = list(missing_dates_dict.keys())
-    print(f"Refetching data for {len(refetched_symbols)} symbols in watchlist '{watchlist_name}'")
-    
-    # 2. Get existing cached data (needed for MACD calculation)
-    cached_data_dict = {}
-    for symbol in refetched_symbols:
-        cached_data_dict[symbol] = load_cached_data(symbol)
-    
-    # 3. Use bulk calculation logic to fetch and update
-    from datetime import datetime
-    today = pd.Timestamp(datetime.now().date())
-    
-    calculate_macd_and_signal_bulk(
-        refetched_symbols,
-        today,
-        cached_data_dict,
-        missing_dates_dict
+    # 1. Identify missing data/dates. Bound the window at the last settled
+    # session: the fetch range is derived from max(missing dates), so letting
+    # today in would download and cache an in-progress daily bar.
+    latest_market_date = get_latest_market_date()
+    missing_dates_dict = get_missing_ohlcv_dates(
+        symbols,
+        days_back=days_back,
+        end_date=latest_market_date
     )
+    refetched_symbols = []
+    if missing_dates_dict:
+        refetched_symbols = list(missing_dates_dict.keys())
+        print(f"Refetching data for {len(refetched_symbols)} symbols in watchlist '{watchlist_name}' up to {latest_market_date}")
+
+        # 2. Get existing cached data (needed for MACD calculation)
+        cached_data_dict = {}
+        for symbol in refetched_symbols:
+            cached_data_dict[symbol] = load_cached_data(symbol)
+
+        # 3. Use bulk calculation logic to fetch and update
+        calculate_macd_and_signal_bulk(
+            refetched_symbols,
+            latest_market_date,
+            cached_data_dict,
+            missing_dates_dict
+        )
+
+    # 4. Backfill missing symbol_picks entries for all past days with data in stock_cache
+    backfilled_days = backfill_symbol_picks_for_watchlist(watchlist_name, days_back=min(days_back, 365))
+
+    
+    msg_parts = []
+    if refetched_symbols:
+        msg_parts.append(f"Successfully refetched data for {len(refetched_symbols)} symbols.")
+    else:
+        msg_parts.append("No missing OHLCV data found.")
+    
+    if backfilled_days > 0:
+        msg_parts.append(f"Backfilled {backfilled_days} missing days in symbol_picks.")
     
     return {
-        "message": f"Successfully refetched data for {len(refetched_symbols)} symbols.",
-        "refetched": refetched_symbols
+        "message": " ".join(msg_parts),
+        "refetched": refetched_symbols,
+        "backfilled_days": backfilled_days
     }
+
 
 def get_latest_market_date():
     """
-    Returns the latest date for which market data is available.
-    If the market is currently open or hasn't opened yet, returns yesterday's date.
-    If the market has closed today, returns today's date.
+    Returns the latest date for which *final* market data is available.
+
+    Today is only reported once MARKET_DATA_SETTLE_BUFFER has elapsed past the
+    close, so callers never fetch and cache an in-progress daily bar. Before
+    that, and on weekends, the previous trading day is returned.
     """
     # Get current time in Eastern Time
     et = pytz.timezone('America/New_York')
     now_et = datetime.now(et)
-    
-    market_close = time(16, 0)
+
     today = now_et.date()
-    current_time = now_et.time()
     weekday = today.weekday()
-    
+
     # If today is Saturday (5) or Sunday (6), return last Friday
     if weekday == 5:
         return today - timedelta(days=1)
     if weekday == 6:
         return today - timedelta(days=2)
-    
-    # If before market close (before 4:00 PM), return previous trading day
-    if current_time < market_close:
-        if weekday == 0:  # Monday before close, return last Friday
+
+    # Before the close plus the settle buffer, return the previous trading day
+    settled_at = datetime.combine(today, MARKET_CLOSE_ET) + MARKET_DATA_SETTLE_BUFFER
+    if now_et.replace(tzinfo=None) < settled_at:
+        if weekday == 0:  # Monday before settle, return last Friday
             return today - timedelta(days=3)
         else:
             return today - timedelta(days=1)
-    
-    # Market has closed for today
+
+    # Market has closed for today and its data has settled
     return today

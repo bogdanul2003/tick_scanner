@@ -13,6 +13,7 @@ from db_utils import (
     remove_symbol_from_watchlist,
     get_watchlist_symbols,
     get_all_watchlists_with_symbols,
+    get_symbol_picks_history,
 )
 from macd_utils import get_latest_market_date, get_macd_for_date, refresh_watchlist_data
 from picks import get_watchlist_bullish_signal, get_company_names_from_bullish_signal_result
@@ -79,8 +80,15 @@ async def api_remove_symbol_from_watchlist(
 
 
 @router.post("/{watchlist_name}/refresh")
-async def api_refresh_watchlist(watchlist_name: str, days_back: int = 365):
-    """Refresh missing/null OHLCV data for all symbols in a watchlist."""
+def api_refresh_watchlist(watchlist_name: str, days_back: int = 365):
+    """
+    Refresh missing/null OHLCV data for all symbols in a watchlist.
+
+    Deliberately a sync `def`, not `async def`: refresh_watchlist_data() blocks
+    for minutes (psycopg2, yfinance, pandas, multiprocessing) with nothing to
+    await, so on the event loop it would freeze the whole API. Starlette runs
+    sync handlers in its threadpool instead, keeping the loop free.
+    """
     try:
         result = refresh_watchlist_data(watchlist_name, days_back=days_back)
         return result
@@ -204,5 +212,69 @@ async def api_watchlist_bullish_companies_csv(
         )
     except Exception as e:
         print(f"Exception in api_watchlist_bullish_companies_csv: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{watchlist_name}/bullish_signal_history")
+async def api_watchlist_bullish_signal_history(
+    watchlist_name: str,
+    days: int = 180
+):
+    """
+    Return per-day column counts for the 5 bullish MACD columns, derived from symbol_picks history.
+    For each recorded date, compute how many symbols fall into each of the 5 columns:
+      1. macd_gets_positive    – macd_just_became_positive AND bullish_macd_above_signal
+      2. recently_crossed      – recent_crossover AND macd_is_positive
+      3. macd_crossed          – bullish_macd_above_signal
+      4. under_signal_positive – NOT bullish_macd_above_signal AND macd_is_positive
+      5. under_signal_negative – NOT bullish_macd_above_signal AND NOT macd_is_positive
+    Returns a list of {date, counts: {col: n}} objects sorted ascending.
+    """
+    try:
+        history = get_symbol_picks_history(watchlist_name, days=days)
+
+        result = []
+        for entry in history:
+            fr = entry["filter_results"]  # {signal_name: [symbols]}
+
+            # Collect all symbols that appear in any signal key
+            all_symbols = set()
+            for sym_list in fr.values():
+                all_symbols.update(sym_list)
+
+            counts = {
+                "macd_gets_positive": 0,
+                "recently_crossed": 0,
+                "macd_crossed": 0,
+                "under_signal_positive": 0,
+                "under_signal_negative": 0
+            }
+
+            for symbol in all_symbols:
+                just_pos = symbol in fr.get("macd_just_became_positive", [])
+                above_sig = symbol in fr.get("bullish_macd_above_signal", [])
+                recent_cross = symbol in fr.get("recent_crossover", [])
+                macd_pos = symbol in fr.get("macd_is_positive", [])
+
+                if just_pos and above_sig:
+                    counts["macd_gets_positive"] += 1
+                if recent_cross and macd_pos:
+                    counts["recently_crossed"] += 1
+                if above_sig:
+                    counts["macd_crossed"] += 1
+                if not above_sig and macd_pos:
+                    counts["under_signal_positive"] += 1
+                if not above_sig and not macd_pos:
+                    counts["under_signal_negative"] += 1
+
+            result.append({
+                "date": entry["date"],
+                "counts": counts
+            })
+
+        return {"watchlist": watchlist_name, "history": result}
+    except Exception as e:
+        print(f"Exception in api_watchlist_bullish_signal_history: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))

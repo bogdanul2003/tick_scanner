@@ -13,6 +13,8 @@ from utils.exceptions import (
     DatabaseError,
     PatternDetectionError,
     ChartGenerationError,
+    InvalidImageError,
+    ImageTooLargeError,
 )
 
 logger = logging.getLogger(__name__)
@@ -71,6 +73,30 @@ async def tick_scanner_exception_handler(request: Request, exc: TickScannerError
             }
         )
     
+    if isinstance(exc, InvalidImageError):
+        return JSONResponse(
+            status_code=400,
+            content={
+                "message": str(exc),
+                "error_code": "INVALID_IMAGE",
+                "detail": {"filename": exc.filename, "reason": exc.reason}
+            }
+        )
+
+    if isinstance(exc, ImageTooLargeError):
+        return JSONResponse(
+            status_code=413,
+            content={
+                "message": str(exc),
+                "error_code": "IMAGE_TOO_LARGE",
+                "detail": {
+                    "filename": exc.filename,
+                    "byte_size": exc.byte_size,
+                    "max_bytes": exc.max_bytes,
+                }
+            }
+        )
+
     if isinstance(exc, (PatternDetectionError, ChartGenerationError)):
         return JSONResponse(
             status_code=500,

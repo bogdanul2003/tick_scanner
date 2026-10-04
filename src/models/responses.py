@@ -123,3 +123,59 @@ class CombinedForecastResponse(BaseModel):
     """Response model for combined forecast."""
     symbols: List[str]
     date: str
+
+
+class NoteWatchlistSummary(BaseModel):
+    """Summary response model for a notes watchlist."""
+    id: int
+    name: str
+    description: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    symbol_count: int
+    note_count: int
+
+
+class NoteSymbolSummary(BaseModel):
+    """Summary of notes for a symbol in a notes watchlist."""
+    symbol: str
+    note_count: int
+    last_note_date: Optional[str] = None
+
+
+class NoteWatchlistDetailResponse(BaseModel):
+    """Detailed response model for a notes watchlist."""
+    id: int
+    name: str
+    description: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    symbols: List[NoteSymbolSummary] = Field(default_factory=list)
+
+
+class NoteImageResponse(BaseModel):
+    """Response model for a note attachment image."""
+    id: int
+    filename: Optional[str] = None
+    mime_type: str
+    byte_size: int
+    width: Optional[int] = None
+    height: Optional[int] = None
+    sort_order: int
+    url: str
+    thumb_url: str
+
+
+class NoteResponse(BaseModel):
+    """Response model for a note."""
+    id: int
+    watchlist_id: int
+    symbol: str
+    note_date: str
+    body: str
+    status: str = "INITIAL"
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    images: List[NoteImageResponse] = Field(default_factory=list)
+
+
