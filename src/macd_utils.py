@@ -19,7 +19,7 @@ MARKET_CLOSE_ET = time(16, 0)
 # in-progress daily bar whose "close" is just the last intraday trade -- caching
 # that bar poisons stock_cache, because it then looks complete (no NULL columns)
 # and is never refetched. Wait it out before treating today as final.
-MARKET_DATA_SETTLE_BUFFER = timedelta(hours=1)
+MARKET_DATA_SETTLE_BUFFER = timedelta(minutes=30)
 
 def get_macd_for_date(symbols: list, date):
     """

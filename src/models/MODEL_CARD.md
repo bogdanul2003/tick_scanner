@@ -4,7 +4,7 @@ Reference for the neural MACD forecaster in `lstm_forecaster.py` (training) and
 `neural_forecast.py` (inference). Covers what the model consumes, what it
 predicts, how to read its metrics, and what it has actually measured.
 
-Last updated 2026-10-04. **Recommended configuration: `gru_v1_residual_macdonly_warm5`**
+Last updated 2026-10-05. **Recommended configuration: `gru_v1_residual_macdonly_warm5`**
 (residual target, `macd,delta`, plain MSE, `checkpoint_warmup_epochs=5`) — config at
 `../configs/gru_v1_residual_macdonly_warm5.json`. A 2026-10-04 multi-seed
 re-measurement (§11) found that **no configuration is distinguishable from another on
@@ -109,6 +109,22 @@ metadata contains the `[0.0, 0.0]` / `[1.0, 1.0]` initializers. Harmless while
 `normalization_type` is read correctly (the internal path recomputes per window),
 but it is a landmine — `_load_model` defaults the key to `"global"` when absent.
 
+### Tried and removed: per-window price scaling
+
+MACD is a difference of two price averages, so it is in dollars and its size follows
+the share price. With dataset-wide stats, a few high-priced symbols set the standard
+deviation and carry most of the loss (§6). A `price_scaled` option was built to
+remove that: each window's primary signal and delta, inputs and targets, were
+divided by the close on the window's last input day, and `predict()` multiplied the
+forecast back, so forecasts stayed in dollars and converting back needed no future
+price.
+
+Measured 2026-10-05 with no benefit — worse than the unscaled recipe on every
+measure, most of all on low-priced symbols (§11). **The code was removed the same
+day**; this is the record of what it did. The three models trained with it
+(`gru_v1_residual_macdonly_warm5_pricescaled_1..3`) cannot be used any more: without
+the scaling step they load as ordinary models and return wrong forecasts.
+
 ## 5. Architecture and shapes
 
 Five architectures, selected by `--architecture`, all the same shape: recurrent
@@ -194,6 +210,14 @@ loss = self.criterion(predictions, batch_y) [+ lambda * bce_loss]  # optional A1
 Optimizer is Adam (`--learning-rate`, default 1e-3). The base loss is mean
 squared error over all `forecast_horizon * target_size` outputs, optionally
 combined with the auxiliary directional BCE term above.
+
+**Tried and removed: Huber loss.** A `loss_function: "huber"` option (threshold
+`huber_delta`, in normalized target units) swapped the MSE for Huber: quadratic up
+to the threshold, linear beyond it. The motive: MACD is in dollars and normalization
+is dataset-wide (§4), so high-priced symbols produce most of the squared error — on
+sp500 residual targets about 5% of target values exceed 1.0 and carry about 92% of
+the MSE. Measured 2026-10-04 at thresholds 1.0 and 0.25 with no benefit (§11), and
+the code was removed on 2026-10-05. The loss is MSE only.
 
 **The product objective is the quality of the 5-day forecast curve — MACD
 directional accuracy (DA) and MAE, evaluated with `evaluate_forecast_model.py`.**
@@ -284,6 +308,16 @@ Two mechanisms sit around the training loop:
 - `checkpoint_warmup_epochs` makes epochs before that count ineligible to be
   saved as "best," to stop the selector locking onto a spuriously low early-epoch
   val loss before the model has actually learned anything.
+
+**Tried and removed: selecting the checkpoint on direction.** A `checkpoint_metric:
+"direction"` option kept the epoch with the highest validation directional accuracy
+on the primary signal (all forecast days, each judged against the previous actual
+value, as `evaluate_forecast_model.py` scores MACD DA) instead of the lowest
+validation loss. Training was otherwise identical, so a seeded run differed only in
+the epoch kept. Measured 2026-10-05 with no benefit: worse MAE on every seed and no
+better on DA (§11). The validation direction score peaks at about 50%, too weak a
+signal to pick an epoch by. The code was removed the same day; the checkpoint is
+always the lowest validation loss after warmup.
 
 **Every architecture/feature combination measured so far converges within the
 first 5-10 epochs and overfits steadily after.** Model B peaked at epoch 3/200,
@@ -749,6 +783,80 @@ About 5% better day-1/2 MAE than the 5-day models; direction no better than drif
 Lower DA on every forecast day on average (78.2 / 50.5 / 36.8 / 34.3 / 33.3 vs
 81.0 / 56.1 / 42.1 / 39.3 / 38.3). Not proof it hurts at n=3, but no sign it helps.
 
+**Huber loss** (`gru_v1_residual_macdonly_warm5_huber`: the `macdonly_warm5` recipe
+with `loss_function: "huber"`, `huber_delta: 1.0`, same three seeds; option since
+removed, §6):
+
+| | Seed 42 | Seed 7 | Seed 123 | Mean | 3-seed ensemble |
+|---|---|---|---|---|---|
+| MACD DA Huber / MSE | 51.98 / 56.65 | 47.54 / 50.86 | 45.16 / 46.63 | 48.2% / 51.4% | 48.23% / 51.28% |
+| MACD MAE Huber / MSE | 0.911 / 0.936 | 0.948 / 0.928 | 0.959 / 0.940 | 0.939 / 0.935 | 0.923 / 0.901 |
+| Median MAE Huber / MSE | 0.459 / 0.466 | 0.498 / 0.456 | 0.500 / 0.474 | 0.486 / 0.465 | 0.478 / 0.452 |
+
+DA is lower on all three seeds (each gap inside the seed spread, all in one
+direction); MAE is better on one seed and worse on two, and worse in the ensemble.
+The median MAE is worse too, so Huber did not trade the high-priced symbols for a
+better fit on the typical one. The Huber ensemble (0.923) is behind its own best
+member (0.911).
+
+Threshold 0.25 (`gru_v1_residual_macdonly_warm5_huber025`, about 23% of target
+values in the linear zone against 5% at 1.0) is indistinguishable from 1.0:
+
+| | Seed 42 | Seed 7 | Seed 123 | Mean | 3-seed ensemble |
+|---|---|---|---|---|---|
+| MACD DA | 51.68 | 50.08 | 44.60 | 48.8% | 48.41% |
+| MACD MAE | 0.914 | 0.911 | 0.987 | 0.937 | 0.920 |
+| Median MAE | 0.460 | 0.476 | 0.523 | 0.486 | 0.476 |
+
+Both thresholds are about 2% behind MSE on ensemble MAE and about 3pp behind on DA,
+with DA below MSE on every seed. The threshold does not matter; a finer sweep is
+not worth running.
+
+**Price scaling** (`gru_v1_residual_macdonly_warm5_pricescaled`: the `macdonly_warm5`
+recipe with `price_scaled: true`, §4; same three seeds, measured 2026-10-05 on the
+same window ending 2026-10-02; option since removed):
+
+| | Seed 42 | Seed 7 | Seed 123 | Mean | 3-seed ensemble |
+|---|---|---|---|---|---|
+| MACD DA scaled / unscaled | 47.24 / 56.65 | 48.22 / 50.86 | 48.04 / 46.63 | 47.8% / 51.4% | 47.76% / 51.28% |
+| MACD MAE scaled / unscaled | 0.948 / 0.936 | 0.928 / 0.928 | 0.945 / 0.940 | 0.940 / 0.935 | 0.932 / 0.901 |
+| Median MAE scaled / unscaled | 0.510 / 0.466 | 0.483 / 0.456 | 0.499 / 0.474 | 0.497 / 0.465 | 0.493 / 0.452 |
+
+Worse on every measure, including the median MAE it was meant to improve. By share
+price (ensemble against ensemble, 167 symbols per group, close on 2026-10-02):
+
+| Share price | Mean MAE scaled / unscaled | Change | MACD DA scaled / unscaled |
+|---|---|---|---|
+| $10-90 | 0.201 / 0.181 | +11.1% | 47.6% / 54.3% |
+| $91-221 | 0.592 / 0.549 | +7.9% | 47.7% / 50.6% |
+| $223-5,994 | 2.002 / 1.972 | +1.5% | 48.1% / 48.9% |
+
+The scaled ensemble has the lower MAE on 124 of 501 symbols. The premise was that
+low-priced symbols are drowned out under dataset-wide dollar normalization and
+would gain most; they lose most, so the unscaled model was already doing its best
+work on them. Why is not established. Price scaling does make seeds agree: DA spans
+47.2-48.2% across seeds against 46.6-56.7% unscaled, and averaging then gains under
+1% MAE. More stable, at a lower level.
+
+**Checkpoint selected on direction** (`gru_v1_residual_macdonly_warm5_dirckpt`: the
+`macdonly_warm5` recipe with `checkpoint_metric: "direction"`, §7; same three seeds
+and identical training runs, only the kept epoch differs; option since removed). Measured 2026-10-05 **on a
+window ending 2026-10-05**, one trading day later than the rest of this section, so
+the lowest-loss models were re-evaluated on that window for the comparison:
+
+| | Seed 42 | Seed 7 | Seed 123 | Mean | 3-seed ensemble |
+|---|---|---|---|---|---|
+| MACD DA direction / loss | 49.02 / 56.80 | 47.76 / 51.03 | 47.03 / 46.94 | 47.9% / 51.6% | 47.88% / 51.49% |
+| MACD MAE direction / loss | 0.977 / 0.930 | 1.017 / 0.926 | 0.967 / 0.929 | 0.987 / 0.929 | 0.966 / 0.895 |
+| Median MAE direction / loss | 0.495 / 0.460 | 0.503 / 0.448 | 0.500 / 0.464 | 0.499 / 0.457 | 0.498 / 0.442 |
+| Epoch kept (direction) | 11 | 13 | 28 | | |
+
+MAE is worse on every seed (later, more overfit epochs), and DA is lower on two
+seeds and level on the third. The best validation direction score any seed reached
+was 49.5-51.0%: at coin-flip level, the highest of 40 readings is noise, not a
+better epoch. The lowest-loss ensemble's figures on this window (0.895 / 51.49%) are
+close to its figures on the window ending 2026-10-02 (0.901 / 51.28%).
+
 **Seed ensembles** (`../scripts/evaluate_ensemble.py`: mean of the three seeds'
 forecasts per window, scored by the stock evaluation code):
 
@@ -788,8 +896,9 @@ ARIMA fitted on 501/501 symbols; `eval_arima_compare_2026-10-04.txt`):
 ### Verdict
 
 **As of 2026-10-04 no configuration is measurably better than another.** Hidden
-size, learning rate, scheduler patience, input window, the `open-close` feature and
-the auxiliary direction loss all land at 46-51% aggregate MACD DA on a three-seed
+size, learning rate, scheduler patience, input window, the `open-close` feature,
+the auxiliary direction loss, Huber loss, price scaling and direction-based checkpoint
+selection all land at 46-51% aggregate MACD DA on a three-seed
 mean, or inside the seed spread where only one seed was run, with MAE 0.90-0.97.
 The one arm that looks worse on both measures is `hidden_size` 8 (one seed).
 `gru_v1_residual_macdonly_warm5` is recommended as the simplest of them (two
@@ -958,9 +1067,8 @@ did between 2026-08-29 and 2026-09-03. As of the 2026-10-04 update, the top item
 1. **Run every comparison on at least three seeds.** Single-run DA differences
    under ~10pp are inside the seed spread (§11); most earlier rankings in this
    investigation were made on one unseeded run each and should be treated as open.
-2. Evaluate multiple early checkpoints on the watchlist rather than trusting the
-   single lowest-val-loss one (§7's open caution). The seed spread sits almost
-   entirely on days 3-5, the same place checkpoint choice moves.
+2. ~~Select the checkpoint on direction instead of loss~~ — measured 2026-10-05, no
+   benefit (§7, §11).
 3. Add naive baselines (persistence, drift, repeat-delta) to
    `evaluate_forecast_model.py` directly, so every future result is printed next
    to the bar it needs to beat rather than requiring a separate audit script.
@@ -975,11 +1083,16 @@ did between 2026-08-29 and 2026-09-03. As of the 2026-10-04 update, the top item
    (§13). Every number in §11 is from one window ending 2026-10-02; whether the MAE
    advantage over drift holds out of sample is still unmeasured.
 
-**Tried 2026-10-04 with no confirmed benefit** (§11): `hidden_size` 16 and 8;
+**Tried 2026-10-04/05 with no confirmed benefit** (§11): `hidden_size` 16 and 8;
 `learning_rate` 3e-4 and 1e-4; `lr_patience` 2 (a no-op — it fires after the best
 epoch); `seq_length` 15, 20, 45, 60; dropping `open-close`;
 `auxiliary_direction_lambda` 0.3 on the current recipe; forecast horizons 2 and 3;
-three-seed averaging (helps MAE, not DA).
+three-seed averaging (helps MAE, not DA); Huber loss at thresholds 1.0 and 0.25
+(both slightly worse than MSE on both measures, and no different from each other);
+price scaling (`price_scaled`, worse on both measures and worst on low-priced
+symbols); selecting the checkpoint on validation direction (`checkpoint_metric:
+"direction"`, 8% worse MAE and no better DA). Reweighting or rescaling the same MACD
+series has now failed three ways, and so has choosing a different epoch of it.
 
 **Ruled out, do not revisit without new evidence:** per-day/per-column loss decay
 weighting (`loss_decay_gamma`); the delta-only architectural consistency variant
