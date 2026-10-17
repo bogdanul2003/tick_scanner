@@ -950,6 +950,163 @@ function RetrainStatus({ job }) {
   );
 }
 
+const TRACK_RECORD_DAYS = 5;
+const TRACK_RECORD_TOP_N = 100;
+const trackCellStyle = { border: "1px solid #ddd", padding: "4px 10px", textAlign: "center", verticalAlign: "top" };
+
+function formatTrackDate(iso) {
+  return new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function formatPercent(fraction) {
+  return fraction == null ? "n/a" : `${(fraction * 100).toFixed(1)}%`;
+}
+
+function formatMacd(value) {
+  return value == null ? "n/a" : Number(value).toFixed(3);
+}
+
+// How the selected model's stored forecasts compared with the actual MACD on each of
+// the last trading days. A day no stored forecast targets shows NaN.
+function ForecastTrackRecord({ symbols, model, modelLabel, versionsKey }) {
+  const [record, setRecord] = useState(null);
+  const [error, setError] = useState("");
+  const [openDate, setOpenDate] = useState(null);
+  const symbolsKey = symbols.join(",");
+
+  React.useEffect(() => {
+    if (!model || !symbols.length) return undefined;
+    let cancelled = false;
+    setRecord(null);
+    setError("");
+    setOpenDate(null);
+    apiJson("/forecast/macd/track_record", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ symbols, model, days: TRACK_RECORD_DAYS, top_n: TRACK_RECORD_TOP_N }),
+    })
+      .then(data => { if (!cancelled) setRecord(data); })
+      .catch(e => { if (!cancelled) setError(e.message || "Error loading track record"); });
+    return () => { cancelled = true; };
+    // symbolsKey stands in for symbols: the parent passes a new array on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [model, versionsKey, symbolsKey]);
+
+  if (!model) return null;
+  if (error) return <div style={{ color: "red", marginBottom: 10 }}>Track record unavailable: {error}</div>;
+  if (!record) return <div style={{ marginBottom: 10, color: "#555" }}>Loading track record...</div>;
+
+  const days = record.days;
+  const opened = days.find(d => d.date === openDate && d.available);
+  const anyDay = days.some(d => d.available);
+  const topLabel = (() => {
+    const sized = days.find(d => d.available && d.top && d.top.size < d.top.requested);
+    return sized ? `Top ${sized.top.size} of ${sized.top.ranked} best match` : `Top ${TRACK_RECORD_TOP_N} best match`;
+  })();
+
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ marginBottom: 4, fontSize: "0.95em", color: "#555" }}>
+        Track record, last {days.length} trading days — {modelLabel}
+        {record.versions ? ` v${record.versions.join(",")}` : ""}
+      </div>
+      <table style={{ borderCollapse: "collapse", fontSize: "0.95em" }}>
+        <thead>
+          <tr>
+            <th style={{ ...trackCellStyle, textAlign: "left" }}></th>
+            {days.map(d => <th key={d.date} style={trackCellStyle}>{formatTrackDate(d.date)}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style={{ ...trackCellStyle, textAlign: "left" }} title="Share of symbols whose forecast moved the right way from the previous day's actual MACD">
+              All symbols — direction right
+            </td>
+            {days.map(d => {
+              if (!d.available) return <td key={d.date} style={{ ...trackCellStyle, color: "#999" }}>NaN</td>;
+              const drift = d.drift_direction_accuracy;
+              const color = drift == null ? "inherit" : (d.direction_accuracy > drift ? "green" : "#c0392b");
+              const lead = d.lead_days.length === 1 ? `${d.lead_days[0]}` : `${d.lead_days[0]}-${d.lead_days[d.lead_days.length - 1]}`;
+              const tip = `${d.symbols} symbols, forecast ${lead} trading day(s) ahead\n` +
+                `Mean error ${formatMacd(d.mae)} (median ${formatMacd(d.median_error)}), drift ${formatMacd(d.drift_mae)}\n` +
+                `Lower error than drift on ${d.beats_drift} symbols`;
+              return (
+                <td key={d.date} style={trackCellStyle} title={tip}>
+                  <div style={{ fontWeight: "bold", color }}>{formatPercent(d.direction_accuracy)}</div>
+                  <div style={{ fontSize: "0.85em", color: "#555" }}>drift {formatPercent(drift)}</div>
+                </td>
+              );
+            })}
+          </tr>
+          <tr>
+            <td style={{ ...trackCellStyle, textAlign: "left" }} title="The symbols whose forecast came closest that day, by error as a share of how far MACD moved. Chosen after the outcome is known.">
+              {topLabel}
+            </td>
+            {days.map(d => {
+              if (!d.available || !d.top || !d.top.size) {
+                return <td key={d.date} style={{ ...trackCellStyle, color: "#999" }}>NaN</td>;
+              }
+              const isOpen = openDate === d.date;
+              return (
+                <td
+                  key={d.date}
+                  style={{ ...trackCellStyle, cursor: "pointer", background: isOpen ? "#eef5ff" : undefined }}
+                  title="Click to list these symbols"
+                  onClick={() => setOpenDate(isOpen ? null : d.date)}
+                >
+                  <div style={{ fontWeight: "bold" }}>≤{d.top.cutoff_pct_of_move.toFixed(0)}% off</div>
+                  <div style={{ fontSize: "0.85em", color: "#555" }}>{d.top.beats_drift} beat drift</div>
+                </td>
+              );
+            })}
+          </tr>
+        </tbody>
+      </table>
+      {!anyDay && (
+        <div style={{ marginTop: 4, fontSize: "0.9em", color: "#555" }}>
+          No stored forecast of this model targets these days yet. Days fill in after the forecast has been run on earlier trading days.
+        </div>
+      )}
+      {opened && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ marginBottom: 4, fontSize: "0.95em", color: "#555" }}>
+            {formatTrackDate(opened.date)}: the {opened.top.size} closest forecasts of {opened.top.ranked}, best first
+          </div>
+          <div style={{ maxHeight: 260, overflowY: "auto", display: "inline-block" }}>
+            <table style={{ borderCollapse: "collapse", fontSize: "0.9em" }}>
+              <thead>
+                <tr>
+                  {["#", "Symbol", "MACD before", "Forecast", "Actual", "Error", "% of move", "Drift error"].map(h => (
+                    <th key={h} style={{ ...trackCellStyle, position: "sticky", top: 0, background: "#f5f5f5" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {opened.top.symbols.map((s, i) => (
+                  <tr key={s.symbol}>
+                    <td style={trackCellStyle}>{i + 1}</td>
+                    <td style={{ ...trackCellStyle, textAlign: "left" }}>
+                      <a href={getChartUrl(s.symbol)} target="_blank" rel="noopener noreferrer" style={{ color: "inherit" }}>
+                        {s.symbol}
+                      </a>
+                    </td>
+                    <td style={trackCellStyle}>{formatMacd(s.origin)}</td>
+                    <td style={trackCellStyle}>{formatMacd(s.predicted)}</td>
+                    <td style={trackCellStyle}>{formatMacd(s.actual)}</td>
+                    <td style={trackCellStyle}>{formatMacd(s.error)}</td>
+                    <td style={trackCellStyle}>{s.error_pct_of_move.toFixed(1)}%</td>
+                    <td style={{ ...trackCellStyle, color: s.beats_drift ? "green" : "inherit" }}>{formatMacd(s.drift_error)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function WatchlistBullishForecast({ watchlist, symbols, onClose }) {
   const [ensembles, setEnsembles] = useState([]);
   const [engine, setEngine] = useState("");
@@ -1097,6 +1254,12 @@ function WatchlistBullishForecast({ watchlist, symbols, onClose }) {
         </div>
       )}
       <RetrainStatus job={job} />
+      <ForecastTrackRecord
+        symbols={symbols}
+        model={engine}
+        modelLabel={engineLabel(engine)}
+        versionsKey={selected ? selected.versions.join(",") : ""}
+      />
       {loading && <div>Loading...</div>}
       {error && <div style={{ color: "red" }}>{error}</div>}
       {result && (

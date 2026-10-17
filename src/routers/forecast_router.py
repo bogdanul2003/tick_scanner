@@ -5,7 +5,7 @@ from typing import List, Optional
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import traceback
 
-from models.requests import EnsembleForecastRequest
+from models.requests import EnsembleForecastRequest, ForecastTrackRecordRequest
 
 router = APIRouter(prefix="/forecast", tags=["Forecast"])
 
@@ -206,6 +206,26 @@ def get_ensemble_macd_positive_forecast(request: EnsembleForecastRequest):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
     return order_forecast_results(results)
+
+
+@router.post("/macd/track_record")
+def get_macd_forecast_track_record(request: ForecastTrackRecordRequest):
+    """
+    How a model's stored forecasts compared with the actual MACD on each of the last
+    trading days, for a list of symbols: directional accuracy against drift, and the
+    best-matched symbols per day. A day no stored forecast targets comes back with
+    `available: false`. `model` is an ensemble id or 'arima'.
+    """
+    from services.ensemble_service import EnsembleNotFoundError
+    from services.forecast_track_record import get_track_record
+    try:
+        return get_track_record(request.symbols, request.model, request.days, request.top_n)
+    except EnsembleNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        print(f"Exception in get_macd_forecast_track_record: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/ma/arima_above_50")

@@ -101,6 +101,7 @@ plumbing — the parts where a silent wrong answer is indistinguishable from a r
 | `test_neural_forecast_features.py` | The multi-feature matrix `forecast_macd` builds: each feature reads the column it names, `delta` tracks the primary signal, columns stay length-aligned |
 | `test_ensemble_service.py` | `EnsembleForecaster` averaging and member checks; the ensemble registry and retrain-state override; `forecast_symbols` returning the ARIMA endpoint's shape |
 | `test_ensemble_training.py` | The retrain job: served versions switch only when every seed trained; one job at a time; `--model-version` never overwrites |
+| `test_forecast_track_record.py` | The panel's track record: per-day scoring of stored forecasts against actual MACD, missing days, and the best-matched symbol ranking |
 
 When adding a feature to the `--extra-features` path, note it is built in three
 places (`scripts/train_forecast_model.py`, `scripts/evaluate_forecast_model.py`,
