@@ -37,6 +37,19 @@ class ForecastRequest(BaseModel):
         return [s.upper().strip() for s in v]
 
 
+class ForecastTrackRecordRequest(BaseModel):
+    """Request model for a forecast model's track record over the last trading days."""
+    symbols: List[str] = Field(..., min_length=1, description="List of stock symbols")
+    model: Optional[str] = Field(default=None, description="Ensemble id from GET /forecast/ensembles, or 'arima'; omitted means the default ensemble")
+    days: int = Field(default=5, ge=1, le=20, description="Trading days to report, ending at the latest settled market date")
+    top_n: int = Field(default=100, ge=1, le=500, description="Size of the best-matched symbol list per day")
+
+    @field_validator("symbols")
+    @classmethod
+    def uppercase_symbols(cls, v: List[str]) -> List[str]:
+        return [s.upper().strip() for s in v]
+
+
 class EnsembleForecastRequest(BaseModel):
     """Request model for seed-ensemble MACD forecasting."""
     symbols: List[str] = Field(..., min_length=1, description="List of stock symbols")

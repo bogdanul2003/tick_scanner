@@ -101,6 +101,8 @@ plumbing — the parts where a silent wrong answer is indistinguishable from a r
 | `test_neural_forecast_features.py` | The multi-feature matrix `forecast_macd` builds: each feature reads the column it names, `delta` tracks the primary signal, columns stay length-aligned |
 | `test_ensemble_service.py` | `EnsembleForecaster` averaging and member checks; the ensemble registry and retrain-state override; `forecast_symbols` returning the ARIMA endpoint's shape |
 | `test_ensemble_training.py` | The retrain job: served versions switch only when every seed trained; one job at a time; `--model-version` never overwrites |
+| `test_forecast_track_record.py` | The panel's track record: per-day scoring of stored forecasts against actual MACD, missing days, and the best-matched symbol ranking |
+| `test_freshness_backtest.py` | The freshness backtest: evaluation origins fall after every copy's training cutoff; the retrain verdict needs decay that is larger than seed luck and clear of zero |
 
 When adding a feature to the `--extra-features` path, note it is built in three
 places (`scripts/train_forecast_model.py`, `scripts/evaluate_forecast_model.py`,
@@ -112,6 +114,7 @@ inference one.
 - The project was recently refactored from a monolithic `api.py` into a layered architecture (routers -> services -> utils). The refactoring is mostly complete on the `refactor1` branch.
 - `db_utils.py` uses `psycopg2` SimpleConnectionPool (min=1, max=15).
 - "Show Bullish Forecast" serves a **seed ensemble** of the neural forecaster (three versions of one config, forecasts averaged) chosen from a dropdown; ARIMA remains as a legacy option. Ensembles are listed in `src/configs/ensembles.json` (pinned versions, one default); a retrain from the UI records its new versions in `models/ensemble_state.json`. See `docs/ENSEMBLE_PRODUCTION_PLAN.md` and `src/models/MODEL_CARD.md` §9.
+- "Freshness backtest" in the same panel answers whether a retrain would help: it trains the selected config as of 0, 4, 8 and 13 weeks before the last 20 forecast days (`train_forecast_model.py --end-date`), scores every copy, the served ensemble and drift on those days (`scripts/evaluate_freshness.py`), and turns the error-per-week-of-age into a verdict (`services/freshness_backtest.py`). See `docs/FORECAST_LIVE_TRACKING.md`, "Should the model be retrained?".
 - Train forecast models on CPU (`--device cpu`): at this model size it is ~3.6x faster than MPS. Compare configs on at least three seeds — single-run directional accuracy differs by 5-10 points between seeds (`MODEL_CARD.md` §11).
 - Supported neural architectures: `bidirectional_gru` (recommended), `stacked_gru`, `gru`, `standard_lstm`, `stacked_lstm`.
 - Chart pattern detection uses YOLO via Core ML. The model is at `chart_scan/model.mlpackage`.

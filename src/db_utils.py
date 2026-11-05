@@ -938,6 +938,90 @@ def save_forecast_predictions(model, as_of_date, rows, model_name=None, model_ve
     finally:
         put_connection(conn)
 
+def get_forecast_track_rows(model, symbols, latest_date, days=5, model_versions=None):
+    """
+    Stored forecasts of `model` that target one of the last `days` trading days up to
+    `latest_date`, each with the actual MACD it can be scored against.
+
+    Trading days are the dates that have MACD in stock_cache for these symbols, so a
+    forecast is matched to its target by trading-day offset from its as_of_date (the
+    stored target_date is nominal and does not skip holidays).
+
+    `model_versions`, when given, keeps only forecasts made by exactly those versions.
+
+    Returns (trading_days, rows): the days oldest first, and one dict per stored
+    forecast with symbol, target_date, lead_days, predicted, actual, prev_actual (the
+    day before the target), origin (MACD on the as_of_date) and origin_prev (the day
+    before that; None when not cached).
+    """
+    symbols = sorted(set(symbols))
+    if not symbols:
+        return [], []
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT date FROM stock_cache
+                WHERE symbol = ANY(%s) AND macd IS NOT NULL AND date <= %s
+                ORDER BY date DESC LIMIT %s
+            """, (symbols, latest_date, days))
+            trading_days = sorted(row[0] for row in cur.fetchall())
+            if not trading_days:
+                return [], []
+            # Far enough back to number the days of the oldest forecast that can
+            # still target the window (5 trading days ahead at most) and the day
+            # before it, with room for holidays.
+            history_start = trading_days[0] - timedelta(days=30)
+            cur.execute("""
+                WITH actuals AS (
+                    SELECT symbol, date, macd::float8 AS macd,
+                           ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date) AS rn
+                    FROM stock_cache
+                    WHERE symbol = ANY(%(symbols)s) AND macd IS NOT NULL
+                      AND date BETWEEN %(start)s AND %(latest)s
+                )
+                SELECT p.symbol, t.date, p.horizon_day, p.predicted_macd,
+                       t.macd, prev.macd, o.macd, o1.macd
+                FROM forecast_predictions p
+                JOIN actuals o    ON o.symbol = p.symbol AND o.date = p.as_of_date
+                JOIN actuals t    ON t.symbol = p.symbol AND t.rn = o.rn + p.horizon_day
+                JOIN actuals prev ON prev.symbol = p.symbol AND prev.rn = t.rn - 1
+                LEFT JOIN actuals o1 ON o1.symbol = p.symbol AND o1.rn = o.rn - 1
+                WHERE p.model = %(model)s AND p.symbol = ANY(%(symbols)s)
+                  AND t.date = ANY(%(days)s)
+                  AND (%(versions)s::int[] IS NULL OR p.model_versions = %(versions)s::int[])
+            """, {"symbols": symbols, "start": history_start, "latest": latest_date,
+                  "model": model, "days": trading_days,
+                  "versions": list(model_versions) if model_versions else None})
+            keys = ("symbol", "target_date", "lead_days", "predicted", "actual",
+                    "prev_actual", "origin", "origin_prev")
+            return trading_days, [dict(zip(keys, row)) for row in cur.fetchall()]
+    finally:
+        put_connection(conn)
+
+def get_trading_days(symbols, start_date, end_date, min_share=0.5):
+    """
+    Trading days between start_date and end_date, oldest first: the dates on which at
+    least `min_share` of `symbols` have MACD in stock_cache. The share keeps out a
+    date only a few symbols have a bar for.
+    """
+    symbols = sorted(set(symbols))
+    if not symbols:
+        return []
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT date FROM stock_cache
+                WHERE symbol = ANY(%s) AND macd IS NOT NULL AND date BETWEEN %s AND %s
+                GROUP BY date HAVING COUNT(*) >= %s
+                ORDER BY date
+            """, (symbols, start_date, end_date, max(1, int(len(symbols) * min_share))))
+            return [row[0] for row in cur.fetchall()]
+    finally:
+        put_connection(conn)
+
+
 def cache_ma20_above_ma50_forecast(symbol, forecast_date, ma20_will_be_above_ma50):
     """
     Cache the ma20_will_be_above_ma50 result for a symbol and forecast_date in stock_cache table.

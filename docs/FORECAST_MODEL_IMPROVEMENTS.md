@@ -271,14 +271,101 @@ from the UI, and every forecast run is stored in `forecast_predictions`
 on unchanged data reproduced the previous ensemble's metrics exactly, so seeded CPU training
 is reproducible and a retrain only matters once new data has arrived.
 
+### 8. Huber loss — no benefit
+
+MACD is in dollars and normalization is dataset-wide (std of sp500 MACD over 600 days is
+about 9.7), so high-priced symbols dominate the squared error: about 5% of normalized
+residual target values exceed 1.0 and carry about 92% of the MSE. `loss_function: "huber"`
+(`huber_delta` default 1.0) made the loss linear beyond that threshold. The option and its
+configs were removed from the code on 2026-10-05 after this result.
+
+`macdonly_warm5` with Huber at two thresholds (`..._huber` = 1.0, `..._huber025` = 0.25, which
+puts about 23% of target values in the linear zone), seeds 42 / 7 / 123:
+
+| | Huber 1.0 | Huber 0.25 | MSE |
+|---|---|---|---|
+| MACD DA by seed | 51.98 / 47.54 / 45.16 | 51.68 / 50.08 / 44.60 | 56.65 / 50.86 / 46.63 |
+| Mean MACD DA | 48.2% | 48.8% | 51.4% |
+| MACD MAE by seed | 0.911 / 0.948 / 0.959 | 0.914 / 0.911 / 0.987 | 0.936 / 0.928 / 0.940 |
+| Mean MACD MAE (median MAE) | 0.939 (0.486) | 0.937 (0.486) | 0.935 (0.465) |
+| 3-seed ensemble MAE (median) / DA | 0.923 (0.478) / 48.23% | 0.920 (0.476) / 48.41% | 0.901 (0.452) / 51.28% |
+
+The two thresholds are indistinguishable from each other. Against MSE, DA is lower on every
+seed for both, ensemble MAE is about 2% worse and median MAE is worse as well; single-seed
+MAE is mixed. Each DA gap is inside the seed spread, so this is "no sign of benefit", not
+proof of harm. Down-weighting the large-target windows did not improve the typical symbol,
+and moving from 5% to 23% of targets in the linear zone changed nothing, so a finer sweep is
+not worth running. The default stays MSE. Raw output: `eval_huber_2026-10-04.txt`,
+`eval_huber025_2026-10-04.txt`.
+
+### 9. Price scaling — no benefit, and worst where it was meant to help
+
+`price_scaled: true` divided each window's MACD and delta (inputs and targets) by the close on
+the window's last input day and multiplied the forecast back, so every symbol presented the same
+scale (`MODEL_CARD.md` §4). The option and its config were removed from the code on 2026-10-05
+after this result; the three models trained with it are unusable without it. One close per window, not each day's own, so converting back needs
+no future price. Measured 2026-10-05 on the same window ending 2026-10-02.
+
+`gru_v1_residual_macdonly_warm5_pricescaled` = `macdonly_warm5` + `price_scaled`, seeds 42 / 7 / 123:
+
+| | Price-scaled | Unscaled |
+|---|---|---|
+| MACD DA by seed | 47.24 / 48.22 / 48.04 | 56.65 / 50.86 / 46.63 |
+| Mean MACD DA | 47.8% | 51.4% |
+| MACD MAE by seed | 0.948 / 0.928 / 0.945 | 0.936 / 0.928 / 0.940 |
+| Mean MACD MAE (median MAE) | 0.940 (0.497) | 0.935 (0.465) |
+| 3-seed ensemble MAE (median) / DA | 0.932 (0.493) / 47.76% | 0.901 (0.452) / 51.28% |
+
+By share price, ensemble against ensemble (thirds of sp500 by close on 2026-10-02):
+
+| Share price | MAE change | MACD DA scaled / unscaled |
+|---|---|---|
+| $10-90 | +11.1% | 47.6% / 54.3% |
+| $91-221 | +7.9% | 47.7% / 50.6% |
+| $223-5,994 | +1.5% | 48.1% / 48.9% |
+
+The scaled ensemble wins on 124 of 501 symbols. The hypothesis was that low-priced symbols are
+drowned out by dataset-wide dollar normalization; they are the ones that got worse, so the
+hypothesis is wrong and the unscaled model's cheap-symbol forecasts were its best. The cause is
+not established. Seeds agree far more closely when scaled (DA 47.2-48.2% against 46.6-56.7%),
+which also means averaging them gains under 1% MAE. The default stays unscaled. With A1, Huber
+(§8) and this, three attempts to reweight or rescale the same MACD series have failed. Raw
+output: `eval_pricescaled_2026-10-04.txt`.
+
+### 10. Checkpoint selected on direction — no benefit
+
+`checkpoint_metric: "direction"` (`MODEL_CARD.md` §7) kept the epoch with the highest
+validation directional accuracy on the primary signal instead of the lowest validation loss.
+Training was otherwise identical, so the same seed gave the same run and only the kept epoch
+differed. The option and its config were removed from the code on 2026-10-05 after this result.
+
+`gru_v1_residual_macdonly_warm5_dirckpt`, seeds 42 / 7 / 123. The evaluation window ends
+2026-10-05, a day later than the entries above, so the lowest-loss models were re-evaluated on
+it:
+
+| | Selected on direction | Selected on loss |
+|---|---|---|
+| Epoch kept | 11 / 13 / 28 | — |
+| MACD DA by seed | 49.02 / 47.76 / 47.03 | 56.80 / 51.03 / 46.94 |
+| Mean MACD DA | 47.9% | 51.6% |
+| MACD MAE by seed | 0.977 / 1.017 / 0.967 | 0.930 / 0.926 / 0.929 |
+| Mean MACD MAE (median MAE) | 0.987 (0.499) | 0.929 (0.457) |
+| 3-seed ensemble MAE (median) / DA | 0.966 (0.498) / 47.88% | 0.895 (0.442) / 51.49% |
+
+About 8% worse MAE and no better DA. The validation direction score peaked at 49.5-51.0%
+across seeds, so there was no signal to select on: the highest of 40 coin-flip readings is a
+lucky epoch, and a later, more overfit one. This closes the "checkpoint luck" explanation of
+the seed spread as something a validation-based selector can fix. Raw output:
+`eval_dirckpt_2026-10-05.txt`.
+
 ### Suggested order, revised 2026-10-04
 
 0. Score the frozen default ensemble on live data after two to four weeks (`MODEL_CARD.md`
    §13) — every result above is from a single window ending 2026-10-02.
 
 1. Use at least three seeds per arm for any DA claim; treat earlier single-run rankings as open.
-2. Checkpoint selection on DA (evaluate several early checkpoints) — the seed spread and the
-   checkpoint effect live on the same days.
+2. ~~Checkpoint selection on DA~~ — measured 2026-10-05, no benefit (§10).
 3. **B4** (`chart_patterns`) — the only input that is not a function of the same price series.
 4. **B1-B3** — cheap, but low prior after the `open-close` result.
 5. **A1** at other `lambda` values — only with three seeds per value; 0.3 showed no benefit.
+6. ~~Price-scaled MACD~~ — measured 2026-10-05, no benefit (§9).

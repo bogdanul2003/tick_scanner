@@ -186,6 +186,7 @@ The "Show Bullish Forecast" panel lets the user pick a model, run it, or retrain
 (`docs/ENSEMBLE_PRODUCTION_PLAN.md`):
 - `GET /forecast/ensembles` - Selectable seed ensembles, the default, availability and metrics
 - `POST /forecast/macd/ensemble` - Forecast MACD becoming positive with a seed ensemble (same response shape as the ARIMA endpoint)
+- `POST /forecast/macd/track_record` - Track record of an ensemble or ARIMA over the last trading days, from stored forecasts: directional accuracy against drift per day, and the best-matched symbols (`docs/FORECAST_TRACK_RECORD_PLAN.md`)
 - `POST /forecast/ensembles/{id}/retrain` - Retrain an ensemble in the background (one job at a time)
 - `GET /forecast/ensembles/retrain/status` - Progress of the running or most recent retrain
 - `POST /forecast/macd/arima_positive` - The previous ARIMA engine, kept as a legacy option
@@ -831,6 +832,7 @@ with no trained model and no database, which is where a fresh checkout starts.
 | `tests/test_neural_forecast_features.py` | `models/neural_forecast.py` → `NeuralForecastService.forecast_macd` | The multi-feature input matrix: each feature reads the DB column it names (not the service's primary signal), `delta` tracks the primary column, and a NULL never shortens one column out of alignment with the rest |
 | `tests/test_ensemble_service.py` | `models/neural_forecast.py` → `EnsembleForecaster`; `services/ensemble_service.py` | The ensemble is the plain mean of its members and refuses mismatched ones; retrain state overrides the registry's versions; an ensemble with a missing model file is unavailable, not served short-handed; `forecast_symbols` returns the ARIMA endpoint's shape and caches `will_become_positive` |
 | `tests/test_ensemble_training.py` | `services/ensemble_training.py`; `scripts/train_forecast_model.py` → `resolve_save_version` | Served versions switch only when every seed produced a Core ML model; one job at a time; a job orphaned by a server restart reports failed; an existing model version is never overwritten |
+| `tests/test_forecast_track_record.py` | `services/forecast_track_record.py` | Each symbol and day is scored on the most recent stored forecast; direction is judged against the previous day's actual value and drift extrapolates one step per lead day; a day no forecast targets is unavailable with null scores; the best-matched list is ranked by error relative to the MACD move, cut at `top_n` or the best half, and skips symbols whose MACD did not move; an ensemble is scored on the versions it serves |
 
 These modules cover inference and retraining plumbing rather than model quality — the class of
 defect where the pipeline returns a confident number that is quietly built from

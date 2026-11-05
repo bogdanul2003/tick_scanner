@@ -73,7 +73,7 @@ Expected output:
 
 ```
 ----------------------------------------------------------------------
-Ran 154 tests in 0.659s
+Ran 170 tests in 0.830s
 
 OK
 ```
@@ -84,6 +84,7 @@ OK
 | `test_neural_forecast_features.py` | The multi-feature input matrix (`--extra-features` models): every feature reads the DB column it names, `delta` tracks the primary signal, and all columns stay length-aligned |
 | `test_ensemble_service.py` | Seed ensembles: the ensemble is the mean of its members and refuses mismatched ones, the registry and retrain state resolve to the right versions, and the ensemble forecast returns the ARIMA endpoint's shape and records the run |
 | `test_ensemble_training.py` | The retrain job: served versions switch only when every seed trained, one job runs at a time, and an existing model version is never overwritten |
+| `test_forecast_track_record.py` | The forecast track record: each day is scored on the most recent stored forecast per symbol, direction is judged against the previous day's actual MACD, a day with no forecast is reported as unavailable, and the best-matched list is ranked by error relative to the MACD move |
 
 The table lists the modules most relevant to serving forecasts; `src/tests/` has more
 (training, splits, seeding, model versioning).
@@ -454,6 +455,7 @@ tick_scanner/
 | GET | `/forecast/engine/status` | Get forecasting engine status |
 | GET | `/forecast/ensembles` | Selectable seed ensembles, the default, availability, metrics and training date |
 | POST | `/forecast/macd/ensemble` | Bulk MACD forecast with a seed ensemble (`{symbols, ensemble_id}`) |
+| POST | `/forecast/macd/track_record` | How a model's stored forecasts compared with actual MACD on each of the last trading days (`{symbols, model, days, top_n}`) |
 | POST | `/forecast/ensembles/{id}/retrain` | Retrain an ensemble in the background (one job at a time) |
 | GET | `/forecast/ensembles/retrain/status` | Progress of the running or most recent retrain |
 | POST | `/forecast/macd/arima_positive` | Bulk MACD forecast with ARIMA (legacy engine) |

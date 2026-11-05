@@ -43,7 +43,8 @@ COLUMN_MAPPING = {
 }
 
 
-def get_training_data(symbols: list, days: int = 365, signal_type: str = "macd", feature_names: list = None):
+def get_training_data(symbols: list, days: int = 365, signal_type: str = "macd", feature_names: list = None,
+                      end_date=None):
     """
     Gather multi-feature data for training from multiple symbols.
 
@@ -56,6 +57,8 @@ def get_training_data(symbols: list, days: int = 365, signal_type: str = "macd",
         days: Number of days of history to use
         signal_type: Type of primary signal - "macd" or "signal_line"
         feature_names: List of features to gather (e.g. ['macd', 'delta', 'open', 'close', 'volume'])
+        end_date: Last date to include (default: the latest market date). An earlier
+            date trains the model as if it were that day, for backtests.
         
     Returns:
         List of 2D numpy arrays of shape (points, num_features), one per symbol
@@ -69,7 +72,7 @@ def get_training_data(symbols: list, days: int = 365, signal_type: str = "macd",
     per_symbol_data = []
     total_points = 0
     
-    end_date = get_latest_market_date()
+    end_date = end_date or get_latest_market_date()
     start_date = end_date - timedelta(days=days)
     
     signal_label = "MACD" if signal_type == "macd" else "Signal Line"
@@ -374,6 +377,14 @@ def main():
         help="How to split data into train/test sets: 'symbol' (separate stocks) or 'time' (past vs future for all stocks) (default: symbol)"
     )
     parser.add_argument(
+        "--end-date",
+        type=lambda s: datetime.strptime(s, "%Y-%m-%d").date(),
+        default=None,
+        help="Train only on data up to this date (YYYY-MM-DD) instead of the latest "
+             "market date, as if training on that day. Used by the freshness backtest; "
+             "not a config key."
+    )
+    parser.add_argument(
         "--skip-coreml",
         action="store_true",
         default=None,
@@ -592,7 +603,8 @@ def main():
     
     # Gather training data
     print("Gathering training data...")
-    per_symbol_data = get_training_data(symbols, args.days, args.signal_type, feature_names=feature_names)
+    per_symbol_data = get_training_data(symbols, args.days, args.signal_type, feature_names=feature_names,
+                                        end_date=args.end_date)
     
     if len(per_symbol_data) == 0:
         print("Error: No valid symbol data collected")

@@ -168,6 +168,9 @@ It pools all forecasts, where the evaluation scripts average per symbol first, s
 will differ slightly. Only days that were actually forecast are scored: to build a
 history, run the forecast on each trading day.
 
+The panel shows this history directly as a five-day track record for the selected
+model (`POST /forecast/macd/track_record`, `docs/FORECAST_TRACK_RECORD_PLAN.md`).
+
 ## Order of work
 
 1. Registry, shared ensemble class, the two inference endpoints. Check endpoint output for
