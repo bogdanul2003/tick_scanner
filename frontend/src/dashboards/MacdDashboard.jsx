@@ -951,7 +951,6 @@ function RetrainStatus({ job }) {
 }
 
 const TRACK_RECORD_DAYS = 5;
-const TRACK_RECORD_TOP_N = 100;
 const trackCellStyle = { border: "1px solid #ddd", padding: "4px 10px", textAlign: "center", verticalAlign: "top" };
 
 function formatTrackDate(iso) {
@@ -971,7 +970,6 @@ function formatMacd(value) {
 function ForecastTrackRecord({ symbols, model, modelLabel, versionsKey }) {
   const [record, setRecord] = useState(null);
   const [error, setError] = useState("");
-  const [openDate, setOpenDate] = useState(null);
   const symbolsKey = symbols.join(",");
 
   React.useEffect(() => {
@@ -979,11 +977,10 @@ function ForecastTrackRecord({ symbols, model, modelLabel, versionsKey }) {
     let cancelled = false;
     setRecord(null);
     setError("");
-    setOpenDate(null);
     apiJson("/forecast/macd/track_record", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ symbols, model, days: TRACK_RECORD_DAYS, top_n: TRACK_RECORD_TOP_N }),
+      body: JSON.stringify({ symbols, model, days: TRACK_RECORD_DAYS }),
     })
       .then(data => { if (!cancelled) setRecord(data); })
       .catch(e => { if (!cancelled) setError(e.message || "Error loading track record"); });
@@ -997,12 +994,7 @@ function ForecastTrackRecord({ symbols, model, modelLabel, versionsKey }) {
   if (!record) return <div style={{ marginBottom: 10, color: "#555" }}>Loading track record...</div>;
 
   const days = record.days;
-  const opened = days.find(d => d.date === openDate && d.available);
   const anyDay = days.some(d => d.available);
-  const topLabel = (() => {
-    const sized = days.find(d => d.available && d.top && d.top.size < d.top.requested);
-    return sized ? `Top ${sized.top.size} of ${sized.top.ranked} best match` : `Top ${TRACK_RECORD_TOP_N} best match`;
-  })();
 
   return (
     <div style={{ marginBottom: 12 }}>
@@ -1038,28 +1030,6 @@ function ForecastTrackRecord({ symbols, model, modelLabel, versionsKey }) {
               );
             })}
           </tr>
-          <tr>
-            <td style={{ ...trackCellStyle, textAlign: "left" }} title="The symbols whose forecast came closest that day, by error as a share of how far MACD moved. Chosen after the outcome is known.">
-              {topLabel}
-            </td>
-            {days.map(d => {
-              if (!d.available || !d.top || !d.top.size) {
-                return <td key={d.date} style={{ ...trackCellStyle, color: "#999" }}>NaN</td>;
-              }
-              const isOpen = openDate === d.date;
-              return (
-                <td
-                  key={d.date}
-                  style={{ ...trackCellStyle, cursor: "pointer", background: isOpen ? "#eef5ff" : undefined }}
-                  title="Click to list these symbols"
-                  onClick={() => setOpenDate(isOpen ? null : d.date)}
-                >
-                  <div style={{ fontWeight: "bold" }}>≤{d.top.cutoff_pct_of_move.toFixed(0)}% off</div>
-                  <div style={{ fontSize: "0.85em", color: "#555" }}>{d.top.beats_drift} beat drift</div>
-                </td>
-              );
-            })}
-          </tr>
         </tbody>
       </table>
       {!anyDay && (
@@ -1067,42 +1037,168 @@ function ForecastTrackRecord({ symbols, model, modelLabel, versionsKey }) {
           No stored forecast of this model targets these days yet. Days fill in after the forecast has been run on earlier trading days.
         </div>
       )}
-      {opened && (
-        <div style={{ marginTop: 8 }}>
-          <div style={{ marginBottom: 4, fontSize: "0.95em", color: "#555" }}>
-            {formatTrackDate(opened.date)}: the {opened.top.size} closest forecasts of {opened.top.ranked}, best first
-          </div>
-          <div style={{ maxHeight: 260, overflowY: "auto", display: "inline-block" }}>
-            <table style={{ borderCollapse: "collapse", fontSize: "0.9em" }}>
-              <thead>
-                <tr>
-                  {["#", "Symbol", "MACD before", "Forecast", "Actual", "Error", "% of move", "Drift error"].map(h => (
-                    <th key={h} style={{ ...trackCellStyle, position: "sticky", top: 0, background: "#f5f5f5" }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {opened.top.symbols.map((s, i) => (
-                  <tr key={s.symbol}>
-                    <td style={trackCellStyle}>{i + 1}</td>
-                    <td style={{ ...trackCellStyle, textAlign: "left" }}>
-                      <a href={getChartUrl(s.symbol)} target="_blank" rel="noopener noreferrer" style={{ color: "inherit" }}>
-                        {s.symbol}
-                      </a>
-                    </td>
-                    <td style={trackCellStyle}>{formatMacd(s.origin)}</td>
-                    <td style={trackCellStyle}>{formatMacd(s.predicted)}</td>
-                    <td style={trackCellStyle}>{formatMacd(s.actual)}</td>
-                    <td style={trackCellStyle}>{formatMacd(s.error)}</td>
-                    <td style={trackCellStyle}>{s.error_pct_of_move.toFixed(1)}%</td>
-                    <td style={{ ...trackCellStyle, color: s.beats_drift ? "green" : "inherit" }}>{formatMacd(s.drift_error)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
+    </div>
+  );
+}
+
+const BACKTEST_ACTIVE_STATES = ["refreshing_data", "training", "scoring"];
+const BACKTEST_STAGE_LABELS = {
+  refreshing_data: "refreshing price data",
+  training: "training the copies",
+  scoring: "scoring the copies",
+};
+const BACKTEST_VERDICT_COLORS = { retrain: "#c0392b", not_needed: "green", inconclusive: "#b7950b" };
+
+function formatErrPct(value) {
+  return value == null ? "n/a" : `${Number(value).toFixed(3)}%`;
+}
+
+function formatSigned(value, digits = 1) {
+  if (value == null) return "n/a";
+  const v = Number(value);
+  return `${v > 0 ? "+" : ""}${v.toFixed(digits)}%`;
+}
+
+function formatIsoDate(iso) {
+  return iso ? formatTrackDate(iso.slice(0, 10)) : "n/a";
+}
+
+function formatIsoDateWithYear(iso) {
+  return iso
+    ? new Date(`${iso.slice(0, 10)}T00:00:00`).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
+    : "n/a";
+}
+
+// Progress, or the stats and verdict, of the freshness backtest: the selected config
+// trained as of several earlier dates, every copy scored on the same recent forecasts.
+function FreshnessBacktestReport({ job }) {
+  if (!job || job.state === "idle") return null;
+  const name = job.label || job.ensemble_id;
+  if (BACKTEST_ACTIVE_STATES.includes(job.state)) {
+    const runs = job.runs || [];
+    const done = runs.filter(r => r.state === "done").length;
+    const progress = job.state === "training" && runs.length ? ` (${done}/${runs.length} models done)` : "";
+    return (
+      <div style={{ marginBottom: 10 }}>
+        Backtesting "{name}": {BACKTEST_STAGE_LABELS[job.state]}{progress} — {formatElapsed(job.elapsed_seconds)}.
+        Nothing served changes.
+      </div>
+    );
+  }
+  if (job.state === "failed") {
+    return <div style={{ color: "red", marginBottom: 10 }}>Freshness backtest of "{name}" failed: {job.error}</div>;
+  }
+  const r = job.result;
+  if (!r) return null;
+
+  const w = r.window;
+  const served = r.served_scores;
+  const servedInfo = r.served || {};
+  const periods = servedInfo.data_periods;
+  const drift = r.baselines.drift;
+  const flat = r.baselines.flat;
+  const fresh = r.arms.find(a => a.age_weeks === 0);
+  const oldest = r.arms[r.arms.length - 1];
+  const head = { ...trackCellStyle, background: "#f5f5f5" };
+  const left = { ...trackCellStyle, textAlign: "left" };
+
+  const ageRows = r.arms.map(a => ({
+    key: `age${a.age_weeks}`,
+    label: a.age_weeks === 0 ? "Fresh copy (0 weeks)" : `${a.age_weeks} weeks older`,
+    dataTo: a.cutoff,
+    scores: a,
+    vsFresh: a.age_weeks === 0 ? "—" : `${formatSigned(a.vs_fresh_pct)} (${formatSigned(a.vs_fresh_ci[0])} to ${formatSigned(a.vs_fresh_ci[1])})`,
+    seeds: a.seeds_err_pct && a.seeds_err_pct.length
+      ? `${formatErrPct(Math.min(...a.seeds_err_pct))} – ${formatErrPct(Math.max(...a.seeds_err_pct))}` : "n/a",
+  }));
+  const rows = [
+    ...(served ? [{ key: "served", label: `Served v${(servedInfo.versions || []).join(",")}`, dataTo: servedInfo.cutoff,
+                    scores: served, vsFresh: fresh ? formatSigned(100 * (served.err_pct / fresh.err_pct - 1)) : "n/a",
+                    seeds: "", bold: true }] : []),
+    ...ageRows,
+    { key: "drift", label: "Drift (last change continues)", scores: drift, vsFresh: fresh ? formatSigned(100 * (drift.err_pct / fresh.err_pct - 1)) : "n/a", seeds: "" },
+    { key: "flat", label: "Flat (MACD stays)", scores: flat, vsFresh: fresh ? formatSigned(100 * (flat.err_pct / fresh.err_pct - 1)) : "n/a", seeds: "" },
+  ];
+  const dayRows = [
+    ...(served ? [{ key: "served", label: "Served", scores: served }] : []),
+    { key: "fresh", label: "Fresh copy", scores: fresh },
+    { key: "oldest", label: `${oldest.age_weeks} weeks older`, scores: oldest },
+    { key: "drift", label: "Drift", scores: drift },
+  ];
+  const s = r.staleness;
+
+  return (
+    <div style={{ marginBottom: 12, padding: 8, border: "1px solid #ddd" }}>
+      <div style={{ fontWeight: "bold", color: BACKTEST_VERDICT_COLORS[r.verdict.code], marginBottom: 4 }}>
+        {r.verdict.headline}
+      </div>
+      <ul style={{ margin: "4px 0 8px 18px", padding: 0 }}>
+        {r.verdict.reasons.map((reason, i) => <li key={i}>{reason}</li>)}
+      </ul>
+      <div style={{ fontSize: "0.9em", color: "#555", marginBottom: 6 }}>
+        "{name}", finished {formatIsoDate(job.finished_at)} in {formatElapsed(job.elapsed_seconds)}.
+        Forecasts from {formatIsoDate(w.first_origin)} to {formatIsoDate(w.last_origin)} ({w.origins} trading days,
+        {" "}{w.symbols} symbols), each scored on its {w.horizon} forecast days; no copy was trained on them.
+        Error is |forecast − actual MACD| as a % of the stock price, so every symbol counts alike.
+      </div>
+      <table style={{ borderCollapse: "collapse", fontSize: "0.9em", marginBottom: 8 }}>
+        <thead>
+          <tr>
+            {["", "Data up to", "Error", "vs fresh copy (95% range)", "Single seeds", "Direction right", "Dollar MAE"].map(h => (
+              <th key={h} style={head}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(row => (
+            <tr key={row.key} style={row.bold ? { fontWeight: "bold" } : undefined}>
+              <td style={left}>{row.label}</td>
+              <td style={trackCellStyle}>{row.dataTo ? formatIsoDate(row.dataTo) : ""}</td>
+              <td style={trackCellStyle}>{formatErrPct(row.scores.err_pct)}</td>
+              <td style={trackCellStyle}>{row.vsFresh}</td>
+              <td style={trackCellStyle}>{row.seeds}</td>
+              <td style={trackCellStyle}>{row.key === "flat" ? "—" : formatPercent(row.scores.direction_accuracy)}</td>
+              <td style={trackCellStyle}>{formatMacd(row.scores.mae)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <table style={{ borderCollapse: "collapse", fontSize: "0.9em", marginBottom: 8 }}>
+        <thead>
+          <tr>
+            <th style={head}>Per forecast day</th>
+            {fresh.per_day.map(d => <th key={d.day} style={head}>Day {d.day}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {dayRows.map(row => (
+            <tr key={row.key}>
+              <td style={left}>{row.label}</td>
+              {row.scores.per_day.map((d, i) => {
+                const better = row.key !== "drift" && drift.per_day[i].err_pct != null && d.err_pct < drift.per_day[i].err_pct;
+                return (
+                  <td key={d.day} style={trackCellStyle} title={`Dollar MAE ${formatMacd(d.mae)}`}>
+                    <div style={{ color: row.key === "drift" ? "inherit" : (better ? "green" : "#c0392b") }}>{formatErrPct(d.err_pct)}</div>
+                    <div style={{ fontSize: "0.85em", color: "#555" }}>dir {formatPercent(d.direction_accuracy)}</div>
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div style={{ fontSize: "0.9em", color: "#555" }}>
+        Ageing: {formatSigned(s.per_week_pct, 2)} error per week of data age (95% range {formatSigned(s.per_week_ci[0], 2)} to
+        {" "}{formatSigned(s.per_week_ci[1], 2)}, seed luck included). A retrain is called for once the expected gain
+        reaches {s.threshold_pct.toFixed(0)}%{s.seed_luck_pct != null && `; by seed luck alone a retrained ensemble's error can land
+        up to ${s.seed_luck_pct.toFixed(0)}% either side of the current one`}.
+        {servedInfo.age_weeks_now != null && ` The served ensemble's data is ${servedInfo.age_weeks_now} weeks old.`}
+        {periods && periods.checkpoint_from && (
+          <> It learned its weights from {formatIsoDateWithYear(periods.weights_from)} to {formatIsoDateWithYear(periods.weights_to)},
+          chose its checkpoint on {formatIsoDateWithYear(periods.checkpoint_from)} – {formatIsoDateWithYear(periods.checkpoint_to)}, and
+          never trained on {formatIsoDateWithYear(periods.held_out_from)} – {formatIsoDateWithYear(periods.held_out_to)} (held out for testing).</>
+        )}
+      </div>
     </div>
   );
 }
@@ -1116,6 +1212,10 @@ function WatchlistBullishForecast({ watchlist, symbols, onClose }) {
   const [error, setError] = useState("");
   const [job, setJob] = useState(null);
   const [confirmingRetrain, setConfirmingRetrain] = useState(false);
+  const [backtest, setBacktest] = useState(null);
+  const [confirmingBacktest, setConfirmingBacktest] = useState(false);
+  // The last backtest's stats stay hidden until the Freshness backtest button is pressed.
+  const [showBacktest, setShowBacktest] = useState(false);
   const formatDecimal = (value) => {
     if (value === null || value === undefined) return "N/A";
     const num = typeof value === "number" ? value : Number(value);
@@ -1135,6 +1235,7 @@ function WatchlistBullishForecast({ watchlist, symbols, onClose }) {
   const selected = ensembles.find(e => e.id === engine);
   const isArima = engine === ARIMA_ENGINE;
   const retrainActive = !!job && RETRAIN_ACTIVE_STATES.includes(job.state);
+  const backtestActive = !!backtest && BACKTEST_ACTIVE_STATES.includes(backtest.state);
   const engineLabel = (id) => {
     if (id === ARIMA_ENGINE) return "ARIMA (legacy)";
     const e = ensembles.find(x => x.id === id);
@@ -1156,6 +1257,13 @@ function WatchlistBullishForecast({ watchlist, symbols, onClose }) {
         if (!cancelled) setEngine(data.default);
         const status = await apiJson("/forecast/ensembles/retrain/status");
         if (!cancelled && RETRAIN_ACTIVE_STATES.includes(status.state)) setJob(status);
+        // Loaded now so the button can show it at once; displayed only when pressed,
+        // or straight away when a backtest is already running.
+        const backtestStatus = await apiJson("/forecast/ensembles/backtest/status");
+        if (!cancelled && backtestStatus.state !== "idle") {
+          setBacktest(backtestStatus);
+          if (BACKTEST_ACTIVE_STATES.includes(backtestStatus.state)) setShowBacktest(true);
+        }
       } catch (e) {
         // Without the ensemble list the legacy engine is still usable.
         if (!cancelled) {
@@ -1181,6 +1289,29 @@ function WatchlistBullishForecast({ watchlist, symbols, onClose }) {
     }, 3000);
     return () => clearInterval(timer);
   }, [retrainActive]);
+
+  // Poll while a backtest is running; it takes about half an hour.
+  React.useEffect(() => {
+    if (!backtestActive) return undefined;
+    const timer = setInterval(async () => {
+      try {
+        setBacktest(await apiJson("/forecast/ensembles/backtest/status"));
+      } catch {
+        // A missed poll is retried on the next tick.
+      }
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [backtestActive]);
+
+  const startBacktest = async () => {
+    setConfirmingBacktest(false);
+    setError("");
+    try {
+      setBacktest(await apiJson(`/forecast/ensembles/${encodeURIComponent(engine)}/backtest`, { method: "POST" }));
+    } catch (e) {
+      setError(`Could not start the backtest: ${e.message}`);
+    }
+  };
 
   const runForecast = async () => {
     setLoading(true);
@@ -1223,7 +1354,7 @@ function WatchlistBullishForecast({ watchlist, symbols, onClose }) {
       <div style={{ marginBottom: 10 }}>
         <label>
           Model:{" "}
-          <select value={engine} onChange={e => { setEngine(e.target.value); setConfirmingRetrain(false); }}>
+          <select value={engine} onChange={e => { setEngine(e.target.value); setConfirmingRetrain(false); setConfirmingBacktest(false); }}>
             {ensembles.map(e => (
               <option key={e.id} value={e.id}>{formatEnsembleOption(e)}</option>
             ))}
@@ -1240,9 +1371,21 @@ function WatchlistBullishForecast({ watchlist, symbols, onClose }) {
         <button
           onClick={() => setConfirmingRetrain(true)}
           style={{ marginLeft: 10 }}
-          disabled={isArima || !selected || retrainActive || confirmingRetrain}
+          disabled={isArima || !selected || retrainActive || backtestActive || confirmingRetrain}
         >
           Retrain
+        </button>
+        <button
+          onClick={() => {
+            // Toggles: the first press shows the last stats and offers a new run, the next hides them.
+            setConfirmingBacktest(!showBacktest);
+            setShowBacktest(!showBacktest);
+          }}
+          style={{ marginLeft: 10 }}
+          disabled={isArima || !selected || retrainActive || backtestActive}
+          title="Would retraining help? Trains this config as of earlier dates and compares the copies on recent forecasts"
+        >
+          Freshness backtest
         </button>
       </div>
       {confirmingRetrain && selected && (
@@ -1253,7 +1396,16 @@ function WatchlistBullishForecast({ watchlist, symbols, onClose }) {
           <button onClick={() => setConfirmingRetrain(false)} style={{ marginLeft: 10 }}>Cancel</button>
         </div>
       )}
+      {confirmingBacktest && selected && (
+        <div style={{ marginBottom: 10 }}>
+          Run a new freshness backtest of "{selected.label}"? It trains 12 copies of this config on the CPU, each with data ending 0, 4, 8 or
+          13 weeks before the last 20 forecast days, and scores them on those days. About 30-40 minutes; nothing served changes.
+          <button onClick={startBacktest} style={{ marginLeft: 10 }}>Start backtest</button>
+          <button onClick={() => setConfirmingBacktest(false)} style={{ marginLeft: 10 }}>Cancel</button>
+        </div>
+      )}
       <RetrainStatus job={job} />
+      {showBacktest && <FreshnessBacktestReport job={backtest} />}
       <ForecastTrackRecord
         symbols={symbols}
         model={engine}

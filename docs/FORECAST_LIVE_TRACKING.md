@@ -301,6 +301,55 @@ Three day-level results from two runs, all in the same week, so correlated:
 
 ---
 
+## Should the model be retrained?
+
+The live record above says how the model is doing, not whether a retrain would change
+that. The **Freshness backtest** button in the "Bullish MACD Forecast" panel answers the
+second question for the selected ensemble. It takes about 30-40 minutes on the CPU and
+changes nothing that is served.
+
+What it does:
+
+1. Takes the last 20 trading days whose five forecast days have all closed as the
+   evaluation window.
+2. Trains the ensemble's config (3 seeds each) four times, as if on an earlier day: with
+   data ending the day before the window, and 4, 8 and 13 weeks before that
+   (`train_forecast_model.py --end-date`). The pipeline is the retrain's own, splits
+   included, so the copies are what a retrain on those days would have produced.
+3. Scores every copy, the served ensemble, drift and flat on the same forecasts
+   (`scripts/evaluate_freshness.py`). Error is |forecast - actual| as a % of the stock's
+   price, so the highest-priced symbols do not dominate as they do the dollar MAE.
+4. Fits how much the error grows per week of data age and multiplies it by the served
+   ensemble's age. The 95% range covers both which days were in the window (resampled
+   as whole days, since all symbols move on the same day) and which seeds each copy
+   got (from the spread of its single-seed members). Seeds matter more than one would
+   guess: in the first run single seeds of one copy differed by up to 18%, and a copy
+   came out 4% better than the fresh one by luck.
+
+How to read the verdict:
+
+- **Retrain**: the expected loss from age is at least 2% and its range is above zero.
+- **No retrain needed**: even the top of the range is below 2%. The report says when,
+  at the measured rate, a retrain would start to gain 2%.
+- **Inconclusive**: in between; run it again in a few weeks.
+- Separately it says whether the served ensemble beats drift on the window. If it does
+  not and age does not matter, retraining the same config will not fix it: the config
+  or the market is the problem, and a different config is the thing to try.
+
+A retrain also re-draws the seeds, so even when it is worth doing its result can be
+worse by luck; the report gives that range. Check the new versions' track record before
+relying on them.
+
+The report also shows which dates the served ensemble actually learned from. With the
+time split, weights are fitted on roughly the first two thirds of the 600-day window,
+the checkpoint is chosen on the next part, and the last 15% is held out, so a model
+trained today has not fitted anything from the last six months or so. A retrain moves
+that whole window forward by the model's age, no more.
+
+The job file is `models/freshness_backtest_job.json`; the training and scoring logs are
+`train_logs/backtest_<job id>_*.log`. The backtest models are deleted when the job
+finishes.
+
 ## Scoring a run
 
 Run after the watchlist has been refreshed for the day (from the repo root). It scores

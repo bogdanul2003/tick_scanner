@@ -999,6 +999,29 @@ def get_forecast_track_rows(model, symbols, latest_date, days=5, model_versions=
     finally:
         put_connection(conn)
 
+def get_trading_days(symbols, start_date, end_date, min_share=0.5):
+    """
+    Trading days between start_date and end_date, oldest first: the dates on which at
+    least `min_share` of `symbols` have MACD in stock_cache. The share keeps out a
+    date only a few symbols have a bar for.
+    """
+    symbols = sorted(set(symbols))
+    if not symbols:
+        return []
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT date FROM stock_cache
+                WHERE symbol = ANY(%s) AND macd IS NOT NULL AND date BETWEEN %s AND %s
+                GROUP BY date HAVING COUNT(*) >= %s
+                ORDER BY date
+            """, (symbols, start_date, end_date, max(1, int(len(symbols) * min_share))))
+            return [row[0] for row in cur.fetchall()]
+    finally:
+        put_connection(conn)
+
+
 def cache_ma20_above_ma50_forecast(symbol, forecast_date, ma20_will_be_above_ma50):
     """
     Cache the ma20_will_be_above_ma50 result for a symbol and forecast_date in stock_cache table.

@@ -93,6 +93,9 @@ def start_retrain(ensemble_id: str) -> Dict[str, Any]:
     with _start_lock:
         if get_status()["state"] in ACTIVE_STATES:
             raise RetrainInProgressError("A retrain is already running")
+        from services import freshness_backtest
+        if freshness_backtest.is_active():
+            raise RetrainInProgressError("A freshness backtest is running; retrain when it has finished")
 
         registry = ensemble_service.load_registry()
         ensemble = ensemble_service.resolve_ensemble(ensemble_id, registry)

@@ -179,6 +179,35 @@ def retrain_forecast_ensemble(ensemble_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/ensembles/backtest/status")
+def get_freshness_backtest_status():
+    """The running or most recent freshness backtest, with its stats once done, or {"state": "idle"}."""
+    from services.freshness_backtest import get_status
+    return get_status()
+
+
+@router.post("/ensembles/{ensemble_id}/backtest", status_code=202)
+def start_freshness_backtest(ensemble_id: str):
+    """
+    Start the freshness backtest of an ensemble in the background: train its config as
+    of several earlier dates, score every copy on the same recent forecasts, and say
+    whether a retrain would measurably help. Poll /ensembles/backtest/status. Nothing
+    served changes.
+    """
+    from services.ensemble_service import EnsembleNotFoundError
+    from services.freshness_backtest import start_backtest, BacktestInProgressError
+    try:
+        return start_backtest(ensemble_id)
+    except EnsembleNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except BacktestInProgressError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        print(f"Exception in start_freshness_backtest: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/macd/ensemble")
 def get_ensemble_macd_positive_forecast(request: EnsembleForecastRequest):
     """
